@@ -284,6 +284,7 @@ describe("connector health checks", () => {
         github: "../../src/daemon/services/connectors/github/connector.js",
         twilio: "../../src/daemon/services/connectors/twilio/connector.js",
         vercel: "../../src/daemon/services/connectors/vercel/connector.js",
+        cloudflare: "../../src/daemon/services/connectors/cloudflare/connector.js",
         x: "../../src/daemon/services/connectors/x/connector.js",
         gdrive: "../../src/daemon/services/connectors/gdrive/connector.js",
       };
@@ -294,6 +295,7 @@ describe("connector health checks", () => {
         github: "GitHubConnector",
         twilio: "TwilioConnector",
         vercel: "VercelConnector",
+        cloudflare: "CloudflareConnector",
         x: "XConnector",
         gdrive: "GDriveConnector",
       };
@@ -325,6 +327,7 @@ describe("connector health checks", () => {
         github: "../../src/daemon/services/connectors/github/connector.js",
         twilio: "../../src/daemon/services/connectors/twilio/connector.js",
         vercel: "../../src/daemon/services/connectors/vercel/connector.js",
+        cloudflare: "../../src/daemon/services/connectors/cloudflare/connector.js",
         x: "../../src/daemon/services/connectors/x/connector.js",
         gdrive: "../../src/daemon/services/connectors/gdrive/connector.js",
       };
@@ -334,6 +337,7 @@ describe("connector health checks", () => {
         github: "GitHubConnector",
         twilio: "TwilioConnector",
         vercel: "VercelConnector",
+        cloudflare: "CloudflareConnector",
         x: "XConnector",
         gdrive: "GDriveConnector",
       };

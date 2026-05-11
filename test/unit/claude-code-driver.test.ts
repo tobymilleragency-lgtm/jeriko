@@ -96,9 +96,12 @@ describe("claude-code driver integration", () => {
       return;
     }
     try {
-      const proc = Bun.spawn(["which", "claude"], { stdout: "pipe", stderr: "pipe" });
+      const proc = Bun.spawn(["claude", "--version"], { stdout: "pipe", stderr: "pipe" });
       const code = await proc.exited;
-      claudeAvailable = code === 0;
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const output = `${stdout}\n${stderr}`;
+      claudeAvailable = code === 0 && !output.includes("native binary not installed");
     } catch {
       claudeAvailable = false;
     }

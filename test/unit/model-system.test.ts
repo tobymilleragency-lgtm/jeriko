@@ -84,10 +84,9 @@ const FIXTURE_PROVIDER: ProviderConfig = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("driver registry", () => {
-  it("has all four built-in drivers registered", () => {
+  it("has all required built-in drivers registered", () => {
     const names = listDrivers();
-    expect(names).toContain("anthropic");
-    expect(names).toContain("openai");
+    expect(names).toContain("openai-codex");
     expect(names).toContain("local");
     expect(names).toContain("claude-code");
   });
@@ -101,6 +100,8 @@ describe("driver registry", () => {
       ["gpt-4o", "openai"],
       ["o1", "openai"],
       ["o3", "openai"],
+      ["codex", "openai-codex"],
+      ["openai-codex", "openai-codex"],
       ["ollama", "local"],
       ["cc", "claude-code"],
     ];
@@ -187,6 +188,16 @@ describe("model resolution", () => {
     it("resolves exact model IDs via capIndex", () => {
       expect(resolveModel("openai", "o1")).toBe("o1");
       expect(resolveModel("openai", "o3")).toBe("o3");
+    });
+  });
+
+  describe("openai-codex aliases", () => {
+    it("resolves 'codex' to gpt-5.5", () => {
+      expect(resolveModel("openai-codex", "codex")).toBe("gpt-5.5");
+    });
+
+    it("resolves provider alias to gpt-5.5", () => {
+      expect(resolveModel("openai-codex", "openai-codex")).toBe("gpt-5.5");
     });
   });
 

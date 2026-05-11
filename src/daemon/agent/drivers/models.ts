@@ -104,6 +104,13 @@ const STATIC_ALIASES: Record<string, Record<string, string>> = {
     gpt5:    "gpt-5",
     "gpt-5": "gpt-5",
   },
+  "openai-codex": {
+    "openai-codex": "gpt-5.5",
+    codex:           "gpt-5.5",
+    gpt5:            "gpt-5.5",
+    "gpt-5":        "gpt-5.5",
+    "gpt-5.5":      "gpt-5.5",
+  },
   "claude-code": {
     "claude-code": "claude-sonnet-4-6",
     cc:            "claude-sonnet-4-6",
@@ -125,6 +132,12 @@ const FALLBACK_CAPS: Record<string, ModelCapabilities> = {
     context: 128_000, maxOutput: 64_000, toolCall: true, reasoning: false,
     vision: true, structuredOutput: true,
     costInput: 2.5, costOutput: 10,
+  },
+  "openai-codex": {
+    id: "gpt-5.5", provider: "openai-codex", family: "gpt",
+    context: 272_000, maxOutput: 64_000, toolCall: true, reasoning: false,
+    vision: true, structuredOutput: true,
+    costInput: 0, costOutput: 0,
   },
   local: {
     id: "llama3", provider: "local", family: "llama",

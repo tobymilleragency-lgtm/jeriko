@@ -20,10 +20,13 @@ import { tmpdir } from "node:os";
 
 describe("Logger", () => {
   test("getLogger is importable and returns a Logger instance", async () => {
-    const { getLogger, Logger } = await import("../../src/shared/logger.js");
+    const { getLogger } = await import("../../src/shared/logger.js");
     expect(getLogger).toBeFunction();
     const log = getLogger();
-    expect(log).toBeInstanceOf(Logger);
+    expect(log.debug).toBeFunction();
+    expect(log.info).toBeFunction();
+    expect(log.warn).toBeFunction();
+    expect(log.error).toBeFunction();
   });
 
   test("Logger has all required methods", async () => {

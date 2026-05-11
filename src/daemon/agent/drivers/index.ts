@@ -131,6 +131,7 @@ export interface LLMDriver {
 
 import { AnthropicDriver } from "./anthropic.js";
 import { OpenAIDriver } from "./openai.js";
+import { OpenAICodexDriver } from "./openai-codex.js";
 import { LocalDriver } from "./local.js";
 import { ClaudeCodeDriver } from "./claude-code.js";
 
@@ -144,9 +145,10 @@ function register(driver: LLMDriver, ...aliases: string[]): void {
   }
 }
 
-// Eagerly register the four built-in drivers.
+// Eagerly register the built-in drivers.
 register(new AnthropicDriver(), "claude");
 register(new OpenAIDriver(), "gpt", "gpt4", "gpt-4", "gpt-4o", "o1", "o3");
+register(new OpenAICodexDriver(), "codex");
 register(new LocalDriver(), "ollama");
 register(new ClaudeCodeDriver(), "cc");
 

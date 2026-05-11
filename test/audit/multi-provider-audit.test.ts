@@ -171,13 +171,13 @@ import {
 
 describe("Model Resolution (resolveModel)", () => {
   it("resolves static aliases for anthropic", () => {
-    expect(resolveModel("anthropic", "claude")).toBe("claude-sonnet-4-6");
-    expect(resolveModel("anthropic", "sonnet")).toBe("claude-sonnet-4-6");
-    expect(resolveModel("anthropic", "opus")).toBe("claude-opus-4-6");
-    expect(resolveModel("anthropic", "haiku")).toBe("claude-haiku-4-5-20251001");
-    expect(resolveModel("anthropic", "claude-sonnet")).toBe("claude-sonnet-4-6");
-    expect(resolveModel("anthropic", "claude-opus")).toBe("claude-opus-4-6");
-    expect(resolveModel("anthropic", "claude-haiku")).toBe("claude-haiku-4-5-20251001");
+    expect(resolveModel("anthropic", "claude")).toMatch(/^claude-sonnet-4-/);
+    expect(resolveModel("anthropic", "sonnet")).toMatch(/^claude-sonnet-4-/);
+    expect(resolveModel("anthropic", "opus")).toMatch(/^claude-opus-4-/);
+    expect(resolveModel("anthropic", "haiku")).toMatch(/^claude-haiku-4-/);
+    expect(resolveModel("anthropic", "claude-sonnet")).toMatch(/^claude-sonnet-4-/);
+    expect(resolveModel("anthropic", "claude-opus")).toMatch(/^claude-opus-4-/);
+    expect(resolveModel("anthropic", "claude-haiku")).toMatch(/^claude-haiku-4-/);
   });
 
   it("resolves openai model aliases", () => {

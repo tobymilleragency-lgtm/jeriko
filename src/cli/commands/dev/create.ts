@@ -1,7 +1,7 @@
 import type { CommandHandler } from "../../dispatcher.js";
 import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
 import { ok, fail } from "../../../shared/output.js";
-import { mkdirSync, writeFileSync, existsSync, cpSync, readdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, cpSync, readdirSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -258,6 +258,7 @@ export const command: CommandHandler = {
 
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
+      replaceTemplatePlaceholders(dir, name);
 
       // Remove metadata files
       const metaFiles = [".manus-template-version", ".DS_Store"];
@@ -378,4 +379,69 @@ function countFiles(dir: string): number {
     }
   } catch { /* ignore */ }
   return count;
+}
+
+export function replaceTemplatePlaceholders(dir: string, projectName: string): void {
+  const values = buildTemplatePlaceholderValues(projectName);
+  walkFiles(dir, (file) => {
+    try {
+      const buffer = readFileSync(file);
+      if (!buffer.includes("{{")) return;
+      // Do not try to template binary files.
+      if (buffer.includes(0)) return;
+
+      const original = buffer.toString("utf8");
+      const replaced = original.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key: string) => values[key] ?? match);
+      if (replaced !== original) {
+        writeFileSync(file, replaced);
+      }
+    } catch {
+      // Best effort: unreadable files should not make scaffolding fail.
+    }
+  });
+}
+
+function walkFiles(dir: string, visit: (file: string) => void): void {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkFiles(fullPath, visit);
+    } else if (entry.isFile()) {
+      visit(fullPath);
+    }
+  }
+}
+
+function buildTemplatePlaceholderValues(projectName: string): Record<string, string> {
+  const projectSlug = slugifyProjectName(projectName);
+  const projectTitle = projectSlug
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || "App";
+
+  const bundleName = projectSlug.replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "") || "app";
+  const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+
+  return {
+    project_name: projectSlug,
+    project_title: projectTitle,
+    bundle_id: `space.manus.${bundleName}.t${timestamp}`,
+  };
+}
+
+function slugifyProjectName(projectName: string): string {
+  return projectName
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .replace(/[-_.]{2,}/g, "-") || "app";
 }

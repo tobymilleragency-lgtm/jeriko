@@ -59,13 +59,11 @@ const BEARER_CONNECTORS = [
   "mailchimp", "dropbox",
 ] as const;
 
-/** Connectors with no OAuth support (API key / credentials only). */
-const NON_OAUTH_CONNECTORS = ["paypal", "twilio", "sendgrid", "cloudflare", "slack"] as const;
-
 /** Connectors that support OAuth (have oauth config in CONNECTOR_DEFS). */
-const OAUTH_CONNECTORS = ALL_CONNECTORS.filter(
-  (c) => !(NON_OAUTH_CONNECTORS as readonly string[]).includes(c),
-);
+const OAUTH_CONNECTORS = CONNECTOR_DEFS.filter((def) => def.oauth).map((def) => def.name);
+
+/** Connectors with no OAuth support (API key / credentials only). */
+const NON_OAUTH_CONNECTORS = CONNECTOR_DEFS.filter((def) => !def.oauth).map((def) => def.name);
 
 // ===========================================================================
 // 1. Registry completeness
@@ -458,7 +456,7 @@ describe("OAUTH_PROVIDERS", () => {
   test("isOAuthCapable returns correct results", () => {
     expect(isOAuthCapable("github")).toBe(true);
     expect(isOAuthCapable("twilio")).toBe(false);
-    expect(isOAuthCapable("paypal")).toBe(false);
+    expect(isOAuthCapable("paypal")).toBe(true);
     expect(isOAuthCapable("sendgrid")).toBe(false);
     expect(isOAuthCapable("cloudflare")).toBe(false);
   });

@@ -1,7 +1,28 @@
 import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 import { loadConfig, getConfigDir, getDataDir, getUserId } from "../../src/shared/config.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("config", () => {
+  let originalXdgConfigHome: string | undefined;
+  let testConfigHome: string;
+
+  beforeEach(() => {
+    originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    testConfigHome = mkdtempSync(join(tmpdir(), "jeriko-config-test-"));
+    process.env.XDG_CONFIG_HOME = testConfigHome;
+  });
+
+  afterEach(() => {
+    if (originalXdgConfigHome !== undefined) {
+      process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+    } else {
+      delete process.env.XDG_CONFIG_HOME;
+    }
+    rmSync(testConfigHome, { recursive: true, force: true });
+  });
+
   it("loadConfig returns valid defaults", () => {
     const config = loadConfig();
     expect(typeof config.agent.model).toBe("string");

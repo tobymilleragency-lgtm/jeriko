@@ -703,7 +703,9 @@ describe("Audit: Agent loop defaults", () => {
 
   it("compaction threshold is 75% of context window", async () => {
     const source = await Bun.file("src/daemon/agent/agent.ts").text();
-    expect(source).toContain("0.75");
+    const tokenSource = await Bun.file("src/shared/tokens.ts").text();
+    expect(source).toContain("COMPACTION_CONTEXT_RATIO");
+    expect(tokenSource).toContain("COMPACTION_CONTEXT_RATIO = 0.75");
     expect(source).toContain("compactionThreshold");
   });
 

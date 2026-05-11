@@ -849,9 +849,9 @@ describe("AnthropicDriver.chat", () => {
 
   it("yields error + done on non-200 response", async () => {
     globalThis.fetch = (async () => {
-      return new Response(JSON.stringify({ error: { message: "Rate limited" } }), {
-        status: 429,
-        statusText: "Too Many Requests",
+      return new Response(JSON.stringify({ error: { message: "Bad request" } }), {
+        status: 400,
+        statusText: "Bad Request",
       });
     }) as any;
     const driver = new AnthropicDriver();
@@ -860,8 +860,8 @@ describe("AnthropicDriver.chat", () => {
     );
     expect(chunks).toHaveLength(2);
     expect(chunks[0].type).toBe("error");
-    expect(chunks[0].content).toContain("429");
-    expect(chunks[0].content).toContain("Rate limited");
+    expect(chunks[0].content).toContain("400");
+    expect(chunks[0].content).toContain("Bad request");
     expect(chunks[1].type).toBe("done");
   });
 
