@@ -20,7 +20,7 @@
 import { registerTool } from "./registry.js";
 import type { ToolDefinition } from "./registry.js";
 import { getLogger } from "../../../shared/logger.js";
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, mkdirSync, openSync } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 import { join, resolve, basename } from "node:path";
 import { homedir } from "node:os";
@@ -122,26 +122,88 @@ async function detectPort(dir: string, argsPort?: unknown): Promise<number | nul
   return null;
 }
 
+type DetectedDevCommand = {
+  command: string;
+  runner: string;
+};
+
 /**
  * Detect the appropriate dev command for a project directory.
  * Checks package.json scripts, then Python/Go/Rust markers.
  */
-function detectDevCommand(dir: string): string | null {
+function detectDevCommand(dir: string, port?: number): DetectedDevCommand | null {
   const pkgPath = join(dir, "package.json");
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.scripts?.dev) return "npm run dev";
-      if (pkg.scripts?.start) return "npm start";
+      const runner = detectPackageRunner(dir);
+      if (pkg.scripts?.dev) {
+        return { runner, command: buildPackageScriptCommand(runner, "dev", String(pkg.scripts.dev), port) };
+      }
+      if (pkg.scripts?.start) {
+        return { runner, command: buildPackageScriptCommand(runner, "start", String(pkg.scripts.start), port) };
+      }
     } catch { /* ignore */ }
   }
 
-  if (existsSync(join(dir, "manage.py"))) return "python manage.py runserver";
-  if (existsSync(join(dir, "app.py"))) return "python app.py";
-  if (existsSync(join(dir, "main.go"))) return "go run .";
-  if (existsSync(join(dir, "Cargo.toml"))) return "cargo run";
+  if (existsSync(join(dir, "manage.py"))) return { runner: "python", command: "python manage.py runserver" };
+  if (existsSync(join(dir, "app.py"))) return { runner: "python", command: "python app.py" };
+  if (existsSync(join(dir, "main.go"))) return { runner: "go", command: "go run ." };
+  if (existsSync(join(dir, "Cargo.toml"))) return { runner: "cargo", command: "cargo run" };
 
   return null;
+}
+
+function detectPackageRunner(dir: string): string {
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"))) return "bun";
+  if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+function buildPackageScriptCommand(_runner: string, _scriptName: "dev" | "start", scriptBody: string, port?: number): string {
+  if (!port) return scriptBody;
+  if (/\bvite(\s|$)/.test(scriptBody)) {
+    return `${scriptBody} --port ${shellArg(String(port))} --strictPort`;
+  }
+  return scriptBody;
+}
+
+function shellArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function waitForHttpReady(port: number, timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) });
+      if (res.ok || res.status < 500) return true;
+    } catch { /* not ready */ }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+function stopProcessGroup(pid: number | undefined): void {
+  if (!pid) return;
+  try { process.kill(-pid, "SIGTERM"); } catch { try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ } }
+}
+
+function buildDevServerEnv(port: number, dir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port) };
+  const localBin = join(dir, "node_modules", ".bin");
+  env.PATH = `${localBin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+  // Jeriko is a Bun-compiled binary. Child package-manager scripts must run as
+  // normal Node/pnpm/npm scripts, not inherit Bun's runtime/package-script
+  // markers. Leaving these set made `tsx watch ...` run under Bun and fail with
+  // `Cannot find module './cjs/index.cjs'` while the tool falsely reported a
+  // dev restart attempt.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("BUN") || key.startsWith("npm_")) delete env[key];
+  }
+  return env;
 }
 
 /**
@@ -564,17 +626,18 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
   const { dir } = resolved;
 
   try {
+    // Determine port before building the command so Vite can receive explicit
+    // --port/--strictPort flags. Non-Vite scripts still get PORT in env.
+    const port = await detectPort(dir, args.port) ?? 3000;
+
     // Detect the dev command
-    const devCommand = detectDevCommand(dir);
-    if (!devCommand) {
+    const detected = detectDevCommand(dir, port);
+    if (!detected) {
       return JSON.stringify({
         ok: false,
         error: "Cannot detect project type. No dev/start script in package.json.",
       });
     }
-
-    // Determine port
-    const port = await detectPort(dir, args.port) ?? 3000;
 
     // Kill existing process on the port
     try {
@@ -592,24 +655,51 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
       }
     } catch { /* no process on port */ }
 
-    // Start the dev server in the background
-    const child = spawn(devCommand, [], {
+    // Start the dev server in the background and capture logs. Do not report
+    // success until the requested port actually serves HTTP.
+    const logDir = join(dir, ".jeriko", "logs");
+    mkdirSync(logDir, { recursive: true });
+    const logFile = join(logDir, "webdev-restart.log");
+    const outFd = openSync(logFile, "a");
+    const errFd = openSync(logFile, "a");
+    const child = spawn(detected.command, [], {
       cwd: dir,
       shell: true,
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env, PORT: String(port) },
+      stdio: ["ignore", outFd, errFd],
+      env: buildDevServerEnv(port, dir),
     });
     child.unref();
 
-    log.debug(`Webdev tool: restarted "${devCommand}" on port ${port} (pid: ${child.pid})`);
+    const readyTimeoutMs = Number(process.env.JERIKO_WEBDEV_READY_TIMEOUT_MS || 15_000);
+    const ready = await waitForHttpReady(port, readyTimeoutMs);
+    if (!ready) {
+      stopProcessGroup(child.pid);
+      return JSON.stringify({
+        ok: false,
+        error: `Dev server did not become reachable on http://127.0.0.1:${port}/`,
+        data: {
+          pid: child.pid,
+          port,
+          command: detected.command,
+          runner: detected.runner,
+          directory: dir,
+          logFile,
+        },
+      });
+    }
+
+    log.debug(`Webdev tool: restarted "${detected.command}" on port ${port} (pid: ${child.pid})`);
     return JSON.stringify({
       ok: true,
       data: {
         pid: child.pid,
         port,
-        command: devCommand,
+        url: `http://127.0.0.1:${port}/`,
+        command: detected.command,
+        runner: detected.runner,
         directory: dir,
+        logFile,
       },
     });
   } catch (err) {

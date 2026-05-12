@@ -25,6 +25,7 @@ beforeEach(() => {
   process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL ?? "test@test.com";
   process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME ?? "Test";
   process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL ?? "test@test.com";
+  process.env.JERIKO_WEBDEV_READY_TIMEOUT_MS = "500";
   clearTools();
   // Ensure no stale debug logs from prior tests
   try { fs.unlinkSync(DEBUG_LOGS_FILE); } catch { /* not found */ }
@@ -36,8 +37,8 @@ afterEach(() => {
   } else {
     delete process.env.HOME;
   }
+  delete process.env.JERIKO_WEBDEV_READY_TIMEOUT_MS;
   clearTools();
-  // Clean up debug logs
   try { fs.unlinkSync(DEBUG_LOGS_FILE); } catch { /* not found */ }
   fs.rmSync(testDir, { recursive: true, force: true });
 });
@@ -755,23 +756,20 @@ describe("webdev tool — restart action", () => {
     expect(result.error).toContain("Cannot detect project type");
   });
 
-  it("detects dev command from package.json", async () => {
-    createTestProject("has-dev", { scripts: { dev: "vite --port 9999" } });
+  it("detects package runner and refuses to claim success before HTTP is reachable", async () => {
+    const dir = createTestProject("has-dev", { scripts: { dev: "vite --host" } });
+    fs.writeFileSync(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
 
     const tool = await loadWebdevTool();
-    // This will attempt to start vite which isn't installed, but we can check
-    // it recognized the project type (doesn't error with "cannot detect")
     const result = JSON.parse(
-      await tool.execute({ action: "restart", project: "has-dev" }),
+      await tool.execute({ action: "restart", project: "has-dev", port: 59998 }),
     );
 
-    // It should either succeed with a PID or at least not say "cannot detect"
-    if (result.ok) {
-      expect(result.data.command).toBe("npm run dev");
-      expect(result.data.pid).toBeDefined();
-    } else {
-      expect(result.error).not.toContain("Cannot detect");
-    }
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("did not become reachable");
+    expect(result.data.command).toBe("vite --host --port 59998 --strictPort");
+    expect(result.data.runner).toBe("pnpm");
+    expect(result.data.logFile).toContain("webdev-restart.log");
   });
 });
 
