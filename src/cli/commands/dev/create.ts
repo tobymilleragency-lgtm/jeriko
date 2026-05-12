@@ -149,6 +149,8 @@ function printHelp(): void {
   console.log("  --force           Delete and recreate an existing directory");
   console.log("  --git             Initialize git repo");
   console.log("  --dev             Install deps and start dev server in the background");
+  console.log("\nRepair existing generated apps:");
+  console.log("  jeriko create repair --dir <project> [--name <name>]");
   console.log("\nRun 'jeriko create --list' to see all templates.");
 }
 
@@ -221,6 +223,15 @@ export const command: CommandHandler = {
     const template = parsed.positional[0];
     const name = parsed.positional[1];
     if (!template) fail("Missing template. Run 'jeriko create --list' to see all templates.");
+
+    if (template === "repair") {
+      const dir = flagStr(parsed, "dir", "");
+      if (!dir) fail("Missing --dir <project> for repair. Usage: jeriko create repair --dir <project> [--name <name>]");
+      const result = repairGeneratedProject(resolve(dir), { projectName: flagStr(parsed, "name", "") || undefined });
+      ok(result);
+      return;
+    }
+
     if (!name) fail("Missing project name. Usage: jeriko create <template> <name>");
 
     const info = TEMPLATE_MAP.get(template);
@@ -523,8 +534,55 @@ function countFiles(dir: string): number {
   return count;
 }
 
+export interface RepairGeneratedProjectOptions {
+  projectName?: string;
+  runPackageManager?: boolean;
+}
+
+export interface RepairGeneratedProjectResult {
+  directory: string;
+  projectName: string;
+  changedFiles: string[];
+  lockfileNeedsRefresh: boolean;
+  lockfileRefreshed: boolean;
+  actions: string[];
+}
+
+export function repairGeneratedProject(dir: string, options: RepairGeneratedProjectOptions = {}): RepairGeneratedProjectResult {
+  if (!existsSync(dir)) {
+    failWithDetails(`Project directory not found: "${dir}"`, { errorCode: "E_NOT_FOUND", directory: dir });
+  }
+
+  const projectName = options.projectName || inferProjectName(dir);
+  const changedFiles = replaceTemplatePlaceholdersWithReport(dir, projectName);
+  const lockfileNeedsRefresh = hasPnpmPatchedDependencyDrift(dir);
+  let lockfileRefreshed = false;
+  const actions = changedFiles.length > 0 ? ["placeholders_replaced"] : [];
+
+  if (lockfileNeedsRefresh) {
+    actions.push("pnpm_lockfile_needs_refresh");
+    if (options.runPackageManager !== false) {
+      const result = spawnSync("pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile", [], {
+        cwd: dir,
+        shell: true,
+        stdio: "ignore",
+        env: process.env,
+      });
+      lockfileRefreshed = (result.status ?? 1) === 0;
+      if (lockfileRefreshed) actions.push("pnpm_lockfile_refreshed");
+    }
+  }
+
+  return { directory: dir, projectName, changedFiles, lockfileNeedsRefresh, lockfileRefreshed, actions };
+}
+
 export function replaceTemplatePlaceholders(dir: string, projectName: string): void {
+  replaceTemplatePlaceholdersWithReport(dir, projectName);
+}
+
+function replaceTemplatePlaceholdersWithReport(dir: string, projectName: string): string[] {
   const values = buildTemplatePlaceholderValues(projectName);
+  const changedFiles: string[] = [];
   walkFiles(dir, (file) => {
     try {
       const buffer = readFileSync(file);
@@ -536,11 +594,41 @@ export function replaceTemplatePlaceholders(dir: string, projectName: string): v
       const replaced = original.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key: string) => values[key] ?? match);
       if (replaced !== original) {
         writeFileSync(file, replaced);
+        changedFiles.push(file);
       }
     } catch {
       // Best effort: unreadable files should not make scaffolding fail.
     }
   });
+  return changedFiles;
+}
+
+function inferProjectName(dir: string): string {
+  const pkgPath = join(dir, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      if (typeof pkg.name === "string" && pkg.name.trim() && !pkg.name.includes("{{")) {
+        return pkg.name;
+      }
+    } catch { /* ignore */ }
+  }
+  return dir.split(/[\\/]+/).filter(Boolean).at(-1) || "app";
+}
+
+function hasPnpmPatchedDependencyDrift(dir: string): boolean {
+  const pkgPath = join(dir, "package.json");
+  const lockPath = join(dir, "pnpm-lock.yaml");
+  if (!existsSync(pkgPath) || !existsSync(lockPath)) return false;
+
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    const packagePatches = Boolean(pkg?.pnpm?.patchedDependencies && Object.keys(pkg.pnpm.patchedDependencies).length > 0);
+    const lockHasPatches = /^patchedDependencies:/m.test(readFileSync(lockPath, "utf8"));
+    return lockHasPatches && !packagePatches;
+  } catch {
+    return false;
+  }
 }
 
 function walkFiles(dir: string, visit: (file: string) => void): void {

@@ -5,7 +5,7 @@
  * template installation, and versioned binary storage.
  */
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync, readdirSync, symlinkSync, unlinkSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync, readdirSync, symlinkSync, unlinkSync, copyFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir, platform, userInfo } from "node:os";
 import { execSync } from "node:child_process";
@@ -338,6 +338,29 @@ function setupPathWindows(): void {
   }
 }
 
+export function refreshTemplateInstall(sourceDir: string, targetDir: string): { refreshed: boolean; count: number } {
+  if (!existsSync(sourceDir)) return { refreshed: false, count: 0 };
+
+  rmSync(targetDir, { recursive: true, force: true });
+  mkdirSync(targetDir, { recursive: true });
+  cpSync(sourceDir, targetDir, { recursive: true });
+  return { refreshed: true, count: countInstalledTemplates(targetDir) };
+}
+
+function countInstalledTemplates(dir: string): number {
+  let count = 0;
+  for (const sub of ["webdev", "deploy"]) {
+    const subDir = join(dir, sub);
+    if (existsSync(subDir)) {
+      try {
+        const entries = readdirSync(subDir, { withFileTypes: true });
+        count += entries.filter((e) => e.isDirectory()).length;
+      } catch { /* ignore */ }
+    }
+  }
+  return count;
+}
+
 export function setupTemplates(): void {
   info("Installing project templates...");
 
@@ -364,21 +387,8 @@ export function setupTemplates(): void {
     return;
   }
 
-  mkdirSync(TEMPLATES_INSTALL_DIR, { recursive: true });
-  cpSync(sourceDir, TEMPLATES_INSTALL_DIR, { recursive: true });
-
-  let count = 0;
-  for (const sub of ["webdev", "deploy"]) {
-    const subDir = join(TEMPLATES_INSTALL_DIR, sub);
-    if (existsSync(subDir)) {
-      try {
-        const entries = readdirSync(subDir, { withFileTypes: true });
-        count += entries.filter((e) => e.isDirectory()).length;
-      } catch { /* ignore */ }
-    }
-  }
-
-  success(`${count} project templates installed`);
+  const refreshed = refreshTemplateInstall(sourceDir, TEMPLATES_INSTALL_DIR);
+  success(`${refreshed.count} project templates refreshed`);
 }
 
 /**

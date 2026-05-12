@@ -29,6 +29,7 @@ import {
   copyFileSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { TEMPLATES_INSTALL_DIR } from "./install-utils.js";
 import { homedir, platform, arch as osArch } from "node:os";
 import { execSync } from "node:child_process";
 import { VERSION } from "../../../shared/version.js";
@@ -390,6 +391,19 @@ export const command: CommandHandler = {
       console.log(`\x1b[32m✓\x1b[0m Agent prompt updated`);
     }
 
+    // 7.5. Download and refresh project templates. A fixed binary with stale
+    // installed templates still scaffolds broken apps, so updates must refresh
+    // templates when the release ships templates.tar.gz.
+    const templatesPath = join(DOWNLOAD_DIR, `templates-${targetVersion}.tar.gz`);
+    if (await downloadAssetFromBase(releaseBase, "templates.tar.gz", templatesPath)) {
+      mkdirSync(TEMPLATES_INSTALL_DIR, { recursive: true });
+      execSync(`rm -rf "${TEMPLATES_INSTALL_DIR}" && mkdir -p "${TEMPLATES_INSTALL_DIR}" && tar -xzf "${templatesPath}" -C "${TEMPLATES_INSTALL_DIR}"`, {
+        encoding: "utf-8",
+        timeout: 120000,
+      });
+      console.log(`\x1b[32m✓\x1b[0m Project templates refreshed`);
+    }
+
     // 8. Verify
     try {
       const verifyOutput = execSync(`"${installedPath}" --version`, {
@@ -405,6 +419,7 @@ export const command: CommandHandler = {
     try { unlinkSync(binaryPath); } catch { /* ignore */ }
     try { unlinkSync(manifestPath); } catch { /* ignore */ }
     try { unlinkSync(agentMdPath); } catch { /* ignore */ }
+    try { unlinkSync(templatesPath); } catch { /* ignore */ }
 
     // 9. Success
     ok({
