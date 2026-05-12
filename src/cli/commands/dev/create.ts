@@ -403,7 +403,10 @@ function prepareOutputDirectory(dir: string, options: PrepareOptions): { reused:
     return { reused: false };
   }
 
-  if (options.reuse && isValidProjectDirectory(dir)) {
+  // Existing valid projects are idempotent by default. App-builder agents often
+  // retry the same scaffold command after partial progress; returning success
+  // lets the workflow continue to install/build instead of looping on E_EXISTS.
+  if (isValidProjectDirectory(dir)) {
     return { reused: true };
   }
 

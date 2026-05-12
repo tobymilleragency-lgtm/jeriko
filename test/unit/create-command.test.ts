@@ -46,8 +46,9 @@ describe("create command templates", () => {
     }
   });
 
-  it("returns structured E_EXISTS failure for existing directories", async () => {
+  it("returns structured E_EXISTS failure for existing non-project directories", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-exists-"));
+    fs.writeFileSync(path.join(dir, "stray.txt"), "not a project");
     try {
       const result = await runCreateCommand(["node", "demo-app", "--dir", dir]);
 
@@ -56,7 +57,22 @@ describe("create command templates", () => {
       expect(result.errorCode).toBe("E_EXISTS");
       expect(result.error).toContain("Directory already exists");
       expect(result.directory).toBe(dir);
-      expect(result.suggestions).toContain("Pass --reuse to reuse an existing valid project directory.");
+      expect(result.suggestions).toContain("Pass --force to delete and recreate the directory.");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses an existing valid project by default to avoid retry loops", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-idempotent-"));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "existing" }));
+    try {
+      const result = await runCreateCommand(["node", "demo-app", "--dir", dir]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.directory).toBe(dir);
+      expect(result.data.reused).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).name).toBe("existing");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
