@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { createToolRepeatGuard, toolCallSignature } from "../../src/daemon/agent/agent.js";
+import { createToolRepeatGuard, createToolRoundRepeatGuard, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -34,6 +34,28 @@ describe("Repeated tool-call guard", () => {
     expect(guard({ ...help, id: "3" })).toBeNull();
     expect(guard(build)).toBeNull();
     expect(guard({ ...help, id: "4" })).toBeNull();
+  });
+
+  test("normalizes whole tool rounds independent of call order", () => {
+    const home = { id: "1", name: "read_file", arguments: JSON.stringify({ file_path: "/app/Home.tsx", offset: 0, limit: 650 }) };
+    const guardrail = { id: "2", name: "read_file", arguments: JSON.stringify({ limit: 120, offset: 0, file_path: "/cfg/build-anti-drift.md" }) };
+
+    expect(toolRoundSignature([home, guardrail])).toBe(toolRoundSignature([guardrail, home]));
+  });
+
+  test("blocks the third repeated matching tool round even with different IDs", () => {
+    const guard = createToolRoundRepeatGuard(3);
+    const round = [
+      { id: "a", name: "read_file", arguments: JSON.stringify({ file_path: "/cfg/build-anti-drift.md", offset: 0, limit: 120 }) },
+      { id: "b", name: "read_file", arguments: JSON.stringify({ file_path: "/app/Home.tsx", offset: 0, limit: 650 }) },
+      { id: "c", name: "read_file", arguments: JSON.stringify({ file_path: "/app/App.tsx", offset: 0, limit: 80 }) },
+    ];
+
+    expect(guard(round)).toBeNull();
+    expect(guard(round.map((call, index) => ({ ...call, id: `next-${index}` })))).toBeNull();
+    const blocked = guard(round.map((call, index) => ({ ...call, id: `third-${index}` })));
+    expect(blocked).toContain("Repeated no-progress tool round blocked");
+    expect(blocked).toContain("Home.tsx");
   });
 });
 

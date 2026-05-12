@@ -178,6 +178,7 @@ export async function* runAgent(
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   const repeatGuard = createToolRepeatGuard();
+  const roundRepeatGuard = createToolRoundRepeatGuard();
 
   // Set active context so orchestrator tools (delegate, parallel) can access
   // the parent's system prompt, conversation, depth, and model during tool execution.
@@ -298,6 +299,22 @@ export async function* runAgent(
 
     // ── Execute tool calls ────────────────────────────────────────────
     const toolResults: ToolResult[] = [];
+    const roundRepeatCheck = roundRepeatGuard(toolCalls);
+
+    if (roundRepeatCheck) {
+      for (const tc of toolCalls) {
+        const result = `${roundRepeatCheck}\nStop rereading the same files or rerunning the same checks. Use the results already in context and provide the final answer now.`;
+        const isError = true;
+        toolResults.push({ tool_call_id: tc.id, content: result, is_error: isError });
+        yield { type: "tool_result", toolCallId: tc.id, result, isError };
+        const toolMsg = addMessage(config.sessionId, "tool", result);
+        addPart(toolMsg.id, "error", result, tc.name, tc.id);
+        messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+      }
+      yield { type: "text_delta", content: `${roundRepeatCheck}\nSummarize the current verified state and stop.` };
+      yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
+      return;
+    }
 
     for (const tc of toolCalls) {
       // Resolve tool — supports dotted names from OSS models (e.g. "browser.click")
@@ -392,6 +409,34 @@ export function createToolRepeatGuard(maxConsecutive = 3): (toolCall: ToolCall) 
     }
     return null;
   };
+}
+
+// Repeated rounds of successful read/check calls are also no-progress loops.
+// The previous single-call guard missed patterns like repeatedly reading
+// build-anti-drift.md + Home.tsx + App.tsx + button.tsx, with occasional
+// `pnpm check` calls in between, until maxRounds was exhausted. Track round
+// signatures over the whole run so repeated investigation batches stop early.
+export function createToolRoundRepeatGuard(maxSeen = 3): (toolCalls: ToolCall[]) => string | null {
+  const seen = new Map<string, number>();
+
+  return (toolCalls: ToolCall[]) => {
+    const signature = toolRoundSignature(toolCalls);
+    const count = (seen.get(signature) ?? 0) + 1;
+    seen.set(signature, count);
+
+    if (count >= maxSeen) {
+      return `Repeated no-progress tool round blocked after ${count} matching rounds: ${summarizeToolRound(toolCalls)}`;
+    }
+    return null;
+  };
+}
+
+export function toolRoundSignature(toolCalls: ToolCall[]): string {
+  return toolCalls.map(toolCallSignature).sort().join("\n");
+}
+
+function summarizeToolRound(toolCalls: ToolCall[]): string {
+  return toolCalls.map(summarizeToolCall).join("; ").slice(0, 500);
 }
 
 export function toolCallSignature(toolCall: ToolCall): string {
