@@ -177,6 +177,7 @@ export async function* runAgent(
 
   let totalTokensIn = 0;
   let totalTokensOut = 0;
+  const repeatGuard = createToolRepeatGuard();
 
   // Set active context so orchestrator tools (delegate, parallel) can access
   // the parent's system prompt, conversation, depth, and model during tool execution.
@@ -305,7 +306,11 @@ export async function* runAgent(
       let result: string;
       let isError = false;
 
-      if (!tool) {
+      const repeatCheck = repeatGuard(tc);
+      if (repeatCheck) {
+        result = `${repeatCheck}\nDo not call the same tool with the same arguments again. Use the previous result and choose a different next step toward the user's request.`;
+        isError = true;
+      } else if (!tool) {
         result = `Tool "${tc.name}" not found`;
         isError = true;
       } else {
@@ -364,6 +369,65 @@ export async function* runAgent(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Repeated identical tool calls are almost always no-progress loops. This hit
+// Jeriko's app-builder flow where the model called `jeriko create --help &&
+// jeriko dev --help` dozens of times instead of building the app. Keep this
+// local to one run so legitimate future turns are unaffected.
+export function createToolRepeatGuard(maxConsecutive = 3): (toolCall: ToolCall) => string | null {
+  let lastSignature = "";
+  let consecutive = 0;
+
+  return (toolCall: ToolCall) => {
+    const signature = toolCallSignature(toolCall);
+    if (signature === lastSignature) {
+      consecutive += 1;
+    } else {
+      lastSignature = signature;
+      consecutive = 1;
+    }
+
+    if (consecutive >= maxConsecutive) {
+      return `Repeated identical tool call blocked after ${consecutive} attempts: ${summarizeToolCall(toolCall)}`;
+    }
+    return null;
+  };
+}
+
+export function toolCallSignature(toolCall: ToolCall): string {
+  return `${toolCall.name}:${normalizeToolArguments(toolCall.arguments)}`;
+}
+
+function normalizeToolArguments(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return JSON.stringify(sortJsonValue(parsed));
+  } catch {
+    return raw.trim().replace(/\s+/g, " ");
+  }
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = sortJsonValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function summarizeToolCall(toolCall: ToolCall): string {
+  try {
+    const parsed = JSON.parse(toolCall.arguments);
+    if (typeof parsed.command === "string") {
+      return `${toolCall.name} ${JSON.stringify(parsed.command.slice(0, 240))}`;
+    }
+  } catch { /* ignore */ }
+  return `${toolCall.name} ${toolCall.arguments.slice(0, 240)}`;
+}
 
 /**
  * Parse tool call arguments with repair for common OSS model JSON issues.

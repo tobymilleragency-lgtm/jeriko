@@ -4,6 +4,38 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
+import { createToolRepeatGuard, toolCallSignature } from "../../src/daemon/agent/agent.js";
+
+describe("Repeated tool-call guard", () => {
+  test("normalizes JSON argument key order for signatures", () => {
+    const a = { id: "1", name: "bash", arguments: '{"cwd":"/tmp","command":"jeriko create --help"}' };
+    const b = { id: "2", name: "bash", arguments: '{"command":"jeriko create --help","cwd":"/tmp"}' };
+
+    expect(toolCallSignature(a)).toBe(toolCallSignature(b));
+  });
+
+  test("blocks the third identical consecutive tool call", () => {
+    const guard = createToolRepeatGuard(3);
+    const call = { id: "1", name: "bash", arguments: JSON.stringify({ command: "jeriko create --help && jeriko dev --help" }) };
+
+    expect(guard(call)).toBeNull();
+    expect(guard({ ...call, id: "2" })).toBeNull();
+    const blocked = guard({ ...call, id: "3" });
+    expect(blocked).toContain("Repeated identical tool call blocked");
+    expect(blocked).toContain("jeriko create --help");
+  });
+
+  test("resets when a distinct tool call makes progress", () => {
+    const guard = createToolRepeatGuard(3);
+    const help = { id: "1", name: "bash", arguments: JSON.stringify({ command: "jeriko create --help" }) };
+    const build = { id: "2", name: "bash", arguments: JSON.stringify({ command: "pnpm run build" }) };
+
+    expect(guard(help)).toBeNull();
+    expect(guard({ ...help, id: "3" })).toBeNull();
+    expect(guard(build)).toBeNull();
+    expect(guard({ ...help, id: "4" })).toBeNull();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Guard defaults

@@ -48,6 +48,18 @@ type CodexInputMessage =
       content: CodexInputPart[];
     };
 
+function messageTextContent(content: DriverMessage["content"]): string {
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+  }
+  return content || "";
+}
+
+const OPENAI_CODEX_REQUEST_TIMEOUT_MS = 600_000;
+
 export class OpenAICodexDriver implements LLMDriver {
   readonly name = "openai-codex";
 
@@ -66,10 +78,21 @@ export class OpenAICodexDriver implements LLMDriver {
     return `${normalized}/codex/responses`;
   }
 
-  private convertMessages(messages: DriverMessage[]): CodexInputMessage[] {
+  convertMessages(messages: DriverMessage[]): CodexInputMessage[] {
     const out: CodexInputMessage[] = [];
     for (const msg of messages) {
-      if (msg.role === "system" || msg.role === "tool") continue;
+      if (msg.role === "system") continue;
+
+      // The ChatGPT Codex endpoint does not accept OpenAI Chat Completions
+      // `role: "tool"` messages. Dropping them made the model see the same
+      // user request after every tool call, so it repeated `jeriko create` /
+      // `--help` forever. Preserve tool outputs as explicit user-visible
+      // observations so the next Codex turn can continue from real results.
+      if (msg.role === "tool") {
+        const callId = msg.tool_call_id ? ` ${msg.tool_call_id}` : "";
+        out.push({ role: "user", content: `[tool result${callId}]\n${messageTextContent(msg.content)}` });
+        continue;
+      }
 
       if (Array.isArray(msg.content)) {
         const textParts = (msg.content as ContentBlock[])
@@ -178,7 +201,7 @@ export class OpenAICodexDriver implements LLMDriver {
   }
 
   async *chat(messages: DriverMessage[], config: DriverConfig): AsyncGenerator<StreamChunk> {
-    const signal = withTimeout(config.signal);
+    const signal = withTimeout(config.signal, OPENAI_CODEX_REQUEST_TIMEOUT_MS);
     const endpoint = this.resolveEndpoint();
     let retriedAfterRefresh = false;
 

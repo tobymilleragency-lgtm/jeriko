@@ -648,9 +648,9 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
     reloadSecrets();
 
     const { runAgent } = await import("./agent/agent.js");
-    const { createSession, getSession } = await import("./agent/session/session.js");
+    const { createSession } = await import("./agent/session/session.js");
     const { addMessage, addPart, buildDriverMessages } = await import("./agent/session/message.js");
-    const { kvGet, kvSet } = await import("./storage/kv.js");
+    const { kvSet } = await import("./storage/kv.js");
 
     const message = params.message as string;
     if (!message) throw new Error("message is required");
@@ -661,19 +661,14 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
     const { backend: modelBackend, model: modelId } = parseModelSpec(rawModel);
     const model = modelId;
 
-    // Reuse existing session or create a new one.
-    // The CLI can pass session_id explicitly, otherwise we resume the last
-    // active session (same logic the in-process REPL and HTTP routes use).
+    // One-shot CLI/API asks must start clean by default. Reusing the last active
+    // session dragged old failed tool loops into new requests, causing prompts
+    // like "build a simple crm" to keep replaying stale `jeriko create --help`
+    // calls. Interactive clients that want continuity must pass session_id.
     let sessionId = params.session_id as string | undefined;
     if (!sessionId) {
-      const lastId = kvGet<string>("state:last_session_id");
-      const existing = lastId ? getSession(lastId) : null;
-      if (existing && existing.archived_at === null) {
-        sessionId = existing.id;
-      } else {
-        const sess = createSession({ model, title: message.slice(0, 80) });
-        sessionId = sess.id;
-      }
+      const sess = createSession({ model, title: message.slice(0, 80) });
+      sessionId = sess.id;
       kvSet("state:last_session_id", sessionId);
     }
 
