@@ -3,6 +3,8 @@
 import type { JerikoResult, OutputFormat } from "./types.js";
 import { ExitCode } from "./types.js";
 
+type FailureDetails = Record<string, unknown>;
+
 /**
  * Numeric exit code constants — runtime equivalent of ExitCode enum.
  * Prefer these over bare numbers so every exit is self-documenting.
@@ -142,6 +144,17 @@ export function ok<T>(data: T): never {
  */
 export function fail(error: string, code: ExitCode | number = ExitCode.GENERAL): never {
   const result: JerikoResult<never> = { ok: false, error, code };
+  process.stdout.write(serialize(result) + "\n");
+  return process.exit(code) as never;
+}
+
+/** Print a failure result with machine-readable structured details. */
+export function failWithDetails(
+  error: string,
+  details: FailureDetails,
+  code: ExitCode | number = ExitCode.GENERAL,
+): never {
+  const result = { ok: false as const, error, code, ...details };
   process.stdout.write(serialize(result) + "\n");
   return process.exit(code) as never;
 }

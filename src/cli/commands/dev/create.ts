@@ -1,9 +1,11 @@
 import type { CommandHandler } from "../../dispatcher.js";
 import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
-import { ok, fail } from "../../../shared/output.js";
-import { mkdirSync, writeFileSync, existsSync, cpSync, readdirSync, readFileSync } from "node:fs";
+import { ok, fail, failWithDetails } from "../../../shared/output.js";
+import { spawnSync } from "node:child_process";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { detectDevCommand, getProjectDevLogFile, startDetachedDevServer, type DetachedDevServer } from "./dev.js";
 
 // ---------------------------------------------------------------------------
 // Template registry
@@ -141,9 +143,12 @@ function printHelp(): void {
   console.log("\nScaffold a new project from a template.");
   console.log("\nFlags:");
   console.log("  --list            List all available templates");
-  console.log("  --dir <path>      Output directory (default: ~/.jeriko/projects/<name>)");
+  console.log("  --dir <path>      Exact output directory (default: ~/.jeriko/projects/<name>)");
+  console.log("  --parent-dir <p>  Parent directory; creates <p>/<name>");
+  console.log("  --reuse           Reuse an existing valid project directory");
+  console.log("  --force           Delete and recreate an existing directory");
   console.log("  --git             Initialize git repo");
-  console.log("  --dev             Start dev server after creation");
+  console.log("  --dev             Install deps and start dev server in the background");
   console.log("\nRun 'jeriko create --list' to see all templates.");
 }
 
@@ -233,9 +238,23 @@ export const command: CommandHandler = {
 
     const initGit = flagBool(parsed, "git");
     const startDev = flagBool(parsed, "dev");
+    const reuse = flagBool(parsed, "reuse");
+    const force = flagBool(parsed, "force");
+
+    if (reuse && force) {
+      fail("Use either --reuse or --force, not both.");
+    }
 
     // Rich templates (webdev + deploy) — copy from disk
     if (info.category === "webdev" || info.category === "deploy") {
+      const dir = resolveCreateDirectory(parsed, name, join(PROJECTS_DIR, name));
+      const prepared = prepareOutputDirectory(dir, { reuse, force });
+      if (prepared.reused) {
+        const devServer = startDev ? installAndStartDevServer(dir) : null;
+        emitCreateSuccess({ name, template, category: info.category, directory: dir, files: countFiles(dir), reused: true, devServer });
+        return;
+      }
+
       if (!info.dir) {
         fail(`Template "${template}" has no directory configured.`);
         return;
@@ -252,9 +271,6 @@ export const command: CommandHandler = {
 
       // For deploy templates, resolve to the actual project root
       const sourceDir = info.category === "deploy" ? resolveDeployDir(templateDir) : templateDir;
-
-      const dir = resolve(flagStr(parsed, "dir", "") || join(PROJECTS_DIR, name));
-      if (existsSync(dir)) fail(`Directory already exists: "${dir}"`);
 
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
@@ -274,35 +290,19 @@ export const command: CommandHandler = {
         execSync("git init", { cwd: dir, encoding: "utf-8" });
       }
 
-      if (startDev) {
-        console.log(`\nInstalling dependencies and starting dev server...`);
-        const { execSync } = await import("node:child_process");
-        try {
-          // Detect package manager
-          const hasPnpmLock = existsSync(join(dir, "pnpm-lock.yaml"));
-          const hasRequirements = existsSync(join(dir, "requirements.txt"));
-          if (hasRequirements) {
-            execSync("python3 -m venv venv && ./venv/bin/pip install -r requirements.txt", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-            execSync("./venv/bin/python src/main.py", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-          } else if (hasPnpmLock) {
-            execSync("pnpm install --no-frozen-lockfile", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-            execSync("pnpm run dev", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-          } else {
-            execSync("npm install", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-            execSync("npm run dev", { cwd: dir, encoding: "utf-8", stdio: "inherit" });
-          }
-        } catch {
-          // Dev server was stopped or install failed — non-fatal
-        }
-      }
-
-      ok({ name, template, category: info.category, directory: dir, files });
+      const devServer = startDev ? installAndStartDevServer(dir) : null;
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, devServer });
       return;
     }
 
     // Inline templates (node, api, cli, plugin) — generated on the fly
-    const dir = resolve(flagStr(parsed, "dir", "") || `./${name}`);
-    if (existsSync(dir)) fail(`Directory already exists: "${dir}"`);
+    const dir = resolveCreateDirectory(parsed, name, `./${name}`);
+    const prepared = prepareOutputDirectory(dir, { reuse, force });
+    if (prepared.reused) {
+      const devServer = startDev ? installAndStartDevServer(dir) : null;
+      emitCreateSuccess({ name, template, category: "inline", directory: dir, files: countFiles(dir), reused: true, devServer });
+      return;
+    }
 
     mkdirSync(dir, { recursive: true });
     mkdirSync(join(dir, "src"), { recursive: true });
@@ -361,9 +361,151 @@ export const command: CommandHandler = {
       created.push(".git/");
     }
 
-    ok({ name, template, category: "inline", directory: dir, files: created.length });
+    const devServer = startDev ? installAndStartDevServer(dir) : null;
+    emitCreateSuccess({ name, template, category: "inline", directory: dir, files: created.length, devServer });
   },
 };
+
+interface PrepareOptions {
+  reuse: boolean;
+  force: boolean;
+}
+
+function resolveCreateDirectory(parsed: ReturnType<typeof parseArgs>, name: string, defaultDir: string): string {
+  const dir = flagStr(parsed, "dir", "");
+  const parentDir = flagStr(parsed, "parent-dir", "");
+
+  if (dir && parentDir) {
+    fail("Use either --dir for an exact output directory or --parent-dir to create under a parent, not both.");
+  }
+
+  if (dir) return resolve(dir);
+  if (parentDir) return resolve(parentDir, name);
+  return resolve(defaultDir);
+}
+
+function prepareOutputDirectory(dir: string, options: PrepareOptions): { reused: boolean } {
+  if (!existsSync(dir)) return { reused: false };
+
+  if (options.force) {
+    rmSync(dir, { recursive: true, force: true });
+    return { reused: false };
+  }
+
+  if (options.reuse && isValidProjectDirectory(dir)) {
+    return { reused: true };
+  }
+
+  failExistingDirectory(dir);
+}
+
+function isValidProjectDirectory(dir: string): boolean {
+  return existsSync(join(dir, "package.json")) ||
+    existsSync(join(dir, "requirements.txt")) ||
+    existsSync(join(dir, "pyproject.toml")) ||
+    existsSync(join(dir, "Cargo.toml")) ||
+    existsSync(join(dir, "go.mod")) ||
+    existsSync(join(dir, "src")) ||
+    existsSync(join(dir, "index.html"));
+}
+
+function failExistingDirectory(dir: string): never {
+  failWithDetails(
+    `Directory already exists: "${dir}"`,
+    {
+      errorCode: "E_EXISTS",
+      directory: dir,
+      suggestions: [
+        "Pass --reuse to reuse an existing valid project directory.",
+        "Pass --force to delete and recreate the directory.",
+        "Pass --dir <path> to choose a different exact output directory.",
+        "Pass --parent-dir <path> to create <path>/<name>.",
+      ],
+    },
+  );
+}
+
+function installAndStartDevServer(dir: string): DetachedDevServer {
+  const logFile = getProjectDevLogFile(dir);
+  const installCommand = detectInstallCommand(dir);
+  if (installCommand) {
+    const install = runLoggedCommand(installCommand, dir, logFile);
+    if (install.status !== 0) {
+      failWithDetails(
+        `Failed to install dependencies for "${dir}". See log for details.`,
+        { errorCode: "E_INSTALL", directory: dir, logFile, status: install.status },
+      );
+    }
+  }
+
+  const startCommand = detectDevCommand(dir);
+  if (!startCommand) {
+    failWithDetails(
+      `Cannot detect dev server command for "${dir}".`,
+      { errorCode: "E_DEV_COMMAND", directory: dir, logFile, suggestions: ["Add a package.json dev script or start the server with jeriko dev start --dir <path> --cmd <command>."] },
+    );
+  }
+
+  return startDetachedDevServer(startCommand, dir);
+}
+
+function detectInstallCommand(dir: string): string | null {
+  if (existsSync(join(dir, "requirements.txt"))) {
+    return "python3 -m venv venv && ./venv/bin/pip install -r requirements.txt";
+  }
+  if (!existsSync(join(dir, "package.json"))) return null;
+  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install --no-frozen-lockfile";
+  if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"))) return "bun install";
+  if (existsSync(join(dir, "yarn.lock"))) return "yarn install";
+  return "npm install";
+}
+
+function runLoggedCommand(command: string, dir: string, logFile: string): { status: number } {
+  mkdirSync(dirname(logFile), { recursive: true });
+  const fd = openSync(logFile, "a");
+  try {
+    writeSync(fd, `\n[${new Date().toISOString()}] running: ${command}\n`);
+    const result = spawnSync(command, [], {
+      cwd: dir,
+      shell: true,
+      stdio: ["ignore", fd, fd],
+      env: process.env,
+    });
+    return { status: result.status ?? 1 };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function emitCreateSuccess(args: {
+  name: string;
+  template: string;
+  category: TemplateInfo["category"];
+  directory: string;
+  files: number;
+  reused?: boolean;
+  devServer: DetachedDevServer | null;
+}): never {
+  const base = {
+    name: args.name,
+    template: args.template,
+    category: args.category,
+    directory: args.directory,
+    files: args.files,
+    ...(args.reused ? { reused: true } : {}),
+  };
+
+  if (!args.devServer) {
+    ok(base);
+  }
+
+  ok({
+    ...base,
+    pid: args.devServer.pid,
+    logFile: args.devServer.logFile,
+    dev: args.devServer,
+  });
+}
 
 function countFiles(dir: string): number {
   let count = 0;
