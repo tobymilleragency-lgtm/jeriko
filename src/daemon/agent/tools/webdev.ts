@@ -82,13 +82,30 @@ function resolveProjectDir(args: Record<string, unknown>): { dir: string } | { e
  * then probes common ports with fetch.
  */
 async function detectPort(dir: string, argsPort?: unknown): Promise<number | null> {
-  // Explicit port from args
+  const configured = detectConfiguredPort(dir, argsPort);
+  if (configured) return configured;
+
+  // Status/debug actions want to discover an already-running app. Restart does
+  // not use this path because probing common ports can pick an unrelated server
+  // like OpenHands on :3000 and then wait on or kill the wrong process.
+  for (const port of COMMON_PORTS) {
+    try {
+      const res = await fetch(`http://localhost:${port}`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (res.ok || res.status < 500) return port;
+    } catch { /* not running on this port */ }
+  }
+
+  return null;
+}
+
+function detectConfiguredPort(dir: string, argsPort?: unknown): number | null {
   if (argsPort !== undefined && argsPort !== null) {
     const port = Number(argsPort);
     if (!isNaN(port) && port > 0) return port;
   }
 
-  // Try reading port from vite.config.ts
   const viteConfig = join(dir, "vite.config.ts");
   if (existsSync(viteConfig)) {
     try {
@@ -98,25 +115,14 @@ async function detectPort(dir: string, argsPort?: unknown): Promise<number | nul
     } catch { /* ignore */ }
   }
 
-  // Try reading port from package.json scripts (--port N)
   const pkgPath = join(dir, "package.json");
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
       const devScript = pkg.scripts?.dev ?? pkg.scripts?.start ?? "";
-      const portMatch = devScript.match(/--port\s+(\d+)/);
+      const portMatch = String(devScript).match(/--port\s+(\d+)/);
       if (portMatch?.[1]) return parseInt(portMatch[1], 10);
     } catch { /* ignore */ }
-  }
-
-  // Probe common ports
-  for (const port of COMMON_PORTS) {
-    try {
-      const res = await fetch(`http://localhost:${port}`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (res.ok || res.status < 500) return port;
-    } catch { /* not running on this port */ }
   }
 
   return null;
@@ -184,6 +190,36 @@ async function waitForHttpReady(port: number, timeoutMs = 15_000): Promise<boole
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;
+}
+
+function pidsOnPort(port: number): number[] {
+  const lsof = spawnSync("lsof", ["-ti", `:${port}`], { timeout: 5000 });
+  return (lsof.stdout?.toString().trim() ?? "")
+    .split("\n")
+    .filter(Boolean)
+    .map((pid) => parseInt(pid, 10))
+    .filter((pid) => !isNaN(pid));
+}
+
+function pidCwd(pid: number): string | null {
+  const resolved = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2000 });
+  if (resolved.status !== 0) return null;
+  return resolved.stdout.toString().trim() || null;
+}
+
+async function isPortFree(port: number): Promise<boolean> {
+  return pidsOnPort(port).length === 0;
+}
+
+async function chooseRestartPort(dir: string, argsPort?: unknown): Promise<{ port: number; explicit: boolean }> {
+  const explicitPort = detectConfiguredPort(dir, argsPort);
+  if (explicitPort) return { port: explicitPort, explicit: argsPort !== undefined && argsPort !== null && Number(argsPort) > 0 };
+
+  for (const candidate of COMMON_PORTS) {
+    if (await isPortFree(candidate)) return { port: candidate, explicit: false };
+  }
+
+  return { port: 3000, explicit: false };
 }
 
 function stopProcessGroup(pid: number | undefined): void {
@@ -626,9 +662,10 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
   const { dir } = resolved;
 
   try {
-    // Determine port before building the command so Vite can receive explicit
-    // --port/--strictPort flags. Non-Vite scripts still get PORT in env.
-    const port = await detectPort(dir, args.port) ?? 3000;
+    // Select a restart port without probing unrelated running services. If the
+    // model does not specify a port, pick the first free common dev port.
+    const selected = await chooseRestartPort(dir, args.port);
+    const port = selected.port;
 
     // Detect the dev command
     const detected = detectDevCommand(dir, port);
@@ -639,20 +676,33 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
       });
     }
 
-    // Kill existing process on the port
+    // Stop only existing processes that belong to this project. Never kill an
+    // unrelated process just because it owns the desired port.
     try {
-      const lsof = spawnSync("lsof", ["-ti", `:${port}`], { timeout: 5000 });
-      const pids = (lsof.stdout?.toString().trim() ?? "").split("\n").filter(Boolean);
-      for (const pid of pids) {
-        const pidNum = parseInt(pid, 10);
-        if (!isNaN(pidNum)) {
-          try { process.kill(pidNum); } catch { /* already dead */ }
+      const pids = pidsOnPort(port);
+      const foreignPids: number[] = [];
+      for (const pidNum of pids) {
+        const cwd = pidCwd(pidNum);
+        if (cwd && cwd.startsWith(dir)) {
+          stopProcessGroup(pidNum);
+        } else {
+          foreignPids.push(pidNum);
         }
       }
-      // Wait briefly for port to be released
-      if (pids.length > 0) {
-        await new Promise((r) => setTimeout(r, 500));
+      if (foreignPids.length > 0) {
+        if (selected.explicit) {
+          return JSON.stringify({
+            ok: false,
+            error: `Port ${port} is already used by another process; refusing to kill unrelated PID(s): ${foreignPids.join(", ")}`,
+            data: { port, foreignPids, directory: dir },
+          });
+        }
+        const fallback = await chooseRestartPort(dir, undefined);
+        if (fallback.port !== port) {
+          return await actionRestart({ ...args, port: fallback.port });
+        }
       }
+      if (pids.length > 0) await new Promise((r) => setTimeout(r, 500));
     } catch { /* no process on port */ }
 
     // Start the dev server in the background and capture logs. Do not report
