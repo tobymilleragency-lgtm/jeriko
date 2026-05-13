@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { createToolRepeatGuard, createToolRoundRepeatGuard, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { createToolRepeatGuard, createToolRoundRepeatGuard, isFinalAssistantReport, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -56,6 +56,16 @@ describe("Repeated tool-call guard", () => {
     const blocked = guard(round.map((call, index) => ({ ...call, id: `third-${index}` })));
     expect(blocked).toContain("Repeated no-progress tool round blocked");
     expect(blocked).toContain("Home.tsx");
+  });
+});
+
+describe("Final report detection", () => {
+  test("detects verified final reports with build evidence", () => {
+    expect(isFinalAssistantReport(`## Verified fixed now\n- Done.\n\n## Exact evidence\n- pnpm check passed\n- pnpm build passed`)).toBe(true);
+  });
+
+  test("does not treat ordinary progress text as final", () => {
+    expect(isFinalAssistantReport("I will run pnpm build next after checking the file.")).toBe(false);
   });
 });
 

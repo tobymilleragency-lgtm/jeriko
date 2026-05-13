@@ -5,6 +5,7 @@ import { isPathAllowed, isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { formatCachedReadResult, getReadCacheLookup, storeReadCache } from "./read-cache.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
@@ -26,12 +27,20 @@ async function execute(args: Record<string, unknown>): Promise<string> {
       return JSON.stringify({ ok: false, error: `Not a file: ${absPath}` });
     }
 
+    const cached = await getReadCacheLookup(absPath, offset, limit);
+    if (cached.hit) return formatCachedReadResult(cached);
+
     const content = await readFile(absPath, "utf-8");
-    if (content.length === 0) return "(empty file)";
+    if (content.length === 0) {
+      storeReadCache(cached, "(empty file)");
+      return "(empty file)";
+    }
 
     const lines = content.split("\n");
     const sliced = lines.slice(offset, offset + limit);
-    return sliced.map((line, i) => `${offset + i + 1}\t${line}`).join("\n");
+    const result = sliced.map((line, i) => `${offset + i + 1}\t${line}`).join("\n");
+    storeReadCache(cached, result);
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return JSON.stringify({ ok: false, error: msg });

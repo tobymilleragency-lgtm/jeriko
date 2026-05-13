@@ -267,6 +267,13 @@ export async function* runAgent(
     totalTokensIn += turnTokensIn;
     totalTokensOut += turnTokensOut;
 
+    // If the model already produced a final verification/report-style answer,
+    // treat that as DONE even if it also emitted stray tool calls. This prevents
+    // post-report read/check loops after the requested final report exists.
+    if (toolCalls.length > 0 && isFinalAssistantReport(fullText)) {
+      toolCalls.length = 0;
+    }
+
     // Persist assistant message — always persist, even when text is empty.
     // Tool-only responses (empty text + tool_calls) must be stored so that
     // session history can be fully reconstructed from DB. Without this,
@@ -472,6 +479,15 @@ function summarizeToolCall(toolCall: ToolCall): string {
     }
   } catch { /* ignore */ }
   return `${toolCall.name} ${toolCall.arguments.slice(0, 240)}`;
+}
+
+export function isFinalAssistantReport(text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (!normalized.trim()) return false;
+  const hasReportHeading = /(^|\n)\s*#{0,3}\s*(verified fixed now|exact evidence|plain answer|verification results|files changed|remaining issues)\b/i.test(text);
+  const hasDoneSignal = /\b(done|completed|verified|passes|passed)\b/i.test(text);
+  const hasVerification = /\b(pnpm|bun|npm)\s+(run\s+)?(check|build|test)\b|\btsc\s+--noemit\b|\bbuild\s+passed\b/i.test(text);
+  return hasReportHeading && hasDoneSignal && hasVerification;
 }
 
 /**

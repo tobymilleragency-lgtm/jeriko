@@ -173,6 +173,7 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
   await Promise.all([
     import("./agent/tools/bash.js"),
     import("./agent/tools/read.js"),
+    import("./agent/tools/workspace-status.js"),
     import("./agent/tools/write.js"),
     import("./agent/tools/edit.js"),
     import("./agent/tools/list.js"),

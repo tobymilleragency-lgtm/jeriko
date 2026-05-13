@@ -134,6 +134,7 @@ async function loadBuiltinCommands(): Promise<void> {
 
   // Agent
   const { command: ask } = await import("./commands/agent/ask.js");
+  const { command: diagnose } = await import("./commands/agent/diagnose.js");
   const { command: memory } = await import("./commands/agent/memory.js");
   const { command: discover } = await import("./commands/agent/discover.js");
   const { command: prompt } = await import("./commands/agent/prompt.js");
@@ -169,7 +170,7 @@ async function loadBuiltinCommands(): Promise<void> {
     connectors,
   ], "integrations");
   registerAll([code, create, dev, parallel], "dev");
-  registerAll([ask, memory, discover, prompt, skill, share, provider], "agent");
+  registerAll([ask, diagnose, memory, discover, prompt, skill, share, provider], "agent");
   registerAll([init, onboard, server, task, setup, update], "automation");
   registerAll([install, trust, uninstall], "plugin");
   registerAll([planCommand, upgradeCommand, billingCommand], "billing");
