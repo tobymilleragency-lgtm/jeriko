@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
+import * as net from "node:net";
 
 import { clearTools, registerTool, getTool } from "../../src/daemon/agent/tools/registry.js";
 
@@ -770,6 +771,28 @@ describe("webdev tool — restart action", () => {
     expect(result.data.command).toBe("vite --host --port 59998 --strictPort");
     expect(result.data.runner).toBe("pnpm");
     expect(result.data.logFile).toContain("webdev-restart.log");
+  });
+
+  it("ignores client sockets that merely use a port as a local endpoint", async () => {
+    const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
+    const server = net.createServer((socket) => {
+      socket.on("error", () => undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    const localPort = 59997;
+    const client = net.connect({ host: "127.0.0.1", port: address.port, localPort });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once("connect", resolve);
+        client.once("error", reject);
+      });
+      expect(__webdevTest.pidsOnPort(localPort)).toEqual([]);
+    } finally {
+      client.destroy();
+      server.close();
+    }
   });
 });
 

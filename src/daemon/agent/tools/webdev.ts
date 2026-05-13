@@ -192,14 +192,25 @@ async function waitForHttpReady(port: number, timeoutMs = 15_000): Promise<boole
   return false;
 }
 
-function pidsOnPort(port: number): number[] {
-  const lsof = spawnSync("lsof", ["-ti", `:${port}`], { timeout: 5000 });
-  return (lsof.stdout?.toString().trim() ?? "")
+function pidsFromLsofOutput(output: string): number[] {
+  return output
+    .trim()
     .split("\n")
     .filter(Boolean)
     .map((pid) => parseInt(pid, 10))
     .filter((pid) => !isNaN(pid));
 }
+
+function pidsOnPort(port: number): number[] {
+  // Use LISTEN-only TCP matches. `lsof -ti :<port>` also matches unrelated
+  // outbound/client sockets whose remote endpoint uses that port. That made
+  // webdev restart treat Chrome's NetworkService as the owner of an app port,
+  // then loop on diagnostics until the agent hit max rounds.
+  const lsof = spawnSync("lsof", ["-nP", "-tiTCP", `:${port}`, "-sTCP:LISTEN"], { timeout: 5000 });
+  return pidsFromLsofOutput(lsof.stdout?.toString() ?? "");
+}
+
+export const __webdevTest = { pidsFromLsofOutput, pidsOnPort };
 
 function pidCwd(pid: number): string | null {
   const resolved = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2000 });
