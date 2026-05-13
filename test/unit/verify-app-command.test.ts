@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { command as verifyAppCommand, scanPlaceholders, inferAppProfile } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -53,6 +53,46 @@ describe("verify-app command", () => {
       fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
 
       expect(inferAppProfile(dir)).toBe("web-db-user");
+      expect(defaultRouteForProfile("web-db-user")).toBe("/api/health");
+      expect(defaultRouteForProfile("web-static")).toBe("/");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts web-db-user apps and probes the default health route", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-health-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-health",
+        scripts: {
+          start: "node server.mjs",
+        },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const server = http.createServer((req, res) => {
+          if (req.url === '/api/health') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+          }
+          res.writeHead(404);
+          res.end('not found');
+        });
+        server.listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--port", "4291"]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.gates.map((gate: any) => gate.name)).toContain("start_route");
+      const startGate = result.data.gates.find((gate: any) => gate.name === "start_route");
+      expect(startGate.ok).toBe(true);
+      expect(startGate.output).toContain('"ok":true');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

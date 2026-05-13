@@ -46,8 +46,8 @@ export const command: CommandHandler = {
     const profile = parseProfile(flagStr(parsed, "profile", "") || inferAppProfile(dir));
     const skipInstall = flagBool(parsed, "skip-install");
     const skipStart = flagBool(parsed, "skip-start");
-    const route = flagStr(parsed, "route", "/");
     const port = flagStr(parsed, "port", "4173");
+    const route = flagStr(parsed, "route", defaultRouteForProfile(profile));
 
     const gates: VerificationGate[] = [];
     const placeholders = scanPlaceholders(dir);
@@ -109,6 +109,10 @@ function printHelp(): void {
 function parseProfile(profile: string): AppProfile {
   if (profile === "web-static" || profile === "web-db-user") return profile;
   fail(`Unknown app profile: ${profile}. Expected web-static or web-db-user.`);
+}
+
+export function defaultRouteForProfile(profile: AppProfile): string {
+  return profile === "web-db-user" ? "/api/health" : "/";
 }
 
 export function inferAppProfile(dir: string): AppProfile {
