@@ -60,6 +60,37 @@ function messageTextContent(content: DriverMessage["content"]): string {
 
 const OPENAI_CODEX_REQUEST_TIMEOUT_MS = 600_000;
 
+type CodexReaderResult = { done: boolean; value?: Uint8Array };
+type CodexStreamReader = {
+  read: () => Promise<CodexReaderResult>;
+  releaseLock: () => void;
+};
+type CodexReadResult =
+  | { aborted: false; result: CodexReaderResult }
+  | { aborted: true; result?: never };
+
+async function readCodexChunk(
+  reader: CodexStreamReader,
+  signal: AbortSignal,
+): Promise<CodexReadResult> {
+  if (signal.aborted) return { aborted: true };
+
+  let removeAbortListener: (() => void) | undefined;
+  const abortPromise = new Promise<CodexReadResult>((resolve) => {
+    const onAbort = () => resolve({ aborted: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+  });
+
+  const readPromise = reader.read().then((result): CodexReadResult => ({ aborted: false, result }));
+  try {
+    return await Promise.race([readPromise, abortPromise]);
+  } finally {
+    removeAbortListener?.();
+    readPromise.catch(() => undefined);
+  }
+}
+
 export class OpenAICodexDriver implements LLMDriver {
   readonly name = "openai-codex";
 
@@ -258,10 +289,17 @@ export class OpenAICodexDriver implements LLMDriver {
         return { id: `${callId}|${itemId}`, name, arguments: args };
       };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      try {
+        while (true) {
+          const readResult = await readCodexChunk(reader, signal);
+          if (readResult.aborted) {
+            yield { type: "error", content: "Request aborted" };
+            yield { type: "done", content: "" };
+            return;
+          }
+          const { done, value } = readResult.result;
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
         let idx = buffer.indexOf("\n\n");
         while (idx !== -1) {
@@ -360,6 +398,9 @@ export class OpenAICodexDriver implements LLMDriver {
             return;
           }
         }
+        }
+      } finally {
+        reader.releaseLock();
       }
 
       yield { type: "done", content: "" };
