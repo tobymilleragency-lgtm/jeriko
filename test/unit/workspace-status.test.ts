@@ -10,6 +10,7 @@ describe("workspace status project-state", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-workspace-state-"));
     try {
       fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "state-app" }));
       fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
         name: "State App",
         template: "web-db-user",
@@ -24,6 +25,8 @@ describe("workspace status project-state", () => {
       expect((status.projectState as any).profile).toBe("web-db-user");
       expect((status.projectState as any).routes.health).toBe("/api/health");
       expect((status.projectState as any).commands.build).toBe("pnpm run build");
+      expect((status.dependencyStatus as any).missingNodeModules).toBe(true);
+      expect((status.dependencyStatus as any).message).toContain("node_modules missing");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

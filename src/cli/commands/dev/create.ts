@@ -300,13 +300,13 @@ export const command: CommandHandler = {
 
       const files = countFiles(dir);
 
-      if (initGit) {
-        const { execSync } = await import("node:child_process");
-        execSync("git init", { cwd: dir, encoding: "utf-8" });
+      const gitInitialized = initGit || shouldAutoInitGit(dir);
+      if (gitInitialized) {
+        initializeGitRepository(dir);
       }
 
       const devServer = startDev ? installAndStartDevServer(dir) : null;
-      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, devServer });
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, devServer });
       return;
     }
 
@@ -370,14 +370,14 @@ export const command: CommandHandler = {
 
     const created = ["package.json", "tsconfig.json", "src/index.ts", ".gitignore"];
 
-    if (initGit) {
-      const { execSync } = await import("node:child_process");
-      execSync("git init", { cwd: dir, encoding: "utf-8" });
+    const gitInitialized = initGit || shouldAutoInitGit(dir);
+    if (gitInitialized) {
+      initializeGitRepository(dir);
       created.push(".git/");
     }
 
     const devServer = startDev ? installAndStartDevServer(dir) : null;
-    emitCreateSuccess({ name, template, category: "inline", directory: dir, files: created.length, devServer });
+    emitCreateSuccess({ name, template, category: "inline", directory: dir, files: created.length, gitInitialized, devServer });
   },
 };
 
@@ -397,6 +397,24 @@ function resolveCreateDirectory(parsed: ReturnType<typeof parseArgs>, name: stri
   if (dir) return resolve(dir);
   if (parentDir) return resolve(parentDir, name);
   return resolve(defaultDir);
+}
+
+function shouldAutoInitGit(dir: string): boolean {
+  const projectsRoot = resolve(PROJECTS_DIR);
+  const resolvedDir = resolve(dir);
+  return resolvedDir === projectsRoot || resolvedDir.startsWith(`${projectsRoot}/`);
+}
+
+function initializeGitRepository(dir: string): void {
+  if (existsSync(join(dir, ".git"))) return;
+  const result = spawnSync("git", ["init"], { cwd: dir, encoding: "utf8", timeout: 30_000 });
+  if (result.status !== 0) {
+    failWithDetails(`Failed to initialize git repository for "${dir}".`, {
+      errorCode: "E_GIT_INIT",
+      directory: dir,
+      stderr: result.stderr?.toString().trim() ?? "",
+    });
+  }
 }
 
 function prepareOutputDirectory(dir: string, options: PrepareOptions): { reused: boolean } {
@@ -502,6 +520,7 @@ function emitCreateSuccess(args: {
   directory: string;
   files: number;
   projectState?: string;
+  gitInitialized?: boolean;
   reused?: boolean;
   devServer: DetachedDevServer | null;
 }): never {
@@ -512,6 +531,7 @@ function emitCreateSuccess(args: {
     directory: args.directory,
     files: args.files,
     ...(args.projectState ? { projectState: args.projectState } : {}),
+    ...(args.gitInitialized ? { gitInitialized: true } : {}),
     ...(args.reused ? { reused: true } : {}),
   };
 

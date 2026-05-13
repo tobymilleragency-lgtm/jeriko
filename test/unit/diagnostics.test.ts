@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initDatabase, closeDatabase } from "../../src/daemon/storage/db.js";
@@ -49,5 +50,21 @@ describe("session diagnostics", () => {
     expect(status.latestUserPrompt).toBe("Improve the CRM");
     expect(Array.isArray(status.recentToolCalls)).toBe(true);
     expect((status.recentToolCalls as unknown[]).length).toBe(1);
+  });
+
+  test("diagnostics do not climb to a parent git repository for generated app workspaces", () => {
+    const session = setupDb();
+    const appDir = join(dir, "projects", "generated-app");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "generated-app" }));
+    writeFileSync(join(dir, "parent-only.txt"), "parent change\n");
+    spawnSync("git", ["init"], { cwd: dir });
+
+    const workspace = buildWorkspaceStatus({ sessionId: session.id, cwd: appDir });
+    const diagnosis = buildLatestDiagnosis({ sessionId: session.id, cwd: appDir });
+
+    expect((workspace.git as Record<string, unknown>).status).toBe("not a git repository at cwd");
+    expect(diagnosis.changedFiles).toEqual([]);
+    expect(diagnosis.diffStat).toBe("");
   });
 });

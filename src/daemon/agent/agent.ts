@@ -54,6 +54,10 @@ export interface AgentRunConfig {
   maxHistoryTokens?: number;
   /** Optional AbortSignal for cancellation/timeout. Forwarded to the LLM driver. */
   signal?: AbortSignal;
+  /** Hard wall-clock cap for the whole agent run. Defaults to 10 minutes. */
+  maxDurationMs?: number;
+  /** Max time to wait for a new model stream event before diagnosing a stuck/no-progress loop. Defaults to 3 minutes. */
+  noProgressTimeoutMs?: number;
   /** Nesting depth for sub-agent orchestration (0 = top-level). */
   depth?: number;
 }
@@ -71,6 +75,16 @@ export type AgentEvent =
 // ---------------------------------------------------------------------------
 // Agent loop
 // ---------------------------------------------------------------------------
+
+export const DEFAULT_AGENT_MAX_DURATION_MS = 10 * 60_000;
+export const DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS = 3 * 60_000;
+
+export class AgentNoProgressError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentNoProgressError";
+  }
+}
 
 /**
  * Run the agent loop as an async generator.
@@ -95,6 +109,14 @@ export async function* runAgent(
   config: AgentRunConfig,
   conversationHistory: DriverMessage[],
 ): AsyncGenerator<AgentEvent> {
+  const startedAt = Date.now();
+  const maxDurationMs = config.maxDurationMs ?? DEFAULT_AGENT_MAX_DURATION_MS;
+  const noProgressTimeoutMs = config.noProgressTimeoutMs ?? DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS;
+  const runAbort = new AbortController();
+  const forwardAbort = () => runAbort.abort(config.signal?.reason);
+  if (config.signal?.aborted) forwardAbort();
+  else config.signal?.addEventListener("abort", forwardAbort, { once: true });
+
   // ─── Step 1: Resolve model and detect capabilities ───────────────────
   // Use the driver's canonical name as the provider — not the user-facing alias.
   // The driver registry normalizes "ollama" → "local", "claude" → "anthropic", etc.
@@ -145,7 +167,7 @@ export async function* runAgent(
     // Pass capabilities to driver for API-specific adaptations
     capabilities: caps,
     // Forward abort signal to driver for cancellation/timeout
-    signal: config.signal,
+    signal: runAbort.signal,
   };
 
   // ─── Step 4: Dynamic compaction threshold from context window ────────
@@ -153,7 +175,7 @@ export async function* runAgent(
   const compactionThreshold = Math.floor(contextLimit * COMPACTION_CONTEXT_RATIO);
 
   // ─── Step 5: Initialize execution guard ──────────────────────────────
-  const guard = new ExecutionGuard();
+  const guard = new ExecutionGuard({ maxDurationMs });
 
   // ─── Step 6: Pre-trim history to fit within configured limits ────────
   // Prevents sending unbounded history to token-limited providers (Groq, etc.)
@@ -222,7 +244,24 @@ export async function* runAgent(
     let hadError = false;
 
     try {
-      for await (const chunk of driver.chat(messages, driverConfig)) {
+      const stream = driver.chat(messages, driverConfig)[Symbol.asyncIterator]();
+      while (true) {
+        const chunkResult = await nextStreamChunkWithNoProgressTimeout(stream, {
+          startedAt,
+          maxDurationMs,
+          noProgressTimeoutMs,
+          abort: () => runAbort.abort("agent-no-progress"),
+          describe: () => buildStuckDiagnosis({
+            reason: "No new model/tool/DB progress was observed while waiting for the model stream.",
+            round,
+            elapsedMs: Date.now() - startedAt,
+            idleMs: Math.min(noProgressTimeoutMs, Math.max(0, maxDurationMs - (Date.now() - startedAt))),
+            model: resolvedModelId,
+            backend: provider,
+          }),
+        });
+        if (chunkResult.done) break;
+        const chunk = chunkResult.value;
         switch (chunk.type) {
           case "text":
             fullText += chunk.content;
@@ -251,6 +290,16 @@ export async function* runAgent(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      if (err instanceof AgentNoProgressError) {
+        const diagnosis = errMsg;
+        const guardMsg = addMessage(config.sessionId, "assistant", diagnosis, { input: totalTokensIn, output: estimateTokens(diagnosis) });
+        addPart(guardMsg.id, "text", diagnosis);
+        touchSession(config.sessionId);
+        yield { type: "text_delta", content: diagnosis };
+        yield { type: "error", message: diagnosis };
+        yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
+        return;
+      }
       yield { type: "error", message: errMsg };
       log.error(`Agent loop error on round ${round}: ${errMsg}`);
       return;
@@ -398,12 +447,78 @@ export async function* runAgent(
     // Always clear active context when the agent loop exits,
     // regardless of whether it completed normally or threw.
     clearActiveContext();
+    config.signal?.removeEventListener("abort", forwardAbort);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+export interface NoProgressTimeoutOptions {
+  startedAt: number;
+  maxDurationMs: number;
+  noProgressTimeoutMs: number;
+  abort?: () => void;
+  describe: () => string;
+}
+
+export async function nextStreamChunkWithNoProgressTimeout<T>(
+  stream: AsyncIterator<T>,
+  options: NoProgressTimeoutOptions,
+): Promise<IteratorResult<T>> {
+  const elapsedMs = Date.now() - options.startedAt;
+  const remainingWallMs = options.maxDurationMs - elapsedMs;
+  const timeoutMs = Math.min(options.noProgressTimeoutMs, remainingWallMs);
+
+  if (timeoutMs <= 0) {
+    options.abort?.();
+    await stream.return?.();
+    throw new AgentNoProgressError(options.describe());
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const nextPromise = stream.next();
+  // If the timeout wins and aborts the driver, the already-started next()
+  // may later reject. Observe it here so it cannot become an unhandled rejection.
+  nextPromise.catch(() => undefined);
+  try {
+    return await Promise.race([
+      nextPromise,
+      new Promise<IteratorResult<T>>((_, reject) => {
+        timer = setTimeout(() => {
+          options.abort?.();
+          reject(new AgentNoProgressError(options.describe()));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof AgentNoProgressError) {
+      await stream.return?.().catch(() => undefined);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function buildStuckDiagnosis(args: {
+  reason: string;
+  round: number;
+  elapsedMs: number;
+  idleMs: number;
+  model: string;
+  backend: string;
+}): string {
+  return [
+    "Agent stuck/no-progress guard stopped the run.",
+    args.reason,
+    `Diagnosis: model loop produced no new stream, tool, or persisted DB progress for ${Math.round(args.idleMs / 1000)}s while the foreground ask was still active.`,
+    `Context: backend=${args.backend} model=${args.model} round=${args.round + 1} elapsed=${Math.round(args.elapsedMs / 1000)}s.`,
+    "Action taken: aborted the model stream and persisted this diagnosis instead of allowing Jeriko to spin indefinitely.",
+    "Exit status: timeout/non-zero for foreground ask clients.",
+  ].join("\n");
+}
 
 // Repeated identical tool calls are almost always no-progress loops. This hit
 // Jeriko's app-builder flow where the model called `jeriko create --help &&

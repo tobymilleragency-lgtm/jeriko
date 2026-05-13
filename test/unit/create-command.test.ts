@@ -46,6 +46,22 @@ describe("create command templates", () => {
     }
   });
 
+  it("auto-initializes git for generated apps under ~/.jeriko/projects", async () => {
+    const name = `jeriko-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const projectsDir = path.join(os.homedir(), ".jeriko", "projects");
+    const projectDir = path.join(projectsDir, name);
+    try {
+      const result = await runCreateCommand(["node", name, "--parent-dir", projectsDir]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.directory).toBe(projectDir);
+      expect(result.data.gitInitialized).toBe(true);
+      expect(fs.existsSync(path.join(projectDir, ".git"))).toBe(true);
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("writes project-state for webdev generated apps", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-state-"));
     const projectDir = path.join(dir, "state-app");

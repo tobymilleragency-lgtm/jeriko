@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { getDatabase } from "../storage/db.js";
 import { readProjectState } from "../../cli/commands/dev/project-state.js";
+import { getDependencyStatus } from "../../cli/commands/dev/verify-app.js";
 
 type Row = Record<string, unknown>;
 
@@ -53,15 +54,38 @@ function latestUserPrompt(sessionId: string): string {
 }
 
 function git(args: string[], cwd: string): string {
-  const res = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 5000 });
+  const res = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000,
+    env: boundedGitEnv(cwd),
+  });
   if (res.status !== 0) return "";
   return (res.stdout ?? "").trim();
 }
 
-function shell(command: string, cwd: string): string {
-  const res = spawnSync("bash", ["-lc", command], { cwd, encoding: "utf8", timeout: 5000 });
-  if (res.status !== 0) return "";
-  return (res.stdout ?? "").trim();
+function boundedGitEnv(cwd: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    // Do not let diagnostics/status commands discover a repository above the
+    // inspected workspace. This is critical for generated apps under
+    // ~/.jeriko/projects/* when the user's home directory is itself a git repo.
+    GIT_CEILING_DIRECTORIES: dirname(cwd),
+  };
+}
+
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync.native(a) === realpathSync.native(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+}
+
+function localGitRepository(cwd: string): boolean {
+  if (!existsSync(join(cwd, ".git"))) return false;
+  const topLevel = git(["rev-parse", "--show-toplevel"], cwd);
+  return Boolean(topLevel) && samePath(topLevel, cwd);
 }
 
 export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
@@ -69,6 +93,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
   const projectState = readProjectState(cwd);
   const session = latestSession(opts.sessionId);
   const parts = session ? sessionParts(asString(session.id), opts.limit ?? 80) : [];
+  const isLocalGitRepo = localGitRepository(cwd);
   const recentToolCalls = parts.filter((p) => p.type === "tool_call").slice(0, 12).map((p) => ({
     rowid: p.rowid,
     tool: p.tool_name,
@@ -85,7 +110,8 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
     ok: true,
     cwd,
     projectState,
-    git: existsSync(`${cwd}/.git`) ? {
+    dependencyStatus: getDependencyStatus(cwd),
+    git: isLocalGitRepo ? {
       branch: git(["branch", "--show-current"], cwd),
       status: git(["status", "--short"], cwd),
       diffStat: git(["diff", "--stat"], cwd),
@@ -107,6 +133,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
 
 export function buildLatestDiagnosis(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
+  const isLocalGitRepo = localGitRepository(cwd);
   const session = latestSession(opts.sessionId);
   if (!session) return { ok: false, error: "No sessions found" };
   const sessionId = asString(session.id);
@@ -153,8 +180,8 @@ export function buildLatestDiagnosis(opts: DiagnoseLatestOptions = {}): Record<s
     latestToolResult: latestResult ? { rowid: latestResult.rowid, tool: latestResult.tool_name, type: latestResult.type, content: truncate(asString(latestResult.content), 700) } : null,
     repeatedToolCalls,
     lastErrorOrWarning: latestError ? { rowid: latestError.rowid, type: latestError.type, tool: latestError.tool_name, content: truncate(asString(latestError.content), 700) } : null,
-    changedFiles: existsSync(`${cwd}/.git`) ? shell("git status --short", cwd).split("\n").filter(Boolean) : [],
-    diffStat: existsSync(`${cwd}/.git`) ? git(["diff", "--stat"], cwd) : "",
+    changedFiles: isLocalGitRepo ? git(["status", "--short"], cwd).split("\n").filter(Boolean) : [],
+    diffStat: isLocalGitRepo ? git(["diff", "--stat"], cwd) : "",
     likelyStuckReason,
   };
 }

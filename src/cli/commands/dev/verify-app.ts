@@ -22,6 +22,13 @@ export interface PlaceholderHit {
   token: string;
 }
 
+export interface DependencyStatus {
+  packageJson: boolean;
+  nodeModules: boolean;
+  missingNodeModules: boolean;
+  message: string;
+}
+
 const PLACEHOLDER_PATTERN = /\{\{[a-zA-Z0-9_]+\}\}|__PLACEHOLDER__|<%=?\s*[^%]+%>/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
 const MAX_OUTPUT = 12_000;
@@ -67,13 +74,40 @@ export const command: CommandHandler = {
       });
     }
 
-    if (!skipInstall) {
+    const dependencyStatus = getDependencyStatus(dir);
+    const mustInstallBeforeVerification = dependencyStatus.packageJson && !dependencyStatus.nodeModules;
+    const shouldRunInstall = !skipInstall || mustInstallBeforeVerification;
+    if (shouldRunInstall) {
       const installCommand = projectState?.commands?.install || detectFrozenInstallCommand(dir);
       if (installCommand) {
         const gate = runGate("install", installCommand, dir);
+        if (skipInstall && mustInstallBeforeVerification) {
+          gate.output = `node_modules missing; --skip-install ignored so frozen install runs before check/build.\n${gate.output || ""}`.slice(0, MAX_OUTPUT);
+        }
         gates.push(gate);
-        if (!gate.ok) return failGate(dir, profile, gates, gate);
+        if (!gate.ok) return failGate(dir, profile, gates, gate, dependencyStatus);
+      } else if (mustInstallBeforeVerification) {
+        const gate: VerificationGate = {
+          name: "install",
+          ok: false,
+          status: 1,
+          output: "node_modules is missing and no frozen install command could be detected. Cannot run check/build before dependencies are installed.",
+        };
+        gates.push(gate);
+        return failGate(dir, profile, gates, gate, dependencyStatus);
       }
+    }
+
+    const postInstallDependencyStatus = getDependencyStatus(dir);
+    if (postInstallDependencyStatus.packageJson && !postInstallDependencyStatus.nodeModules) {
+      const gate: VerificationGate = {
+        name: "dependency_preflight",
+        ok: false,
+        status: 1,
+        output: "node_modules is still missing after the install preflight. Refusing to run check/build because local package binaries (for example tsc/vite) will not exist.",
+      };
+      gates.push(gate);
+      return failGate(dir, profile, gates, gate, postInstallDependencyStatus);
     }
 
     const checkCommand = projectState?.commands?.check || detectScriptCommand(dir, "check");
@@ -102,8 +136,9 @@ export const command: CommandHandler = {
       }
     }
 
+    const finalDependencyStatus = getDependencyStatus(dir);
     const finalProjectState = projectState ? recordSuccessfulVerification(dir, projectState, profile, gates) : projectState;
-    ok({ directory: dir, profile, projectState: finalProjectState, gates });
+    ok({ directory: dir, profile, projectState: finalProjectState, dependencyStatus: finalDependencyStatus, gates });
   },
 };
 
@@ -112,7 +147,7 @@ function printHelp(): void {
   console.log("\nRuns app-factory verification gates against a generated app.");
   console.log("\nFlags:");
   console.log("  --profile <name>    web-static or web-db-user (default: inferred)");
-  console.log("  --skip-install      Skip frozen dependency install gate");
+  console.log("  --skip-install      Skip install only if node_modules already exists; missing deps force install before check/build");
   console.log("  --skip-start        Skip start + route HTTP gate");
   console.log("  --skip-browser      Skip browser hydration/console smoke gate");
   console.log("  --port <port>       Port for start/preview gate (default: 4173)");
@@ -160,6 +195,21 @@ function recordSuccessfulVerification(dir: string, projectState: ProjectState, p
   };
   writeProjectState(dir, updated);
   return updated;
+}
+
+export function getDependencyStatus(dir: string): DependencyStatus {
+  const packageJson = existsSync(join(dir, "package.json"));
+  const nodeModules = existsSync(join(dir, "node_modules"));
+  return {
+    packageJson,
+    nodeModules,
+    missingNodeModules: packageJson && !nodeModules,
+    message: packageJson
+      ? nodeModules
+        ? "node_modules present; local package binaries should be available."
+        : "node_modules missing; run frozen install before check/build so local package binaries (for example tsc/vite) exist."
+      : "No package.json detected; dependency install is not required for this directory.",
+  };
 }
 
 export function scanPlaceholders(dir: string): PlaceholderHit[] {
@@ -369,11 +419,12 @@ function detectStartCommand(dir: string, profile: AppProfile, port: string): str
   return startCommand;
 }
 
-function failGate(directory: string, profile: AppProfile, gates: VerificationGate[], gate: VerificationGate): never {
+function failGate(directory: string, profile: AppProfile, gates: VerificationGate[], gate: VerificationGate, dependencyStatus = getDependencyStatus(directory)): never {
   failWithDetails(`App verification gate failed: ${gate.name}`, {
     errorCode: "E_VERIFY_GATE",
     directory,
     profile,
+    dependencyStatus,
     failedGate: gate,
     gates,
   });

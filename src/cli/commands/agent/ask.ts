@@ -1,6 +1,7 @@
 import type { CommandHandler } from "../../dispatcher.js";
 import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
 import { ok, fail } from "../../../shared/output.js";
+import { ExitCode } from "../../../shared/types.js";
 import { loadSystemPrompt } from "../../../shared/prompt.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -66,6 +67,7 @@ export const command: CommandHandler = {
         if (noTools) params.tools = false;
 
         let fullResponse = "";
+        let timedOut = false;
         for await (const event of sendStreamRequest("ask", params)) {
           switch (event.type) {
             case "text_delta":
@@ -85,6 +87,7 @@ export const command: CommandHandler = {
               break;
             case "error":
               process.stderr.write(`\nError: ${event.message}\n`);
+              if (isStuckNoProgressMessage(String(event.message))) timedOut = true;
               break;
             case "turn_complete":
               break;
@@ -92,9 +95,10 @@ export const command: CommandHandler = {
         }
 
         if (fullResponse) console.log();
+        if (timedOut) process.exitCode = ExitCode.TIMEOUT;
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        fail(`Daemon query failed: ${msg}`);
+        fail(`Daemon query failed: ${msg}`, isStuckNoProgressMessage(msg) || /timed out|timeout/i.test(msg) ? ExitCode.TIMEOUT : ExitCode.GENERAL);
       }
     } else {
       // In-process agent — initialize directly
@@ -164,6 +168,7 @@ export const command: CommandHandler = {
         const history = [{ role: "user" as const, content: question }];
 
         let fullResponse = "";
+        let timedOut = false;
         for await (const event of runAgent(agentConfig, history)) {
           switch (event.type) {
             case "text_delta":
@@ -180,6 +185,7 @@ export const command: CommandHandler = {
               break;
             case "error":
               process.stderr.write(`\nError: ${event.message}\n`);
+              if (isStuckNoProgressMessage(String(event.message))) timedOut = true;
               break;
             case "turn_complete":
               break;
@@ -188,6 +194,7 @@ export const command: CommandHandler = {
 
         // Newline after streaming
         if (fullResponse) console.log();
+        if (timedOut) process.exitCode = ExitCode.TIMEOUT;
 
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -196,3 +203,7 @@ export const command: CommandHandler = {
     }
   },
 };
+
+function isStuckNoProgressMessage(message: string): boolean {
+  return /stuck\/no-progress|no new model\/tool\/db progress|AgentNoProgressError/i.test(message);
+}

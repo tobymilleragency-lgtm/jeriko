@@ -75,7 +75,7 @@ export const verifyAppTool: ToolDefinition = {
       port: { type: "string", description: "Port for start/browser gates. Optional." },
       route: { type: "string", description: "Backend/HTTP route for start_route. Defaults by profile." },
       browser_route: { type: "string", description: "Frontend route for browser smoke. Default /." },
-      skip_install: { type: "boolean", description: "Skip frozen install. Avoid unless dependencies already verified." },
+      skip_install: { type: "boolean", description: "Skip install only when dependencies are already present; verify-app will still install if node_modules is missing." },
       skip_start: { type: "boolean", description: "Skip start route and browser gates. Avoid for final verification." },
       skip_browser: { type: "boolean", description: "Skip browser smoke. Avoid for final verification." },
     },

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile, readProjectState } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -32,6 +32,7 @@ describe("verify-app command", () => {
           build: "node -e \"console.log('BUILD_OK')\"",
         },
       }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
 
@@ -56,6 +57,7 @@ describe("verify-app command", () => {
           build: "node -e \"console.log('BUILD_OK')\"",
         },
       }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
       fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
         version: 1,
         name: "verify-last-success",
@@ -79,6 +81,90 @@ describe("verify-app command", () => {
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect(result.data.projectState.verification.lastSuccessfulVerification.ok).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs install before check/build when node_modules is missing even with skip-install", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-install-first-"));
+    const orderFile = path.join(dir, "order.txt");
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-install-first",
+        scripts: {
+          check: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(7); fs.appendFileSync('order.txt','check\\n')\"",
+          build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
+        },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "verify-install-first",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        commands: {
+          install: "node -e \"const fs=require('fs'); fs.mkdirSync('node_modules'); fs.appendFileSync('order.txt','install\\n')\"",
+          check: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(7); fs.appendFileSync('order.txt','check\\n')\"",
+          build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
+        },
+        routes: { home: "/" },
+        verification: { requiredGates: ["placeholder_scan", "install", "check", "build"] },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.dependencyStatus.nodeModules).toBe(true);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "install", "check", "build"]);
+      expect(fs.readFileSync(orderFile, "utf8")).toBe("install\ncheck\nbuild\n");
+      expect(result.data.gates.find((gate: any) => gate.name === "install").output).toContain("node_modules missing");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses check/build when node_modules remains missing after install preflight", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-missing-deps-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "verify-missing-deps", scripts: { check: "node -e \"process.exit(99)\"" } }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "verify-missing-deps",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        commands: { install: "node -e \"console.log('INSTALL_WITHOUT_NODE_MODULES')\"", check: "node -e \"process.exit(99)\"" },
+        routes: { home: "/" },
+        verification: { requiredGates: ["placeholder_scan", "install", "check"] },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("dependency_preflight");
+      expect(result.failedGate.output).toContain("node_modules is still missing");
+      expect(result.dependencyStatus.missingNodeModules).toBe(true);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "install", "dependency_preflight"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports dependency status for missing node_modules", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-dep-status-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "verify-dep-status" }));
+      const status = getDependencyStatus(dir);
+      expect(status.packageJson).toBe(true);
+      expect(status.nodeModules).toBe(false);
+      expect(status.missingNodeModules).toBe(true);
+      expect(status.message).toContain("node_modules missing");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -126,6 +212,7 @@ describe("verify-app command", () => {
           start: "node server.mjs",
         },
       }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
       fs.writeFileSync(path.join(dir, "server.mjs"), `
         import http from 'node:http';
         const port = Number(process.env.PORT || 0);
@@ -164,6 +251,7 @@ describe("verify-app command", () => {
           start: "node server.mjs",
         },
       }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
       fs.writeFileSync(path.join(dir, "server.mjs"), `
         import http from 'node:http';
         const port = Number(process.env.PORT || 0);
