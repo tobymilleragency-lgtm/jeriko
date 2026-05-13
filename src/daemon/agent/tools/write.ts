@@ -3,8 +3,9 @@
 import { registerTool } from "./registry.js";
 import { isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
-import { writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
+import { validateCodeIntegrity } from "./code-integrity-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
@@ -23,6 +24,17 @@ async function execute(args: Record<string, unknown>): Promise<string> {
   }
 
   try {
+    let before: string | null = null;
+    try {
+      before = await readFile(absPath, "utf-8");
+    } catch {
+      before = null;
+    }
+    const integrityProblem = validateCodeIntegrity(absPath, before, content);
+    if (integrityProblem) {
+      return JSON.stringify({ ...integrityProblem, guard: "code_integrity" });
+    }
+
     await mkdir(dirname(absPath), { recursive: true });
     await writeFile(absPath, content, "utf-8");
     return JSON.stringify({ ok: true, path: absPath, bytes: Buffer.byteLength(content) });

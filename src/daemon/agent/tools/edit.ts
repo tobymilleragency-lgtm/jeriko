@@ -5,6 +5,7 @@ import { isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { validateCodeIntegrity } from "./code-integrity-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
@@ -41,6 +42,11 @@ async function execute(args: Record<string, unknown>): Promise<string> {
         return JSON.stringify({ ok: false, error: "old_string is not unique in file — provide more context or use replace_all" });
       }
       updated = content.slice(0, idx) + newString + content.slice(idx + oldString.length);
+    }
+
+    const integrityProblem = validateCodeIntegrity(absPath, content, updated);
+    if (integrityProblem) {
+      return JSON.stringify({ ...integrityProblem, guard: "code_integrity" });
     }
 
     await writeFile(absPath, updated, "utf-8");

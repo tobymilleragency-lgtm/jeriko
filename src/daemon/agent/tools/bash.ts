@@ -5,6 +5,7 @@ import { createLease, validateLease } from "../../exec/lease.js";
 import { auditAllow, auditDeny } from "../../exec/audit.js";
 import type { ToolDefinition } from "./registry.js";
 import { spawn } from "node:child_process";
+import { detectSnapshotIntegrityProblems, restoreSnapshotFiles, snapshotCodeFiles } from "./code-integrity-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
@@ -22,6 +23,7 @@ async function execute(args: Record<string, unknown>): Promise<string> {
   }
 
   auditAllow(lease, decision.lease_id);
+  const snapshot = await snapshotCodeFiles(cwd);
 
   return new Promise<string>((resolve) => {
     const proc = spawn("bash", ["-c", command], {
@@ -46,9 +48,30 @@ async function execute(args: Record<string, unknown>): Promise<string> {
       } else { truncated = true; }
     });
 
-    proc.on("close", (code) => {
+    proc.on("close", async (code) => {
       const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "")
         + (truncated ? "\n[output truncated]" : "");
+      try {
+        const problems = await detectSnapshotIntegrityProblems(snapshot);
+        if (problems.length > 0) {
+          const paths = problems.map((problem) => problem.path);
+          await restoreSnapshotFiles(snapshot.files, paths);
+          resolve(JSON.stringify({
+            ok: false,
+            guard: "code_integrity",
+            error: "Shell command introduced duplicate function implementations; changed code files were restored.",
+            restored: paths,
+            problems: problems.map((problem) => ({ path: problem.path, duplicates: problem.duplicates, error: problem.error })),
+            command_exit_code: code ?? 0,
+            output: output.slice(0, 20_000),
+          }));
+          return;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        resolve(JSON.stringify({ ok: false, guard: "code_integrity", error: msg, output: output.slice(0, 20_000) }));
+        return;
+      }
       resolve(output.slice(0, 100_000) || `(exit code ${code ?? 0})`);
     });
 
