@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createServer } from "node:http";
 
 import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
@@ -272,6 +273,36 @@ describe("verify-app command", () => {
       expect(result.failedGate.name).toBe("browser_smoke");
       expect(result.failedGate.output).toContain("BROKEN_BROWSER_SMOKE");
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to verify when the requested port is already occupied", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-port-busy-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end('<!doctype html><html><body><div id="root">Stale unrelated server</div></body></html>');
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test server port");
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-port-busy",
+        scripts: { start: "node server.mjs" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), "import http from 'node:http'; http.createServer((_req,res)=>res.end('new app')).listen(process.env.PORT);\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-static", "--skip-install", "--skip-browser", "--port", String(address.port)]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("start_route");
+      expect(result.failedGate.output).toContain("already in use");
+      expect(result.failedGate.output).toContain("stale or unrelated server");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -4,6 +4,7 @@ import { fail, failWithDetails, ok } from "../../../shared/output.js";
 import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { readProjectState, writeProjectState, type AppProfile, type ProjectState } from "./project-state.js";
 
 export { readProjectState } from "./project-state.js";
@@ -292,6 +293,8 @@ function runGate(name: string, command: string, dir: string): VerificationGate {
 async function runStartRouteGate(dir: string, profile: AppProfile, port: string, route: string, projectState?: ProjectState | null): Promise<VerificationGate> {
   const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "start_route", ok: false, output: "No package start/preview script found." };
+  const portPreflight = await verifyPortAvailable(port);
+  if (!portPreflight.ok) return { name: "start_route", command, ok: false, status: 1, output: portPreflight.output };
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
   const child = spawn(command, [], {
     cwd: dir,
@@ -343,8 +346,9 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
   if (!executablePath) {
     return { name: "browser_smoke", command, ok: false, status: 1, output: "No Chrome/Chromium executable found for browser smoke verification." };
   }
-
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
+  const portPreflight = await verifyPortAvailable(port);
+  if (!portPreflight.ok) return { name: "browser_smoke", command, ok: false, status: 1, output: portPreflight.output };
   const child = spawn(command, [], {
     cwd: dir,
     shell: true,
@@ -429,6 +433,32 @@ function failGate(directory: string, profile: AppProfile, gates: VerificationGat
     gates,
   });
 }
+async function verifyPortAvailable(portText: string): Promise<{ ok: true } | { ok: false; output: string }> {
+  const port = Number(portText);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return { ok: false, output: `Invalid verification port: ${portText}` };
+  }
+
+  return await new Promise((resolve) => {
+    const server = createServer();
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; output: string }) => {
+      if (settled) return;
+      settled = true;
+      try { server.close(() => undefined); } catch { /* server was never listening */ }
+      resolve(result);
+    };
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") {
+        finish({ ok: false, output: `Verification port ${port} is already in use before start. Refusing to verify against a stale or unrelated server.` });
+        return;
+      }
+      finish({ ok: false, output: `Verification port ${port} is not available: ${error.message}` });
+    });
+    server.listen({ host: "127.0.0.1", port }, () => finish({ ok: true }));
+  });
+}
+
 async function stopProcessGroup(child: ReturnType<typeof spawn>, isClosed: () => boolean): Promise<void> {
   if (isClosed()) return;
   if (child.pid) {
