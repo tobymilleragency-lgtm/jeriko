@@ -4,7 +4,7 @@ import { fail, failWithDetails, ok } from "../../../shared/output.js";
 import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { readProjectState, type AppProfile, type ProjectState } from "./project-state.js";
+import { readProjectState, writeProjectState, type AppProfile, type ProjectState } from "./project-state.js";
 
 export { readProjectState } from "./project-state.js";
 
@@ -102,7 +102,8 @@ export const command: CommandHandler = {
       }
     }
 
-    ok({ directory: dir, profile, projectState, gates });
+    const finalProjectState = projectState ? recordSuccessfulVerification(dir, projectState, profile, gates) : projectState;
+    ok({ directory: dir, profile, projectState: finalProjectState, gates });
   },
 };
 
@@ -135,6 +136,30 @@ export function inferAppProfile(dir: string): AppProfile {
     return "web-db-user";
   }
   return "web-static";
+}
+
+function recordSuccessfulVerification(dir: string, projectState: ProjectState, profile: AppProfile, gates: VerificationGate[]): ProjectState {
+  const slimGates = gates.map((gate) => ({
+    name: gate.name,
+    ok: gate.ok,
+    ...(gate.command ? { command: gate.command } : {}),
+    ...(typeof gate.status === "number" ? { status: gate.status } : {}),
+  }));
+  const updated: ProjectState = {
+    ...projectState,
+    verification: {
+      ...projectState.verification,
+      lastSuccessfulVerification: {
+        ok: true,
+        profile,
+        completedAt: new Date().toISOString(),
+        command: `jeriko verify-app ${dir}`,
+        gates: slimGates,
+      },
+    },
+  };
+  writeProjectState(dir, updated);
+  return updated;
 }
 
 export function scanPlaceholders(dir: string): PlaceholderHit[] {

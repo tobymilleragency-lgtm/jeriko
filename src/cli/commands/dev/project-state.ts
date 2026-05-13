@@ -11,11 +11,11 @@ export interface ProjectState {
   packageManager: string;
   generatedAt: string;
   commands: {
-    install: string;
-    check: string;
-    build: string;
-    start: string;
-    dev: string;
+    install?: string;
+    check?: string;
+    build?: string;
+    start?: string;
+    dev?: string;
   };
   routes: {
     home: string;
@@ -24,6 +24,18 @@ export interface ProjectState {
   verification: {
     requiredGates: string[];
     lastRun?: unknown;
+    lastSuccessfulVerification?: {
+      ok: true;
+      profile: AppProfile;
+      completedAt: string;
+      command: string;
+      gates: Array<{
+        name: string;
+        ok: boolean;
+        command?: string;
+        status?: number;
+      }>;
+    };
   };
 }
 

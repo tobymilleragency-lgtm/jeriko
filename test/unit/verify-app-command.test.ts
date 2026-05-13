@@ -45,6 +45,45 @@ describe("verify-app command", () => {
     }
   });
 
+  it("records lastSuccessfulVerification in project-state after a passing run", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-last-success-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-last-success",
+        scripts: {
+          check: "node -e \"console.log('CHECK_OK')\"",
+          build: "node -e \"console.log('BUILD_OK')\"",
+        },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "verify-last-success",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        commands: { check: "pnpm run check", build: "pnpm run build" },
+        routes: { home: "/" },
+        verification: { requiredGates: ["placeholder_scan", "check", "build"] },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+      const state = readProjectState(dir);
+
+      expect(result.ok).toBe(true);
+      expect(state?.verification.lastSuccessfulVerification).toBeDefined();
+      expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
+      expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
+      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "check", "build"]);
+      expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
+      expect(result.data.projectState.verification.lastSuccessfulVerification.ok).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("infers web-db-user profile when server and drizzle files exist", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-profile-"));
     try {
