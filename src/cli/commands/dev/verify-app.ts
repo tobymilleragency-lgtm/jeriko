@@ -321,7 +321,12 @@ async function runStartRouteGate(dir: string, profile: AppProfile, port: string,
       try {
         const response = await fetch(url);
         if (response.ok) {
+          const contentType = response.headers.get("content-type") || "";
           const body = await response.text();
+          const responseProblem = validateRouteResponse(route, contentType, body);
+          if (responseProblem) {
+            return { name: "start_route", command, ok: false, status: 1, output: responseProblem.slice(0, MAX_OUTPUT) };
+          }
           return { name: "start_route", command, ok: true, status: 0, output: body.slice(0, MAX_OUTPUT) };
         }
       } catch {
@@ -433,6 +438,46 @@ function failGate(directory: string, profile: AppProfile, gates: VerificationGat
     gates,
   });
 }
+function validateRouteResponse(route: string, contentType: string, body: string): string | null {
+  const normalizedRoute = route.startsWith("/") ? route : `/${route}`;
+  if (!normalizedRoute.startsWith("/api/")) return null;
+
+  const normalizedContentType = contentType.toLowerCase();
+  const bodyStart = body.trimStart().slice(0, 300).toLowerCase();
+  const looksLikeHtml = normalizedContentType.includes("text/html") ||
+    bodyStart.startsWith("<!doctype html") ||
+    bodyStart.startsWith("<html") ||
+    bodyStart.includes("<div id=\"root\"") ||
+    bodyStart.includes("<div id='root'");
+
+  if (looksLikeHtml) {
+    return [
+      `API route returned HTML instead of an API response: ${normalizedRoute}`,
+      `content-type: ${contentType || "unknown"}`,
+      body.slice(0, 1_000),
+    ].join("\n");
+  }
+
+  if (!normalizedContentType.includes("application/json")) {
+    return [
+      `API route did not return JSON: ${normalizedRoute}`,
+      `content-type: ${contentType || "unknown"}`,
+      body.slice(0, 1_000),
+    ].join("\n");
+  }
+
+  try {
+    JSON.parse(body);
+  } catch {
+    return [
+      `API route returned invalid JSON: ${normalizedRoute}`,
+      body.slice(0, 1_000),
+    ].join("\n");
+  }
+
+  return null;
+}
+
 async function verifyPortAvailable(portText: string): Promise<{ ok: true } | { ok: false; output: string }> {
   const port = Number(portText);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {

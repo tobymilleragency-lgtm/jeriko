@@ -243,6 +243,37 @@ describe("verify-app command", () => {
     }
   });
 
+  it("rejects HTML SPA fallback responses for API start routes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-api-html-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-api-html",
+        scripts: { start: "node server.mjs" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><body><div id="root">SPA fallback</div></body></html>';
+        http.createServer((_req, res) => {
+          res.writeHead(200, { 'content-type': 'text/html; charset=UTF-8' });
+          res.end(html);
+        }).listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--skip-browser", "--port", "4296"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("start_route");
+      expect(result.failedGate.output).toContain("API route returned HTML");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs a browser smoke gate and fails on frontend console errors", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-browser-error-"));
     try {
