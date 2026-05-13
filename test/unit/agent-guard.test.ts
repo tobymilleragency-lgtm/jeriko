@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { createToolRepeatGuard, createToolRoundRepeatGuard, isFinalAssistantReport, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, isFinalAssistantReport, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -66,6 +66,22 @@ describe("Final report detection", () => {
 
   test("does not treat ordinary progress text as final", () => {
     expect(isFinalAssistantReport("I will run pnpm build next after checking the file.")).toBe(false);
+  });
+});
+
+describe("No-progress forced summary", () => {
+  test("summarizes verified check/build and clean workspace instead of asking model to summarize", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: '{"git":{"diffStat":""}}' },
+      { role: "tool", content: '> simple-crm@1.0.0 check\n> tsc --noEmit\n' },
+      { role: "tool", content: '> simple-crm@1.0.0 build\n> vite build\n✓ built in 1.42s\n' },
+    ], "Repeated no-progress tool round blocked after 3 matching rounds: workspace_status {}");
+
+    expect(summary).toContain("No-progress guard stopped the run.");
+    expect(summary).toContain("pnpm check: passed");
+    expect(summary).toContain("pnpm build: passed");
+    expect(summary).toContain("changed files: none");
+    expect(summary).toContain("code_integrity guard triggered: no");
   });
 });
 

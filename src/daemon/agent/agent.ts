@@ -318,7 +318,10 @@ export async function* runAgent(
         addPart(toolMsg.id, "error", result, tc.name, tc.id);
         messages.push({ role: "tool", content: result, tool_call_id: tc.id });
       }
-      yield { type: "text_delta", content: `${roundRepeatCheck}\nSummarize the current verified state and stop.` };
+      const forcedSummary = buildNoProgressStopSummary(messages, roundRepeatCheck);
+      const guardMsg = addMessage(config.sessionId, "assistant", forcedSummary, { input: 0, output: estimateTokens(forcedSummary) });
+      addPart(guardMsg.id, "text", forcedSummary);
+      yield { type: "text_delta", content: forcedSummary };
       yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
       return;
     }
@@ -479,6 +482,30 @@ function summarizeToolCall(toolCall: ToolCall): string {
     }
   } catch { /* ignore */ }
   return `${toolCall.name} ${toolCall.arguments.slice(0, 240)}`;
+}
+
+export function buildNoProgressStopSummary(messages: DriverMessage[], reason: string): string {
+  const toolTexts = messages.filter((msg) => msg.role === "tool").map((msg) => messageText(msg));
+  const checkPassed = toolTexts.some((text) => text.includes("tsc --noEmit") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
+  const buildPassed = toolTexts.some((text) => text.includes("vite build") && text.includes("✓ built in") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
+  const workspaceTexts = toolTexts.filter((text) => text.includes('"diffStat"') || text.includes('"changed_files"'));
+  const latestWorkspace = workspaceTexts.at(-1) ?? "";
+  const noChangedFiles = latestWorkspace.includes('"diffStat":""') || latestWorkspace.includes('"diffStat": ""') || latestWorkspace.includes('changed_files: 0') || latestWorkspace.includes('"changed_files": 0');
+  const codeIntegrityTriggered = toolTexts.some((text) => text.includes('"guard":"code_integrity"') || text.includes("code_integrity"));
+
+  const lines = [
+    "No-progress guard stopped the run.",
+    reason,
+    "",
+    "Current verified state:",
+    `- pnpm check: ${checkPassed ? "passed" : "not verified in the captured context"}`,
+    `- pnpm build: ${buildPassed ? "passed" : "not verified in the captured context"}`,
+    `- changed files: ${noChangedFiles ? "none" : "not verified in the captured context"}`,
+    `- code_integrity guard triggered: ${codeIntegrityTriggered ? "yes" : "no"}`,
+    "",
+    "Action taken: stopped instead of rereading the same files or rerunning the same checks.",
+  ];
+  return lines.join("\n");
 }
 
 export function isFinalAssistantReport(text: string): boolean {
