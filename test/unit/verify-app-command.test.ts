@@ -78,8 +78,8 @@ describe("verify-app command", () => {
             res.end(JSON.stringify({ ok: true }));
             return;
           }
-          res.writeHead(404);
-          res.end('not found');
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end('<!doctype html><html><body><div id="root">App</div></body></html>');
         });
         server.listen(port);
       `);
@@ -93,6 +93,39 @@ describe("verify-app command", () => {
       const startGate = result.data.gates.find((gate: any) => gate.name === "start_route");
       expect(startGate.ok).toBe(true);
       expect(startGate.output).toContain('"ok":true');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a browser smoke gate and fails on frontend console errors", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-browser-error-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-browser-error",
+        scripts: {
+          start: "node server.mjs",
+        },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><body><div id="root">App</div><script>console.error("BROKEN_BROWSER_SMOKE")</script></body></html>';
+        const server = http.createServer((req, res) => {
+          res.writeHead(200, { 'content-type': req.url === '/api/health' ? 'application/json' : 'text/html' });
+          res.end(req.url === '/api/health' ? JSON.stringify({ ok: true }) : html);
+        });
+        server.listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--port", "4292"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("browser_smoke");
+      expect(result.failedGate.output).toContain("BROKEN_BROWSER_SMOKE");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
