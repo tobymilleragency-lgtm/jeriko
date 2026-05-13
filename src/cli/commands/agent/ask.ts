@@ -109,6 +109,7 @@ export const command: CommandHandler = {
           import("../../../daemon/agent/tools/bash.js"),
           import("../../../daemon/agent/tools/read.js"),
           import("../../../daemon/agent/tools/workspace-status.js"),
+          import("../../../daemon/agent/tools/verify-app.js"),
           import("../../../daemon/agent/tools/write.js"),
           import("../../../daemon/agent/tools/edit.js"),
           import("../../../daemon/agent/tools/list.js"),

@@ -9,7 +9,8 @@ Only use exact flags from `jeriko <cmd> --help`. If unsure, run --help once, the
 - ALWAYS read_file before edit_file. Use edit_file for targeted changes, write_file for new files.
 - Use list_files/search_files to explore before modifying.
 - When a command fails, read the error and fix the root cause.
-- When building apps: scaffold → write actual code → start dev server → screenshot → iterate → deploy. NEVER just scaffold and stop.
+- When building apps: scaffold → write actual code → run verify_app → report. NEVER just scaffold and stop.
+- For generated/scaffolded apps, you are not done until verify_app passes all gates: placeholder_scan, install, check, build, start_route, browser_smoke. If verify_app fails, fix the app/template and rerun verify_app. Final reports without verify_app proof are rejected by the runtime.
 
 ## Commands (run `jeriko <cmd> --help` for flags)
 

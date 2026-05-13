@@ -299,6 +299,14 @@ export async function* runAgent(
 
     // If no tool calls, the turn is complete
     if (toolCalls.length === 0 || hadError) {
+      if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasPassingVerifyApp(messages)) {
+        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded app work must call verify_app and pass placeholder_scan, install, check, build, start_route, and browser_smoke before claiming done. Call verify_app on the app directory now, then produce the final report from that result.";
+        const gateMsg = addMessage(config.sessionId, "user", gateMessage);
+        addPart(gateMsg.id, "text", gateMessage);
+        messages.push({ role: "user", content: gateMessage });
+        yield { type: "text_delta", content: gateMessage };
+        continue;
+      }
       touchSession(config.sessionId);
       yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
       return;
@@ -506,6 +514,35 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
     "Action taken: stopped instead of rereading the same files or rerunning the same checks.",
   ];
   return lines.join("\n");
+}
+
+export function requiresAppFactoryVerification(messages: DriverMessage[], finalText: string): boolean {
+  if (!isFinalAssistantReport(finalText)) return false;
+  const combined = [...messages.map((msg) => messageText(msg)), finalText].join("\n").toLowerCase();
+  const mentionsAppBuilderWork = /\b(scaffold|scaffolded|generated app|generate(d)?\s+(a\s+)?(full-stack|web|app)|jeriko\s+create|create\s+web-static|create\s+web-db-user|web-static|web-db-user)\b/.test(combined);
+  const explicitlyNotAppBuilder = /\b(no scaffold|do not scaffold|existing app only|not generated)\b/.test(combined);
+  return mentionsAppBuilderWork && !explicitlyNotAppBuilder;
+}
+
+export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
+  for (const msg of messages) {
+    if (msg.role !== "tool") continue;
+    const text = messageText(msg);
+    if (!text.includes('"browser_smoke"') || !text.includes('"start_route"')) continue;
+    try {
+      const parsed = JSON.parse(text);
+      const gates = parsed?.data?.gates;
+      if (parsed?.ok === true && Array.isArray(gates)) {
+        const required = ["placeholder_scan", "install", "check", "build", "start_route", "browser_smoke"];
+        if (required.every((name) => gates.some((gate: any) => gate?.name === name && gate?.ok === true))) return true;
+      }
+    } catch {
+      // Fall back to text detection for older captured tool outputs.
+      const hasAllGateNames = ["placeholder_scan", "install", "check", "build", "start_route", "browser_smoke"].every((name) => text.includes(`"${name}"`));
+      if (hasAllGateNames && /"ok"\s*:\s*true/.test(text) && !/"ok"\s*:\s*false/.test(text)) return true;
+    }
+  }
+  return false;
 }
 
 export function isFinalAssistantReport(text: string): boolean {

@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, isFinalAssistantReport, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -82,6 +82,39 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("pnpm build: passed");
     expect(summary).toContain("changed files: none");
     expect(summary).toContain("code_integrity guard triggered: no");
+  });
+});
+
+describe("App-factory final done gate", () => {
+  const finalReport = `## Verification results\nDone.\n- pnpm check passed\n- pnpm build passed\n- scaffolded web-db-user generated app verified`;
+
+  test("requires verify_app evidence before final report for generated apps", () => {
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "create web-db-user app" },
+    ], finalReport)).toBe(true);
+  });
+
+  test("recognizes passing verify_app evidence with all factory gates", () => {
+    const tool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    expect(hasPassingVerifyApp([{ role: "tool", content: tool }])).toBe(true);
+  });
+
+  test("rejects partial app verification without browser smoke", () => {
+    const tool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+    ] } });
+    expect(hasPassingVerifyApp([{ role: "tool", content: tool }])).toBe(false);
   });
 });
 
