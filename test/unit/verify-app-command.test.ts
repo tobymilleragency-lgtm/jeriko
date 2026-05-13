@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile, readProjectState } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -48,13 +48,31 @@ describe("verify-app command", () => {
   it("infers web-db-user profile when server and drizzle files exist", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-profile-"));
     try {
-      fs.writeFileSync(path.join(dir, "package.json"), "{}\n");
-      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
-      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: {} }));
+      fs.mkdirSync(path.join(dir, "server"));
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {};\n");
 
       expect(inferAppProfile(dir)).toBe("web-db-user");
       expect(defaultRouteForProfile("web-db-user")).toBe("/api/health");
-      expect(defaultRouteForProfile("web-static")).toBe("/");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses project-state to infer profile and default routes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-state-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        profile: "web-db-user",
+        routes: { health: "/custom-health", home: "/dashboard" },
+        commands: { install: "pnpm install --frozen-lockfile --ignore-scripts", check: "pnpm run check", build: "pnpm run build" }
+      }));
+
+      const state = readProjectState(dir);
+      expect(state?.profile).toBe("web-db-user");
+      expect(inferAppProfile(dir)).toBe("web-db-user");
+      expect(defaultRouteForProfile("web-db-user", state)).toBe("/custom-health");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

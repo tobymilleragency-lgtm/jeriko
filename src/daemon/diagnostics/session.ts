@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDatabase } from "../storage/db.js";
+import { readProjectState } from "../../cli/commands/dev/project-state.js";
 
 type Row = Record<string, unknown>;
 
@@ -65,6 +66,7 @@ function shell(command: string, cwd: string): string {
 
 export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
+  const projectState = readProjectState(cwd);
   const session = latestSession(opts.sessionId);
   const parts = session ? sessionParts(asString(session.id), opts.limit ?? 80) : [];
   const recentToolCalls = parts.filter((p) => p.type === "tool_call").slice(0, 12).map((p) => ({
@@ -82,6 +84,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
   return {
     ok: true,
     cwd,
+    projectState,
     git: existsSync(`${cwd}/.git`) ? {
       branch: git(["branch", "--show-current"], cwd),
       status: git(["status", "--short"], cwd),

@@ -46,6 +46,31 @@ describe("create command templates", () => {
     }
   });
 
+  it("writes project-state for webdev generated apps", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-state-"));
+    const projectDir = path.join(dir, "state-app");
+    try {
+      const result = await runCreateCommand(["web-db-user", "State App", "--dir", projectDir]);
+      const statePath = path.join(projectDir, ".jeriko", "project-state.json");
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+
+      expect(result.ok).toBe(true);
+      expect(result.data.projectState).toBe(statePath);
+      expect(state.name).toBe("State App");
+      expect(state.template).toBe("web-db-user");
+      expect(state.profile).toBe("web-db-user");
+      expect(state.packageManager).toBe("pnpm");
+      expect(state.commands.install).toBe("pnpm install --frozen-lockfile --ignore-scripts");
+      expect(state.commands.check).toBe("pnpm run check");
+      expect(state.commands.build).toBe("pnpm run build");
+      expect(state.routes.health).toBe("/api/health");
+      expect(state.routes.home).toBe("/");
+      expect(state.verification.requiredGates).toContain("browser_smoke");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns structured E_EXISTS failure for existing non-project directories", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-exists-"));
     fs.writeFileSync(path.join(dir, "stray.txt"), "not a project");

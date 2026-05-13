@@ -6,6 +6,7 @@ import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readd
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { detectDevCommand, getProjectDevLogFile, startDetachedDevServer, type DetachedDevServer } from "./dev.js";
+import { buildProjectState, writeProjectState, type AppProfile } from "./project-state.js";
 
 // ---------------------------------------------------------------------------
 // Template registry
@@ -286,6 +287,9 @@ export const command: CommandHandler = {
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
       replaceTemplatePlaceholders(dir, name);
+      const projectState = info.category === "webdev"
+        ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile }))
+        : undefined;
 
       // Remove metadata files
       const metaFiles = [".manus-template-version", ".DS_Store"];
@@ -302,7 +306,7 @@ export const command: CommandHandler = {
       }
 
       const devServer = startDev ? installAndStartDevServer(dir) : null;
-      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, devServer });
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, devServer });
       return;
     }
 
@@ -497,6 +501,7 @@ function emitCreateSuccess(args: {
   category: TemplateInfo["category"];
   directory: string;
   files: number;
+  projectState?: string;
   reused?: boolean;
   devServer: DetachedDevServer | null;
 }): never {
@@ -506,6 +511,7 @@ function emitCreateSuccess(args: {
     category: args.category,
     directory: args.directory,
     files: args.files,
+    ...(args.projectState ? { projectState: args.projectState } : {}),
     ...(args.reused ? { reused: true } : {}),
   };
 

@@ -4,8 +4,9 @@ import { fail, failWithDetails, ok } from "../../../shared/output.js";
 import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { readProjectState, type AppProfile, type ProjectState } from "./project-state.js";
 
-export type AppProfile = "web-static" | "web-db-user";
+export { readProjectState } from "./project-state.js";
 
 export interface VerificationGate {
   name: string;
@@ -43,13 +44,14 @@ export const command: CommandHandler = {
       failWithDetails(`App directory not found: "${dir}"`, { errorCode: "E_NOT_FOUND", directory: dir });
     }
 
-    const profile = parseProfile(flagStr(parsed, "profile", "") || inferAppProfile(dir));
+    const projectState = readProjectState(dir);
+    const profile = parseProfile(flagStr(parsed, "profile", "") || projectState?.profile || inferAppProfile(dir));
     const skipInstall = flagBool(parsed, "skip-install");
     const skipStart = flagBool(parsed, "skip-start");
     const skipBrowser = flagBool(parsed, "skip-browser");
     const port = flagStr(parsed, "port", "4173");
-    const route = flagStr(parsed, "route", defaultRouteForProfile(profile));
-    const browserRoute = flagStr(parsed, "browser-route", "/");
+    const route = flagStr(parsed, "route", defaultRouteForProfile(profile, projectState));
+    const browserRoute = flagStr(parsed, "browser-route", projectState?.routes?.home || "/");
 
     const gates: VerificationGate[] = [];
     const placeholders = scanPlaceholders(dir);
@@ -59,13 +61,14 @@ export const command: CommandHandler = {
         errorCode: "E_PLACEHOLDERS",
         directory: dir,
         profile,
+        projectState,
         placeholders,
         gates,
       });
     }
 
     if (!skipInstall) {
-      const installCommand = detectFrozenInstallCommand(dir);
+      const installCommand = projectState?.commands?.install || detectFrozenInstallCommand(dir);
       if (installCommand) {
         const gate = runGate("install", installCommand, dir);
         gates.push(gate);
@@ -73,14 +76,14 @@ export const command: CommandHandler = {
       }
     }
 
-    const checkCommand = detectScriptCommand(dir, "check");
+    const checkCommand = projectState?.commands?.check || detectScriptCommand(dir, "check");
     if (checkCommand) {
       const gate = runGate("check", checkCommand, dir);
       gates.push(gate);
       if (!gate.ok) return failGate(dir, profile, gates, gate);
     }
 
-    const buildCommand = detectScriptCommand(dir, "build");
+    const buildCommand = projectState?.commands?.build || detectScriptCommand(dir, "build");
     if (buildCommand) {
       const gate = runGate("build", buildCommand, dir);
       gates.push(gate);
@@ -88,7 +91,7 @@ export const command: CommandHandler = {
     }
 
     if (!skipStart) {
-      const startGate = await runStartRouteGate(dir, profile, port, route);
+      const startGate = await runStartRouteGate(dir, profile, port, route, projectState);
       gates.push(startGate);
       if (!startGate.ok) return failGate(dir, profile, gates, startGate);
 
@@ -99,7 +102,7 @@ export const command: CommandHandler = {
       }
     }
 
-    ok({ directory: dir, profile, gates });
+    ok({ directory: dir, profile, projectState, gates });
   },
 };
 
@@ -121,11 +124,13 @@ function parseProfile(profile: string): AppProfile {
   fail(`Unknown app profile: ${profile}. Expected web-static or web-db-user.`);
 }
 
-export function defaultRouteForProfile(profile: AppProfile): string {
-  return profile === "web-db-user" ? "/api/health" : "/";
+export function defaultRouteForProfile(profile: AppProfile, projectState?: ProjectState | null): string {
+  return projectState?.routes?.health || (profile === "web-db-user" ? "/api/health" : "/");
 }
 
 export function inferAppProfile(dir: string): AppProfile {
+  const projectState = readProjectState(dir);
+  if (projectState?.profile) return projectState.profile;
   if (existsSync(join(dir, "server")) && (existsSync(join(dir, "drizzle.config.ts")) || existsSync(join(dir, "drizzle.config.js")))) {
     return "web-db-user";
   }
@@ -209,8 +214,8 @@ function runGate(name: string, command: string, dir: string): VerificationGate {
   return { name, command, ok: (result.status ?? 1) === 0, status: result.status ?? 1, output };
 }
 
-async function runStartRouteGate(dir: string, profile: AppProfile, port: string, route: string): Promise<VerificationGate> {
-  const command = detectStartCommand(dir, profile, port);
+async function runStartRouteGate(dir: string, profile: AppProfile, port: string, route: string, projectState?: ProjectState | null): Promise<VerificationGate> {
+  const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "start_route", ok: false, output: "No package start/preview script found." };
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
   const child = spawn(command, [], {
