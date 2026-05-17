@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { command as createCommand, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
+import { applyCrawlerPrerenderSupport, command as createCommand, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
@@ -145,6 +145,45 @@ describe("create command templates", () => {
       expect(result.data.directory).toBe(dir);
       expect(fs.existsSync(marker)).toBe(false);
       expect(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).name).toBe("demo-app");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds crawler-visible prerender support to generated Vite apps", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-prerender-"));
+    const projectDir = path.join(dir, "seo-app");
+    try {
+      const result = await runCreateCommand(["web-static", "SEO App", "--dir", projectDir]);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(projectDir, "package.json"), "utf8"));
+      const scriptPath = path.join(projectDir, "scripts", "jeriko-prerender-seo.mjs");
+
+      expect(result.ok).toBe(true);
+      expect(result.data.crawlerPrerender).toBe(true);
+      expect(packageJson.scripts.build).toContain("vite build && node scripts/jeriko-prerender-seo.mjs");
+      expect(fs.existsSync(scriptPath)).toBe(true);
+
+      const script = fs.readFileSync(scriptPath, "utf8");
+      expect(script).toContain("data-jeriko-prerender");
+      expect(script).toContain("robots.txt");
+      expect(script).toContain("sitemap.xml");
+      expect(script).toContain("llms.txt");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("can apply crawler prerender support idempotently", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-prerender-idempotent-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<div id="root"></div>');
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { build: "vite build && esbuild server/index.ts --outdir=dist" } }, null, 2));
+
+      expect(applyCrawlerPrerenderSupport(dir, "SEO App")).toBe(true);
+      expect(applyCrawlerPrerenderSupport(dir, "SEO App")).toBe(true);
+      const packageJson = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+      expect(packageJson.scripts.build.match(/jeriko-prerender-seo/g)?.length).toBe(1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

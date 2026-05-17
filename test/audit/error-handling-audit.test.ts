@@ -302,8 +302,9 @@ describe("Agent loop error handling", () => {
       join(import.meta.dir, "../../src/daemon/agent/agent.ts"),
       "utf-8",
     );
-    // The for-await loop over driver.chat() must be in a try-catch
-    expect(src).toMatch(/for await.*driver\.chat[\s\S]*?catch.*err/);
+    // The driver stream consumption must be in a try-catch. Current code uses
+    // an explicit async iterator + watchdog rather than a for-await loop.
+    expect(src).toMatch(/try\s*\{[\s\S]*driver\.chat[\s\S]*catch\s*\(err\)/);
   });
 
   test("agent.ts catches tool execution errors", async () => {

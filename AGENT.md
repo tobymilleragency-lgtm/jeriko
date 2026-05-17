@@ -11,7 +11,8 @@ Only use exact flags from `jeriko <cmd> --help`. If unsure, run --help once, the
 - When a command fails, read the error and fix the root cause.
 - When building apps: scaffold → write actual code → install dependencies → check/build → run verify_app → report. NEVER just scaffold and stop.
 - For generated/scaffolded apps, never run check/build before dependencies exist. If node_modules is missing, run the frozen install command first (usually `pnpm install --frozen-lockfile --ignore-scripts`), then check/build.
-- For generated/scaffolded apps, you are not done until verify_app passes all gates: placeholder_scan, install, check, build, start_route, browser_smoke. If verify_app fails, fix the app/template and rerun verify_app. Final reports without verify_app proof are rejected by the runtime.
+- For generated/scaffolded apps, you are not done until verify_app passes all gates: placeholder_scan, unsafe_env_scan, install, check, build, start_route, browser_smoke. If verify_app fails, fix the app/template and rerun verify_app. Final reports without verify_app proof are rejected by the runtime.
+- If adding Supabase/Google auth, never use generic `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY`; use app-scoped env names and disable auth UI with a clear warning until those app-scoped values exist. Also prove Google OAuth in browser smoke: a visible Google button must not land on `redirect_uri_mismatch`. For each new Supabase project the Google Cloud OAuth client must authorize `https://<project-ref>.supabase.co/auth/v1/callback`; do not claim Google auth works until that redirect is registered and verified.
 
 ## Commands (run `jeriko <cmd> --help` for flags)
 

@@ -23,6 +23,13 @@ export interface PlaceholderHit {
   token: string;
 }
 
+export interface UnsafeEnvHit {
+  file: string;
+  line: number;
+  token: string;
+  reason: string;
+}
+
 export interface DependencyStatus {
   packageJson: boolean;
   nodeModules: boolean;
@@ -30,7 +37,15 @@ export interface DependencyStatus {
   message: string;
 }
 
+export interface CrawlerHtmlStatus {
+  checked: boolean;
+  ok: boolean;
+  file?: string;
+  output: string;
+}
+
 const PLACEHOLDER_PATTERN = /\{\{[a-zA-Z0-9_]+\}\}|__PLACEHOLDER__|<%=?\s*[^%]+%>/g;
+const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
 const MAX_OUTPUT = 12_000;
 
@@ -57,7 +72,11 @@ export const command: CommandHandler = {
     const skipInstall = flagBool(parsed, "skip-install");
     const skipStart = flagBool(parsed, "skip-start");
     const skipBrowser = flagBool(parsed, "skip-browser");
-    const port = flagStr(parsed, "port", "4173");
+    const explicitPort = Boolean(flagStr(parsed, "port", ""));
+    const requestedPort = flagStr(parsed, "port", "4173");
+    const port = skipStart
+      ? requestedPort
+      : await resolveVerificationPort(requestedPort, { strict: explicitPort });
     const route = flagStr(parsed, "route", defaultRouteForProfile(profile, projectState));
     const browserRoute = flagStr(parsed, "browser-route", projectState?.routes?.home || "/");
 
@@ -71,6 +90,19 @@ export const command: CommandHandler = {
         profile,
         projectState,
         placeholders,
+        gates,
+      });
+    }
+
+    const unsafeEnvRefs = scanUnsafeEnvRefs(dir);
+    gates.push({ name: "unsafe_env_scan", ok: unsafeEnvRefs.length === 0 });
+    if (unsafeEnvRefs.length > 0) {
+      failWithDetails("Generated app uses generic Supabase VITE env names that can couple it to another local app. Use app-specific env names instead.", {
+        errorCode: "E_UNSAFE_ENV",
+        directory: dir,
+        profile,
+        projectState,
+        unsafeEnvRefs,
         gates,
       });
     }
@@ -123,6 +155,18 @@ export const command: CommandHandler = {
       const gate = runGate("build", buildCommand, dir);
       gates.push(gate);
       if (!gate.ok) return failGate(dir, profile, gates, gate);
+
+      const crawlerHtmlStatus = scanCrawlerHtml(dir);
+      if (crawlerHtmlStatus.checked) {
+        const crawlerHtmlGate: VerificationGate = {
+          name: "crawler_html",
+          ok: crawlerHtmlStatus.ok,
+          status: crawlerHtmlStatus.ok ? 0 : 1,
+          output: crawlerHtmlStatus.output,
+        };
+        gates.push(crawlerHtmlGate);
+        if (!crawlerHtmlGate.ok) return failGate(dir, profile, gates, crawlerHtmlGate);
+      }
     }
 
     if (!skipStart) {
@@ -151,7 +195,7 @@ function printHelp(): void {
   console.log("  --skip-install      Skip install only if node_modules already exists; missing deps force install before check/build");
   console.log("  --skip-start        Skip start + route HTTP gate");
   console.log("  --skip-browser      Skip browser hydration/console smoke gate");
-  console.log("  --port <port>       Port for start/preview gate (default: 4173)");
+  console.log("  --port <port>       Port for start/preview gate (default: 4173; auto-advances when default is busy)");
   console.log("  --route <path>      Route to probe after start (default: profile-specific)");
   console.log("  --browser-route <p> Frontend route to smoke in headless Chrome (default: /)");
 }
@@ -227,6 +271,57 @@ export function scanPlaceholders(dir: string): PlaceholderHit[] {
   return hits;
 }
 
+export function scanUnsafeEnvRefs(dir: string): UnsafeEnvHit[] {
+  const hits: UnsafeEnvHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      for (const match of line.matchAll(UNSAFE_ENV_PATTERN)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: match[0],
+          reason: "Use an app-specific env name such as VITE_<APP>_SUPABASE_URL so local credentials from another app cannot be embedded.",
+        });
+      }
+    }
+  });
+  return hits;
+}
+
+export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
+  const indexPath = join(dir, "dist", "public", "index.html");
+  if (!existsSync(indexPath)) {
+    return { checked: false, ok: true, output: "dist/public/index.html not found; crawler HTML gate skipped." };
+  }
+
+  const html = readFileSync(indexPath, "utf8");
+  const hasPrerenderMarker = html.includes('data-jeriko-prerender="true"') || html.includes("data-jeriko-prerender='true'");
+  const hasRootFallback = /<div\s+id=["']root["'][^>]*>\s*\S[\s\S]*?<\/div>/i.test(html);
+  const hasMetaDescription = /<meta\s+name=["']description["'][^>]+content=["'][^"']{20,}["']/i.test(html);
+  const hasRobots = existsSync(join(dir, "dist", "public", "robots.txt"));
+  const hasSitemap = existsSync(join(dir, "dist", "public", "sitemap.xml"));
+  const ok = (hasPrerenderMarker || hasRootFallback) && hasMetaDescription && hasRobots && hasSitemap;
+
+  return {
+    checked: true,
+    ok,
+    file: indexPath,
+    output: ok
+      ? `Crawler-visible HTML found at ${indexPath}`
+      : [
+        `Crawler-visible HTML gate failed for ${indexPath}.`,
+        `hasPrerenderMarker=${hasPrerenderMarker}`,
+        `hasRootFallback=${hasRootFallback}`,
+        `hasMetaDescription=${hasMetaDescription}`,
+        `hasRobots=${hasRobots}`,
+        `hasSitemap=${hasSitemap}`,
+        "Build output must include prerendered/fallback body content plus robots.txt and sitemap.xml so Google can see public pages without running React.",
+      ].join("\n"),
+  };
+}
+
 function walkTextFiles(dir: string, visit: (file: string, content: string) => void): void {
   let entries;
   try {
@@ -294,8 +389,12 @@ async function runStartRouteGate(dir: string, profile: AppProfile, port: string,
   const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "start_route", ok: false, output: "No package start/preview script found." };
   const portPreflight = await verifyPortAvailable(port);
-  if (!portPreflight.ok) return { name: "start_route", command, ok: false, status: 1, output: portPreflight.output };
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
+  if (!portPreflight.ok) {
+    const reuse = await tryReuseExistingProjectServer(dir, url, route);
+    if (reuse.ok) return { name: "start_route", command, ok: true, status: 0, output: reuse.output };
+    return { name: "start_route", command, ok: false, status: 1, output: `${portPreflight.output}\n${reuse.output}`.slice(0, MAX_OUTPUT) };
+  }
   const child = spawn(command, [], {
     cwd: dir,
     shell: true,
@@ -353,7 +452,11 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
   }
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
   const portPreflight = await verifyPortAvailable(port);
-  if (!portPreflight.ok) return { name: "browser_smoke", command, ok: false, status: 1, output: portPreflight.output };
+  if (!portPreflight.ok) {
+    const reuse = await tryReuseExistingProjectServer(dir, url, route);
+    if (!reuse.ok) return { name: "browser_smoke", command, ok: false, status: 1, output: `${portPreflight.output}\n${reuse.output}`.slice(0, MAX_OUTPUT) };
+    return runBrowserSmokeAgainstUrl(command, url, dir);
+  }
   const child = spawn(command, [], {
     cwd: dir,
     shell: true,
@@ -398,8 +501,10 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
       const bodyText = (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "")).slice(0, 4_000);
       const html = (await page.content()).slice(0, 20_000);
       const overlayProblem = detectFrontendOverlay(html, bodyText);
+      const googleOAuthProblem = await verifyGoogleOAuthButton(page, url, dir);
       const problems = [...pageErrors, ...consoleErrors];
       if (overlayProblem) problems.push(overlayProblem);
+      if (googleOAuthProblem) problems.push(googleOAuthProblem);
       if (problems.length > 0) {
         return { name: "browser_smoke", command, ok: false, status: 1, output: problems.join("\n").slice(0, MAX_OUTPUT) };
       }
@@ -414,6 +519,132 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
   }
 }
 
+
+async function runBrowserSmokeAgainstUrl(command: string, url: string, dir: string): Promise<VerificationGate> {
+  const executablePath = findBrowserExecutable();
+  if (!executablePath) {
+    return { name: "browser_smoke", command, ok: false, status: 1, output: "No Chrome/Chromium executable found for browser smoke verification." };
+  }
+
+  try {
+    const { chromium } = await import("playwright-core");
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    const browser = await chromium.launch({ executablePath, headless: true });
+    try {
+      const page = await browser.newPage();
+      page.on("console", (msg) => {
+        if (msg.type() === "error") {
+          const text = msg.text();
+          if (!text.startsWith("Failed to load resource:")) consoleErrors.push(`${msg.type()}: ${text}`);
+        }
+      });
+      page.on("pageerror", (err) => pageErrors.push(err.message));
+      await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
+      await page.waitForSelector("#root, body", { timeout: 10_000 });
+      const bodyText = (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "")).slice(0, 4_000);
+      const html = (await page.content()).slice(0, 20_000);
+      const overlayProblem = detectFrontendOverlay(html, bodyText);
+      const googleOAuthProblem = await verifyGoogleOAuthButton(page, url, dir);
+      const problems = [...pageErrors, ...consoleErrors];
+      if (overlayProblem) problems.push(overlayProblem);
+      if (googleOAuthProblem) problems.push(googleOAuthProblem);
+      if (problems.length > 0) {
+        return { name: "browser_smoke", command, ok: false, status: 1, output: problems.join("\n").slice(0, MAX_OUTPUT) };
+      }
+      return { name: "browser_smoke", command, ok: true, status: 0, output: `loaded ${url}` };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  } catch (error) {
+    return { name: "browser_smoke", command, ok: false, status: 1, output: String(error).slice(0, MAX_OUTPUT) };
+  }
+}
+
+async function tryReuseExistingProjectServer(dir: string, url: string, route: string): Promise<{ ok: boolean; output: string }> {
+  const port = Number(new URL(url).port);
+  const owners = portOwnerCwds(port);
+  const normalizedDir = resolve(dir);
+  const ownsPort = owners.some((owner) => owner === normalizedDir || owner.startsWith(`${normalizedDir}/`));
+  if (!ownsPort) {
+    return { ok: false, output: owners.length > 0
+      ? `Busy port is owned by another cwd: ${owners.join(", ")}`
+      : "Busy port owner could not be tied to this project." };
+  }
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return { ok: false, output: `Existing project server returned HTTP ${response.status}: ${url}` };
+    const contentType = response.headers.get("content-type") || "";
+    const body = await response.text();
+    const responseProblem = validateRouteResponse(route, contentType, body);
+    if (responseProblem) return { ok: false, output: responseProblem.slice(0, MAX_OUTPUT) };
+    return { ok: true, output: `Reused existing project server already listening at ${url}\n${body.slice(0, MAX_OUTPUT)}`.slice(0, MAX_OUTPUT) };
+  } catch (error) {
+    return { ok: false, output: `Existing project server was not reachable at ${url}: ${String(error)}` };
+  }
+}
+
+function portOwnerCwds(port: number): string[] {
+  const lsof = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], { timeout: 5_000, encoding: "utf8" });
+  const pids = (lsof.stdout || "").trim().split("\n").filter(Boolean).map((pid) => Number(pid)).filter((pid) => Number.isInteger(pid));
+  const cwds: string[] = [];
+  for (const pid of pids) {
+    const readlink = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2_000, encoding: "utf8" });
+    const cwd = readlink.status === 0 ? readlink.stdout.trim() : "";
+    if (cwd && !cwds.includes(cwd)) cwds.push(cwd);
+  }
+  return cwds;
+}
+
+async function verifyGoogleOAuthButton(page: any, appUrl: string, dir: string): Promise<string | null> {
+  const googleButton = page.getByText(/continue with google|sign in with google|login with google|connect with google/i).first();
+  const count = await googleButton.count().catch(() => 0);
+  if (count === 0) return null;
+
+  await googleButton.click({ timeout: 5_000 }).catch((error: unknown) => {
+    throw new Error(`Google OAuth button is visible but could not be clicked: ${String(error)}`);
+  });
+  await Promise.race([
+    page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => undefined),
+    page.waitForURL(/accounts\.google\.com|supabase\.co|oauth|auth/i, { timeout: 10_000 }).catch(() => undefined),
+    delay(2_000),
+  ]);
+
+  const currentUrl = page.url();
+  const bodyText = await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+  const combined = `${currentUrl}\n${bodyText}`;
+  if (/redirect_uri_mismatch/i.test(combined)) {
+    const callbackMatch = combined.match(/https:\/\/[a-z0-9-]+\.supabase\.co\/auth\/v1\/callback/i);
+    const envCallback = detectSupabaseAuthCallbackFromEnv(dir);
+    const redirectUriMatch = currentUrl.match(/[?&]redirect_uri=([^&]+)/);
+    const redirectUri = callbackMatch?.[0] || envCallback || (redirectUriMatch ? decodeURIComponent(redirectUriMatch[1]) : "the Supabase auth callback URI shown by Google");
+    return [
+      "Google OAuth redirect_uri_mismatch detected after clicking the app's Google sign-in button.",
+      `App URL: ${appUrl}`,
+      `Current URL: ${currentUrl}`,
+      `Required Google Cloud authorized redirect URI: ${redirectUri}`,
+      "Fix the Google OAuth client before claiming this generated app's Google auth works.",
+    ].join("\n");
+  }
+
+  return null;
+}
+
+function detectSupabaseAuthCallbackFromEnv(dir: string): string | null {
+  for (const name of [".env.local", ".env", ".env.development", ".env.production"]) {
+    const path = join(dir, name);
+    if (!existsSync(path)) continue;
+    try {
+      const content = readFileSync(path, "utf8");
+      const match = content.match(/^\s*[A-Z0-9_]*SUPABASE_URL\s*=\s*['"]?(https:\/\/[a-z0-9-]+\.supabase\.co)\/?['"]?\s*$/im);
+      if (match?.[1]) return `${match[1]}/auth/v1/callback`;
+    } catch {
+      // Best effort only.
+    }
+  }
+  return null;
+}
 
 function detectStartCommand(dir: string, profile: AppProfile, port: string): string | null {
   const previewCommand = detectScriptCommand(dir, "preview");
@@ -476,6 +707,27 @@ function validateRouteResponse(route: string, contentType: string, body: string)
   }
 
   return null;
+}
+
+export async function resolveVerificationPort(
+  requestedPortText: string,
+  options: { strict?: boolean; maxAttempts?: number } = {},
+): Promise<string> {
+  const requestedPort = Number(requestedPortText);
+  if (!Number.isInteger(requestedPort) || requestedPort <= 0 || requestedPort > 65535) {
+    return requestedPortText;
+  }
+
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 20);
+  for (let offset = 0; offset < maxAttempts; offset++) {
+    const candidate = requestedPort + offset;
+    if (candidate > 65535) break;
+    const availability = await verifyPortAvailable(String(candidate));
+    if (availability.ok) return String(candidate);
+    if (options.strict) return requestedPortText;
+  }
+
+  return requestedPortText;
 }
 
 async function verifyPortAvailable(portText: string): Promise<{ ok: true } | { ok: false; output: string }> {

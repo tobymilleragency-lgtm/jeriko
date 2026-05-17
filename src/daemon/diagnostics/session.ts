@@ -26,31 +26,43 @@ function parseJsonMaybe(value: string): unknown {
 }
 
 function latestSession(sessionId?: string): Row | null {
-  const db = getDatabase();
-  if (sessionId) {
-    return db.query<Row, [string, string]>("SELECT * FROM session WHERE id = ? OR slug = ? LIMIT 1").get(sessionId, sessionId) ?? null;
+  try {
+    const db = getDatabase();
+    if (sessionId) {
+      return db.query<Row, [string, string]>("SELECT * FROM session WHERE id = ? OR slug = ? LIMIT 1").get(sessionId, sessionId) ?? null;
+    }
+    return db.query<Row, []>("SELECT * FROM session ORDER BY updated_at DESC LIMIT 1").get() ?? null;
+  } catch {
+    return null;
   }
-  return db.query<Row, []>("SELECT * FROM session ORDER BY updated_at DESC LIMIT 1").get() ?? null;
 }
 
 function sessionParts(sessionId: string, limit = 120): Row[] {
-  const db = getDatabase();
-  return db.query<Row, [string, number]>(
-    `SELECT part.rowid AS rowid, part.type, part.tool_name, part.content, part.tool_call_id, part.created_at, message.role
+  try {
+    const db = getDatabase();
+    return db.query<Row, [string, number]>(
+      `SELECT part.rowid AS rowid, part.type, part.tool_name, part.content, part.tool_call_id, part.created_at, message.role
      FROM part
      JOIN message ON message.id = part.message_id
      WHERE message.session_id = ?
      ORDER BY part.rowid DESC
      LIMIT ?`,
-  ).all(sessionId, limit);
+    ).all(sessionId, limit);
+  } catch {
+    return [];
+  }
 }
 
 function latestUserPrompt(sessionId: string): string {
-  const db = getDatabase();
-  const row = db.query<Row, [string]>(
-    "SELECT content FROM message WHERE session_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1",
-  ).get(sessionId);
-  return asString(row?.content);
+  try {
+    const db = getDatabase();
+    const row = db.query<Row, [string]>(
+      "SELECT content FROM message WHERE session_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+    ).get(sessionId);
+    return asString(row?.content);
+  } catch {
+    return "";
+  }
 }
 
 function git(args: string[], cwd: string): string {

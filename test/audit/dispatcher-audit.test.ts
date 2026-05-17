@@ -378,11 +378,18 @@ describe("command registry", () => {
     });
   }
 
-  it("total command count matches expected", async () => {
+  it("registered command names are unique and include the expected baseline", async () => {
     const { getCommands } = await import("../../src/cli/dispatcher.js");
     const commands = await getCommands();
-    // 4 + 2 + 3 + 4 + 10 + 26 + 4 + 7 + 6 + 3 + 3 = 72
-    expect(commands.size).toBe(expectedCommands.length);
+    const names = [...commands.keys()];
+
+    // This is an invariant, not a snapshot: adding commands should not break this
+    // audit as long as the baseline commands still exist and names remain unique.
+    expect(new Set(names).size).toBe(names.length);
+    expect(commands.size).toBeGreaterThanOrEqual(expectedCommands.length);
+    for (const name of expectedCommands) {
+      expect(commands.has(name)).toBe(true);
+    }
   });
 });
 

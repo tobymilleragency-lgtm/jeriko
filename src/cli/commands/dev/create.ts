@@ -287,6 +287,7 @@ export const command: CommandHandler = {
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
       replaceTemplatePlaceholders(dir, name);
+      const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name);
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile }))
         : undefined;
@@ -306,7 +307,7 @@ export const command: CommandHandler = {
       }
 
       const devServer = startDev ? installAndStartDevServer(dir) : null;
-      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, devServer });
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, crawlerPrerender, devServer });
       return;
     }
 
@@ -521,6 +522,7 @@ function emitCreateSuccess(args: {
   files: number;
   projectState?: string;
   gitInitialized?: boolean;
+  crawlerPrerender?: boolean;
   reused?: boolean;
   devServer: DetachedDevServer | null;
 }): never {
@@ -532,6 +534,7 @@ function emitCreateSuccess(args: {
     files: args.files,
     ...(args.projectState ? { projectState: args.projectState } : {}),
     ...(args.gitInitialized ? { gitInitialized: true } : {}),
+    ...(args.crawlerPrerender ? { crawlerPrerender: true } : {}),
     ...(args.reused ? { reused: true } : {}),
   };
 
@@ -607,6 +610,254 @@ export function repairGeneratedProject(dir: string, options: RepairGeneratedProj
 
 export function replaceTemplatePlaceholders(dir: string, projectName: string): void {
   replaceTemplatePlaceholdersWithReport(dir, projectName);
+}
+
+export function applyCrawlerPrerenderSupport(dir: string, projectName: string): boolean {
+  const pkgPath = join(dir, "package.json");
+  const indexPath = join(dir, "client", "index.html");
+  if (!existsSync(pkgPath) || !existsSync(indexPath)) return false;
+
+  let pkg: any;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  } catch {
+    return false;
+  }
+
+  const buildScript = typeof pkg?.scripts?.build === "string" ? pkg.scripts.build : "";
+  if (!buildScript.includes("vite build")) return false;
+
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  const scriptPath = join(dir, "scripts", "jeriko-prerender-seo.mjs");
+  if (!existsSync(scriptPath)) {
+    writeFileSync(scriptPath, buildCrawlerPrerenderScript(projectName));
+  }
+
+  if (!buildScript.includes("scripts/jeriko-prerender-seo.mjs")) {
+    pkg.scripts.build = buildScript.replace("vite build", "vite build && node scripts/jeriko-prerender-seo.mjs");
+    writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
+
+  return true;
+}
+
+function buildCrawlerPrerenderScript(projectName: string): string {
+  const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
+  return `import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = join(__dirname, "..");
+const dist = join(root, "dist", "public");
+const templatePath = join(dist, "index.html");
+const appPath = join(root, "client", "src", "App.tsx");
+const pagesDir = join(root, "client", "src", "pages");
+const siteUrl = (process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || "").replace(new RegExp("^https?://"), "").replace(new RegExp("/$"), "");
+const baseUrl = siteUrl ? \`https://\${siteUrl}\` : "";
+const projectTitle = ${JSON.stringify(projectTitle)};
+const generatedAt = new Date().toISOString();
+
+if (!existsSync(templatePath)) {
+  console.warn("Jeriko SEO prerender skipped: dist/public/index.html not found");
+  process.exit(0);
+}
+
+const template = readFileSync(templatePath, "utf8");
+const routes = discoverRoutes();
+
+for (const route of routes) {
+  const html = renderRoute(route);
+  const outDir = route.path === "/" ? dist : join(dist, route.path.startsWith("/") ? route.path.slice(1) : route.path);
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, "index.html"), html);
+}
+
+writeFileSync(join(dist, "robots.txt"), renderRobots());
+writeFileSync(join(dist, "sitemap.xml"), renderSitemap());
+writeFileSync(join(dist, "llms.txt"), renderLlmsTxt());
+
+console.log(\`Jeriko SEO prerendered \${routes.length} route(s) into \${dist}\`);
+
+function discoverRoutes() {
+  const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
+  const imports = new Map();
+  for (const match of app.matchAll(/import\\s+([A-Za-z0-9_]+)\\s+from\\s+["'](?:@\\/pages|\\.\\/pages)\\/([^"']+)["']/g)) {
+    imports.set(match[1], match[2]);
+  }
+
+  const routes = [];
+  for (const match of app.matchAll(/<Route\\s+([^>]*?)\\/>|<Route\\s+([^>]*?)>/g)) {
+    const attrs = match[1] || match[2] || "";
+    const pathMatch = attrs.match(/path=\\{?["']([^"'}]+)["']\\}?/);
+    const componentMatch = attrs.match(/component=\\{?([A-Za-z0-9_]+)\\}?/);
+    if (!pathMatch || !componentMatch) continue;
+    const path = pathMatch[1];
+    if (!path || path === "/404" || path.includes(":")) continue;
+    routes.push({ path, component: componentMatch[1], source: imports.get(componentMatch[1]) || componentMatch[1] });
+  }
+
+  if (!routes.some((route) => route.path === "/")) routes.unshift({ path: "/", component: "Home", source: "Home" });
+  return uniqueRoutes(routes);
+}
+
+function uniqueRoutes(routes) {
+  const seen = new Set();
+  return routes.filter((route) => {
+    if (seen.has(route.path)) return false;
+    seen.add(route.path);
+    return true;
+  });
+}
+
+function renderRoute(route) {
+  const content = extractPageContent(route);
+  const title = route.path === "/" ? projectTitle : \`\${content.heading} | \${projectTitle}\`;
+  const description = content.paragraphs.slice(0, 2).join(" ").slice(0, 300) || \`\${projectTitle} page for \${route.path}\`;
+  const canonical = baseUrl ? \`\${baseUrl}\${route.path === "/" ? "" : route.path}\` : route.path;
+  const nav = routes.map((item) => \`<a href="\${escapeAttr(item.path)}">\${escapeHtml(item.path === "/" ? "Home" : routeLabel(item.path))}</a>\`).join(" | ");
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: title,
+    url: canonical,
+    description,
+    isPartOf: { "@type": "WebSite", name: projectTitle, url: baseUrl || "/" },
+  }).replaceAll("<", "\\\\u003c");
+
+  const fallback = \`
+    <div id="root">
+      <noscript>This site works without JavaScript for core content. JavaScript enhances the full app experience.</noscript>
+      <nav aria-label="Primary" data-jeriko-prerender="true">\${nav}</nav>
+      <article data-jeriko-prerender="true">
+        <h1>\${escapeHtml(content.heading)}</h1>
+        \${content.paragraphs.map((paragraph) => \`<p>\${escapeHtml(paragraph)}</p>\`).join("\\n        ")}
+      </article>
+    </div>\`;
+
+  return injectHead(template, { title, description, canonical, jsonLd })
+    .replace(/<div id="root"><\\/div>/, fallback)
+    .replace(/<html lang="en">/, \`<html lang="en" data-jeriko-seo-generated-at="\${escapeAttr(generatedAt)}">\`);
+}
+
+function injectHead(html, page) {
+  const head = \`
+    <title>\${escapeHtml(page.title)}</title>
+    <meta name="description" content="\${escapeAttr(page.description)}" />
+    <link rel="canonical" href="\${escapeAttr(page.canonical)}" />
+    <meta property="og:title" content="\${escapeAttr(page.title)}" />
+    <meta property="og:description" content="\${escapeAttr(page.description)}" />
+    <meta property="og:url" content="\${escapeAttr(page.canonical)}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="\${escapeAttr(projectTitle)}" />
+    <meta name="robots" content="index,follow" />
+    <script type="application/ld+json">\${page.jsonLd}</script>\`;
+
+  return html
+    .replace(/<title>.*?<\\/title>/s, "")
+    .replace(/<meta name="description"[^>]*>\\s*/i, "")
+    .replace(/<meta property="og:[^>]+>\\s*/gi, "")
+    .replace(/<meta name="robots"[^>]*>\\s*/i, "")
+    .replace(/<link rel="canonical"[^>]*>\\s*/i, "")
+    .replace(/<\\/head>/i, \`\${head}\\n  </head>\`);
+}
+
+function extractPageContent(route) {
+  const sourcePath = join(pagesDir, route.source.endsWith(".tsx") ? route.source : \`\${route.source}.tsx\`);
+  const text = existsSync(sourcePath) ? readFileSync(sourcePath, "utf8") : "";
+  const candidates = [];
+
+  for (const match of text.matchAll(/>([^<>{}][^<>{}]*)</g)) pushClean(candidates, match[1]);
+  for (const match of text.matchAll(/["'\`](.{24,260}?)["'\`]/gs)) pushClean(candidates, match[1]);
+
+  const paragraphs = uniqueStrings(candidates)
+    .filter((value) => !looksLikeCode(value))
+    .slice(0, 80);
+  const heading = paragraphs.find((value) => value.length >= 8) || routeLabel(route.path) || projectTitle;
+  return { heading, paragraphs: paragraphs.length ? paragraphs : [\`\${projectTitle} content for \${route.path}\`] };
+}
+
+function pushClean(list, value) {
+  const cleaned = String(value)
+    .replace(/\\{[^}]*\\}/g, " ")
+    .replace(/\\s+/g, " ")
+    .trim();
+  if (cleaned.length >= 4) list.push(cleaned);
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function looksLikeCode(value) {
+  return /^(className|function|return|import|export|const|let|var)\\b/.test(value)
+    || /[{}<>]=?|=>|\\.tsx|@\\//.test(value)
+    || value.includes("--")
+    || value.length > 500;
+}
+
+function routeLabel(path) {
+  if (path === "/") return "Home";
+  return path.replace(/^\\//, "").replace(/[-_]+/g, " ").replace(/\\b\\w/g, (char) => char.toUpperCase());
+}
+
+function renderRobots() {
+  return \`User-agent: Googlebot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: *
+Allow: /
+
+\${baseUrl ? \`Sitemap: \${baseUrl}/sitemap.xml\\n\` : ""}\`;
+}
+
+function renderSitemap() {
+  const loc = (path) => baseUrl ? \`\${baseUrl}\${path === "/" ? "" : path}\` : path;
+  return \`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+\${routes.map((route) => \`  <url><loc>\${escapeHtml(loc(route.path))}</loc><lastmod>\${generatedAt.slice(0, 10)}</lastmod><changefreq>weekly</changefreq></url>\`).join("\\n")}
+</urlset>
+\`;
+}
+
+function renderLlmsTxt() {
+  return \`# \${projectTitle}
+
+This site is generated by Jeriko with crawlable build-time HTML fallbacks for public routes.
+
+## Public routes
+
+\${routes.map((route) => \`- \${routeLabel(route.path)}: \${baseUrl ? \`\${baseUrl}\${route.path === "/" ? "" : route.path}\` : route.path}\`).join("\\n")}
+
+## Crawl policy
+
+Google, Claude, Anthropic, and standard web crawlers are allowed to read public marketing content.
+\`;
+}
+
+function escapeHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replaceAll('"', "&quot;");
+}
+`;
 }
 
 function replaceTemplatePlaceholdersWithReport(dir: string, projectName: string): string[] {

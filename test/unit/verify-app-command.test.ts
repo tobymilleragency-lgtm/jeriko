@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanUnsafeEnvRefs, scanCrawlerHtml, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -18,6 +19,96 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_PLACEHOLDERS");
       expect(result.placeholders[0].file).toBe(path.join(dir, "package.json"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-advances the default verification port when it is already occupied", async () => {
+    const server = createServer((_req, res) => res.end("occupied"));
+    const occupiedPort = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (typeof address === "object" && address) resolve(address.port);
+      });
+    });
+
+    try {
+      const resolved = await resolveVerificationPort(String(occupiedPort), { maxAttempts: 2 });
+      expect(resolved).toBe(String(occupiedPort + 1));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps explicit busy verification ports strict", async () => {
+    const server = createServer((_req, res) => res.end("occupied"));
+    const occupiedPort = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (typeof address === "object" && address) resolve(address.port);
+      });
+    });
+
+    try {
+      const resolved = await resolveVerificationPort(String(occupiedPort), { strict: true, maxAttempts: 2 });
+      expect(resolved).toBe(String(occupiedPort));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("fails before running commands when generic Supabase env names remain", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-unsafe-env-"));
+    try {
+      fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"unsafe-env","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "src", "supabase.ts"), 'const url = import.meta.env.VITE_SUPABASE_URL;\nconst key = import.meta.env.VITE_SUPABASE_ANON_KEY;\n');
+
+      const hits = scanUnsafeEnvRefs(dir);
+      const result = await runVerifyAppCommand([dir, "--skip-install"]);
+
+      expect(hits.map((hit) => hit.token)).toEqual(["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"]);
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_UNSAFE_ENV");
+      expect(result.unsafeEnvRefs.length).toBe(2);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects crawler-visible built HTML", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-crawler-html-"));
+    try {
+      const publicDir = path.join(dir, "dist", "public");
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(path.join(publicDir, "index.html"), '<html><head><meta name="description" content="A long enough public marketing description for crawlers."></head><body><div id="root"><article data-jeriko-prerender="true">Public content</article></div></body></html>');
+      fs.writeFileSync(path.join(publicDir, "robots.txt"), "User-agent: *\nAllow: /\n");
+      fs.writeFileSync(path.join(publicDir, "sitemap.xml"), "<urlset></urlset>\n");
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("Crawler-visible HTML found");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML scan for empty SPA shells", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-empty-shell-"));
+    try {
+      const publicDir = path.join(dir, "dist", "public");
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(path.join(publicDir, "index.html"), '<html><head><title>Old</title></head><body><div id="root"></div></body></html>');
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Build output must include prerendered/fallback body content");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -40,7 +131,7 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(true);
       expect(result.data.directory).toBe(dir);
       expect(result.data.profile).toBe("web-static");
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "check", "build"]);
       expect(result.data.gates.every((gate: any) => gate.ok)).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -68,7 +159,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { check: "pnpm run check", build: "pnpm run build" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -78,7 +169,7 @@ describe("verify-app command", () => {
       expect(state?.verification.lastSuccessfulVerification).toBeDefined();
       expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
       expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
-      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "check", "build"]);
+      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "check", "build"]);
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect(result.data.projectState.verification.lastSuccessfulVerification.ok).toBe(true);
@@ -112,14 +203,14 @@ describe("verify-app command", () => {
           build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
         },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "install", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "install", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
 
       expect(result.ok).toBe(true);
       expect(result.data.dependencyStatus.nodeModules).toBe(true);
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "install", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "install", "check", "build"]);
       expect(fs.readFileSync(orderFile, "utf8")).toBe("install\ncheck\nbuild\n");
       expect(result.data.gates.find((gate: any) => gate.name === "install").output).toContain("node_modules missing");
     } finally {
@@ -141,7 +232,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { install: "node -e \"console.log('INSTALL_WITHOUT_NODE_MODULES')\"", check: "node -e \"process.exit(99)\"" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "install", "check"] },
+        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "install", "check"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -151,7 +242,7 @@ describe("verify-app command", () => {
       expect(result.failedGate.name).toBe("dependency_preflight");
       expect(result.failedGate.output).toContain("node_modules is still missing");
       expect(result.dependencyStatus.missingNodeModules).toBe(true);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "install", "dependency_preflight"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "install", "dependency_preflight"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -308,7 +399,80 @@ describe("verify-app command", () => {
     }
   });
 
-  it("refuses to verify when the requested port is already occupied", async () => {
+  it("browser smoke fails when a visible Google OAuth button lands on redirect_uri_mismatch", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-google-oauth-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-google-oauth",
+        scripts: {
+          start: "node server.mjs",
+        },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><body><div id="root"><button onclick="document.body.innerText=\\'redirect_uri_mismatch https://demo-ref.supabase.co/auth/v1/callback\\'">Continue with Google</button></div></body></html>';
+        const server = http.createServer((req, res) => {
+          res.writeHead(200, { 'content-type': req.url === '/api/health' ? 'application/json' : 'text/html' });
+          res.end(req.url === '/api/health' ? JSON.stringify({ ok: true }) : html);
+        });
+        server.listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--port", "4297"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("browser_smoke");
+      expect(result.failedGate.output).toContain("Google OAuth redirect_uri_mismatch detected");
+      expect(result.failedGate.output).toContain("https://demo-ref.supabase.co/auth/v1/callback");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses an already-running server owned by the same project", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-reuse-project-server-"));
+    let child: ReturnType<typeof spawn> | null = null;
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-reuse-project-server",
+        scripts: { start: "node server.mjs" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        http.createServer((_req, res) => {
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end('<!doctype html><html><body><div id="root">Existing project server</div></body></html>');
+        }).listen(port, '127.0.0.1');
+      `);
+
+      const port = await getFreePort();
+      child = spawn(process.execPath, ["server.mjs"], {
+        cwd: dir,
+        env: { ...process.env, PORT: String(port) },
+        stdio: "ignore",
+      });
+      await waitForUrl(`http://127.0.0.1:${port}/`);
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-static", "--skip-install", "--skip-browser", "--port", String(port)]);
+
+      expect(result.ok).toBe(true);
+      const startGate = result.data.gates.find((gate: any) => gate.name === "start_route");
+      expect(startGate.ok).toBe(true);
+      expect(startGate.output).toContain("Reused existing project server");
+    } finally {
+      if (child?.pid) child.kill("SIGTERM");
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to verify when the requested port is already occupied by another project", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-port-busy-"));
     const server = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
@@ -352,6 +516,31 @@ describe("verify-app command", () => {
     }
   });
 });
+
+async function getFreePort(): Promise<number> {
+  const server = createServer((_req, res) => res.end("reserved"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing free port");
+  const port = address.port;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+async function waitForUrl(url: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${url}: ${String(lastError)}`);
+}
 
 async function runVerifyAppCommand(args: string[]): Promise<any> {
   setOutputFormat("json");

@@ -4,6 +4,9 @@
 
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initDatabase, closeDatabase } from "../../src/daemon/storage/db.js";
 import { TriggerEngine, type TriggerConfig, type TriggerFireEvent } from "../../src/daemon/services/triggers/engine.js";
 import { TriggerStore } from "../../src/daemon/services/triggers/store.js";
@@ -1180,42 +1183,59 @@ describe("Audit: file trigger", () => {
   });
 
   it("adds file trigger without error", () => {
-    const t = engine.add({
-      type: "file",
-      enabled: false,
-      config: { paths: ["/tmp"] },
-      action: { type: "shell", command: "echo file-changed" },
-    });
-    expect(t.type).toBe("file");
+    const watchDir = mkdtempSync(join(tmpdir(), "jeriko-file-trigger-"));
+    try {
+      const t = engine.add({
+        type: "file",
+        enabled: false,
+        config: { paths: [watchDir] },
+        action: { type: "shell", command: "echo file-changed" },
+      });
+      expect(t.type).toBe("file");
+    } finally {
+      rmSync(watchDir, { recursive: true, force: true });
+    }
   });
 
   it("can fire file trigger manually with payload", async () => {
+    const watchDir = mkdtempSync(join(tmpdir(), "jeriko-file-trigger-"));
     const fired: TriggerFireEvent[] = [];
     engine.bus.on("trigger:fired", (e) => fired.push(e));
 
-    const t = engine.add({
-      type: "file",
-      enabled: true,
-      config: { paths: ["/tmp"] },
-      action: { type: "shell", command: "echo file-event", notify: false },
-    });
+    try {
+      const t = engine.add({
+        type: "file",
+        enabled: true,
+        config: { paths: [watchDir] },
+        action: { type: "shell", command: "echo file-event", notify: false },
+      });
 
-    await engine.fire(t.id, { event: "modify", path: "/tmp/test.txt" });
-    expect(fired.length).toBe(1);
-    expect(fired[0]!.payload).toEqual({ event: "modify", path: "/tmp/test.txt" });
+      const changedPath = join(watchDir, "test.txt");
+      await engine.fire(t.id, { event: "modify", path: changedPath });
+      expect(fired.length).toBe(1);
+      expect(fired[0]!.payload).toEqual({ event: "modify", path: changedPath });
+    } finally {
+      for (const t of engine.listAll()) engine.remove(t.id);
+      rmSync(watchDir, { recursive: true, force: true });
+    }
   });
 
   it("cleanup works on remove", () => {
-    const t = engine.add({
-      type: "file",
-      enabled: true,
-      config: { paths: ["/tmp"] },
-      action: { type: "shell", command: "echo file-cleanup" },
-    });
+    const watchDir = mkdtempSync(join(tmpdir(), "jeriko-file-trigger-"));
+    try {
+      const t = engine.add({
+        type: "file",
+        enabled: true,
+        config: { paths: [watchDir] },
+        action: { type: "shell", command: "echo file-cleanup" },
+      });
 
-    // Should not throw
-    engine.remove(t.id);
-    expect(engine.get(t.id)).toBeUndefined();
+      // Should not throw
+      engine.remove(t.id);
+      expect(engine.get(t.id)).toBeUndefined();
+    } finally {
+      rmSync(watchDir, { recursive: true, force: true });
+    }
   });
 });
 

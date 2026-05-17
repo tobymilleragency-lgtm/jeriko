@@ -210,7 +210,29 @@ function pidsOnPort(port: number): number[] {
   return pidsFromLsofOutput(lsof.stdout?.toString() ?? "");
 }
 
-export const __webdevTest = { pidsFromLsofOutput, pidsOnPort };
+function shouldAutoOpenUrl(): boolean {
+  return !/^(0|false|no)$/i.test(String(process.env.JERIKO_WEBDEV_AUTO_OPEN ?? "1"));
+}
+
+function openUrlBestEffort(url: string): boolean {
+  if (!shouldAutoOpenUrl()) return false;
+  try {
+    const opener = process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "cmd"
+        : "xdg-open";
+    const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+    const child = spawn(opener, args, { detached: true, stdio: "ignore" });
+    child.unref();
+    return true;
+  } catch (err) {
+    log.debug(`Webdev tool: auto-open failed for ${url}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+export const __webdevTest = { pidsFromLsofOutput, pidsOnPort, openUrlBestEffort, shouldAutoOpenUrl };
 
 function pidCwd(pid: number): string | null {
   const resolved = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2000 });
@@ -750,13 +772,16 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
       });
     }
 
-    log.debug(`Webdev tool: restarted "${detected.command}" on port ${port} (pid: ${child.pid})`);
+    const url = `http://127.0.0.1:${port}/`;
+    const opened = openUrlBestEffort(url);
+    log.debug(`Webdev tool: restarted "${detected.command}" on port ${port} (pid: ${child.pid}, opened: ${opened})`);
     return JSON.stringify({
       ok: true,
       data: {
         pid: child.pid,
         port,
-        url: `http://127.0.0.1:${port}/`,
+        url,
+        opened,
         command: detected.command,
         runner: detected.runner,
         directory: dir,
