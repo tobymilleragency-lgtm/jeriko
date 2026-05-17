@@ -81,7 +81,7 @@ function writeChecks(runDir: string, page: Page, overrides: Partial<{
   writeJson(join(runDir, "checks", "schema", `${slug}.json`), {
     url,
     blocksFound: 1,
-    blocks: [{ index: 0, parseOk: overrides.schemaStatus !== "fail", types: ["LocalBusiness"], checks: [{ type: "LocalBusiness", status: overrides.schemaStatus ?? "pass", missing: overrides.schemaStatus === "fail" ? ["valid JSON"] : [], warnings: overrides.schemaStatus === "warn" ? [overrides.schemaNote ?? "telephone"] : [] }] }],
+    blocks: [{ index: 0, parseOk: overrides.schemaStatus !== "fail", types: ["LocalBusiness"], checks: [{ type: "LocalBusiness", status: overrides.schemaStatus ?? "pass", missing: overrides.schemaStatus === "fail" ? ["valid JSON"] : [], warnings: overrides.schemaStatus === "warn" ? [overrides.schemaNote ?? "telephone"] : overrides.schemaStatus === "fail" && overrides.schemaNote ? [overrides.schemaNote] : [] }] }],
     summary: { passed: overrides.schemaStatus === "pass" || !overrides.schemaStatus ? 1 : 0, failed: overrides.schemaStatus === "fail" ? 1 : 0, warned: overrides.schemaStatus === "warn" ? 1 : 0 },
   });
   writeJson(join(runDir, "checks", "og-images", `${slug}.json`), {
@@ -160,15 +160,19 @@ describe("launch-readiness assemble-report", () => {
     expect(report.prioritizedFixes.p0[0]).toContain("Final page URL is not HTTPS");
   });
 
-  test("schema parse fail produces NO-GO", async () => {
+  test("schema parse fail produces one P0 root-cause entry with parse details", async () => {
     const { runId, runDir } = createRun([{ path: "/", source: "input" }]);
-    writeChecks(runDir, { path: "/" }, { schemaStatus: "fail" });
+    writeChecks(runDir, { path: "/" }, { schemaStatus: "fail", schemaNote: "JSON parse error in block 0: Expected property name or '}' in JSON at position 2" });
 
     await runAssemble(runId);
 
     const report = readReportJson(runDir);
+    const markdown = readFileSync(join(runDir, "report.md"), "utf-8");
     expect(report.verdict).toBe("NO_GO");
-    expect(report.prioritizedFixes.p0.some((fix: string) => fix.includes("Schema") && fix.includes("valid JSON"))).toBe(true);
+    expect(report.summary.criticalIssues).toBe(1);
+    expect(report.prioritizedFixes.p0).toHaveLength(1);
+    expect(report.prioritizedFixes.p0[0]).toContain("JSON parse error in block 0");
+    expect(markdown).toContain("JSON parse error in block 0");
   });
 
   test("og:image 404 produces NO-GO", async () => {

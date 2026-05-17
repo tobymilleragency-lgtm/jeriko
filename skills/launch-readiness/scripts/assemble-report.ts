@@ -138,17 +138,18 @@ function collectSchema(schema: any, page: PageEntry, fixes: Fixes): Status[] {
   }
   const statuses: Status[] = [];
   for (const block of schema.blocks ?? []) {
-    if (block.parseOk === false) {
+    const checks = block.checks ?? [];
+    if (block.parseOk === false && checks.length === 0) {
       statuses.push("fail");
-      const msg = block.checks?.[0]?.warnings?.[0] ?? "Schema JSON-LD parse failure";
-      addFix(fixes, "p0", page.url, "Schema", msg);
+      addFix(fixes, "p0", page.url, "Schema", "Schema JSON-LD parse failure");
     }
-    for (const check of block.checks ?? []) {
+    for (const check of checks) {
       const status = checkStatus(check);
       statuses.push(status);
       const missing = Array.isArray(check.missing) && check.missing.length > 0 ? check.missing.join(", ") : "required schema field missing";
       const warnings = Array.isArray(check.warnings) && check.warnings.length > 0 ? check.warnings.join(", ") : "schema warning";
-      if (status === "fail") addFix(fixes, "p0", page.url, `Schema ${check.type ?? "JSON-LD"}`, missing);
+      const failDetail = Array.isArray(check.warnings) && check.warnings.some((warning: string) => warning.includes("JSON parse error")) ? warnings : missing;
+      if (status === "fail") addFix(fixes, "p0", page.url, `Schema ${check.type ?? "JSON-LD"}`, failDetail);
       else if (status === "warn") addFix(fixes, "p1", page.url, `Schema ${check.type ?? "JSON-LD"}`, warnings);
     }
   }
@@ -279,6 +280,22 @@ function renderStatusLine(pageResults: PageResult[], getter: (page: PageResult) 
   }).join("\n");
 }
 
+function schemaStatusLine(schema: any): { status: Status; note: string } {
+  if (!schema?.summary) return schema;
+  const details: string[] = [`${schema.blocksFound ?? 0} block(s)`];
+  for (const block of schema.blocks ?? []) {
+    for (const check of block.checks ?? []) {
+      if (checkStatus(check) !== "fail") continue;
+      const warnings = Array.isArray(check.warnings) ? check.warnings.filter((warning: string) => warning.includes("JSON parse error")) : [];
+      if (warnings.length > 0) details.push(...warnings);
+    }
+  }
+  return {
+    status: schema.summary.failed > 0 ? "fail" : schema.summary.warned > 0 ? "warn" : "pass",
+    note: details.join("; "),
+  };
+}
+
 function renderMarkdown(report: any, pagesDoc: any): string {
   const verdictLabel = report.verdict === "GO" ? "✅ GO" : "⚠️ NO-GO";
   const skippedReasons = new Set<string>();
@@ -334,7 +351,7 @@ ${renderStatusLine(report.pageResults, (page) => page.checks.static?.checks?.met
 ${report.pageResults.map((page: any) => `- ${page.url} — title ${page.checks.static?.checks?.title?.status ?? "not_run"}, description ${page.checks.static?.checks?.metaDescription?.status ?? "not_run"}, OG ${page.checks.static?.checks?.ogTags?.status ?? "not_run"}, Twitter ${page.checks.static?.checks?.twitterCard?.status ?? "not_run"}`).join("\n")}
 
 ### JSON-LD / Schema
-${renderStatusLine(report.pageResults, (page) => page.checks.schema?.summary ? { status: page.checks.schema.summary.failed > 0 ? "fail" : page.checks.schema.summary.warned > 0 ? "warn" : "pass", note: `${page.checks.schema.blocksFound ?? 0} block(s)` } : page.checks.schema)}
+${renderStatusLine(report.pageResults, (page) => schemaStatusLine(page.checks.schema))}
 
 ### OG Images
 ${renderStatusLine(report.pageResults, (page) => page.checks.ogImage)}
