@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -78,10 +78,56 @@ describe("No-progress forced summary", () => {
     ], "Repeated no-progress tool round blocked after 3 matching rounds: workspace_status {}");
 
     expect(summary).toContain("No-progress guard stopped the run.");
+    expect(summary).toContain("Operator recap:");
+    expect(summary).toContain("What Jeriko did:");
+    expect(summary).toContain("What Jeriko did not finish / did not prove:");
     expect(summary).toContain("pnpm check: passed");
     expect(summary).toContain("pnpm build: passed");
     expect(summary).toContain("changed files: none");
     expect(summary).toContain("code_integrity guard triggered: no");
+  });
+
+  test("includes localhost URL, verify_app gates, checkpoint, and blockers in forced recap", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: JSON.stringify({ ok: true, data: { project: "acp-crm", server: { running: true, url: "http://localhost:3002", port: 3002 } } }) },
+      { role: "tool", content: JSON.stringify({ ok: false, data: { gates: [
+        { name: "placeholder_scan", ok: true },
+        { name: "check", ok: true, output: "> acp-crm check\n> tsc --noEmit\n" },
+        { name: "build", ok: true, output: "> acp-crm build\n> vite build\n✓ built in 1.42s" },
+        { name: "start_route", ok: false, output: "port 3002 is already in use" },
+      ] } }) },
+      { role: "tool", content: JSON.stringify({ ok: true, data: { hash: "39eb8c2", message: "Add ACP AI assistant backbone" } }) },
+    ], "Agent loop exceeded maximum rounds (40).");
+
+    expect(summary).toContain("Agent loop stopped at the maximum-round safety limit.");
+    expect(summary).toContain("http://localhost:3002");
+    expect(summary).toContain("start_route: FAILED — port 3002 is already in use");
+    expect(summary).toContain("checkpoint: 39eb8c2 — Add ACP AI assistant backbone");
+    expect(summary).toContain("start_route failed: port 3002 is already in use");
+  });
+
+  test("builds a no-progress recovery prompt that does not claim stale verification after a later edit", () => {
+    const prompt = buildNoProgressRecoveryPrompt([
+      { role: "tool", content: "> relax-remodel-consulting check\n> tsc --noEmit\n" },
+      { role: "tool", content: "> relax-remodel-consulting build\n> vite build\n✓ built in 1.54s\n" },
+      { role: "tool", content: JSON.stringify({ ok: true, path: "/home/toby/.jeriko/projects/relax-remodel-consulting/client/src/data/blogPosts.ts", bytes: 17952 }) },
+    ], "Repeated no-progress tool round blocked after 3 matching rounds: read_file {}");
+
+    expect(prompt).toContain("Next required action: Run the existing typecheck/check command once");
+    expect(prompt).not.toContain("Stop using tools and provide the final answer");
+  });
+
+  test("builds a model-stream recovery prompt that forces a distinct next step after compaction", () => {
+    const prompt = buildModelStreamNoProgressRecoveryPrompt(
+      "Agent stuck/no-progress guard stopped the run.\nNo new model/tool/DB progress was observed while waiting for the model stream.",
+      138_883,
+      39_200,
+    );
+
+    expect(prompt).toContain("MODEL_STREAM_NO_PROGRESS_RECOVERY");
+    expect(prompt).toContain("History was compacted before retry: 138883 estimated tokens → 39200 estimated tokens.");
+    expect(prompt).toContain("Do not repeat broad file/status inspection");
+    expect(prompt).toContain("provide the final report now");
   });
 });
 
@@ -97,6 +143,7 @@ describe("App-factory final done gate", () => {
   test("recognizes passing verify_app evidence with all factory gates", () => {
     const tool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },

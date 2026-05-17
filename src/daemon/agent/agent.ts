@@ -78,6 +78,8 @@ export type AgentEvent =
 
 export const DEFAULT_AGENT_MAX_DURATION_MS = 10 * 60_000;
 export const DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS = 3 * 60_000;
+const STREAM_NO_PROGRESS_RECOVERY_LIMIT = 1;
+const STREAM_NO_PROGRESS_RECOVERY_CONTEXT_LIMIT = 80_000;
 
 export class AgentNoProgressError extends Error {
   constructor(message: string) {
@@ -199,6 +201,9 @@ export async function* runAgent(
 
   let totalTokensIn = 0;
   let totalTokensOut = 0;
+  let streamNoProgressRecoveries = 0;
+  let noProgressRecoveries = 0;
+  const maxNoProgressRecoveries = 2;
   const repeatGuard = createToolRepeatGuard();
   const roundRepeatGuard = createToolRoundRepeatGuard();
 
@@ -218,7 +223,11 @@ export async function* runAgent(
     // ── Guard: pre-round check (duration limit) ───────────────────────
     const durationCheck = guard.checkBeforeRound();
     if (durationCheck) {
-      yield { type: "text_delta", content: durationCheck };
+      const durationSummary = buildNoProgressStopSummary(messages, durationCheck);
+      const durationMsg = addMessage(config.sessionId, "assistant", durationSummary, { input: 0, output: estimateTokens(durationSummary) });
+      addPart(durationMsg.id, "text", durationSummary);
+      touchSession(config.sessionId);
+      yield { type: "text_delta", content: durationSummary };
       yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
       return;
     }
@@ -292,10 +301,29 @@ export async function* runAgent(
       const errMsg = err instanceof Error ? err.message : String(err);
       if (err instanceof AgentNoProgressError) {
         const diagnosis = errMsg;
-        const guardMsg = addMessage(config.sessionId, "assistant", diagnosis, { input: totalTokensIn, output: estimateTokens(diagnosis) });
-        addPart(guardMsg.id, "text", diagnosis);
+        const remainingMs = maxDurationMs - (Date.now() - startedAt);
+        if (streamNoProgressRecoveries < STREAM_NO_PROGRESS_RECOVERY_LIMIT && remainingMs > 30_000) {
+          streamNoProgressRecoveries += 1;
+          const beforeTokens = estimateTokens(messages.map((m) => messageText(m)).join(""));
+          const recoveryContextLimit = Math.min(contextLimit, STREAM_NO_PROGRESS_RECOVERY_CONTEXT_LIMIT);
+          const compacted = compactHistory(messages, recoveryContextLimit);
+          const afterTokens = estimateTokens(compacted.map((m) => messageText(m)).join(""));
+          messages.length = 0;
+          messages.push(...compacted);
+          const recoveryPrompt = buildModelStreamNoProgressRecoveryPrompt(diagnosis, beforeTokens, afterTokens);
+          const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
+          addPart(recoveryMsg.id, "text", recoveryPrompt);
+          messages.push({ role: "user", content: recoveryPrompt });
+          yield { type: "compaction", beforeTokens, afterTokens };
+          yield { type: "text_delta", content: recoveryPrompt };
+          continue;
+        }
+
+        const finalDiagnosis = `${diagnosis}\n\n${buildNoProgressStopSummary(messages, "Model stream stopped before Jeriko could complete a normal final response.")}`;
+        const guardMsg = addMessage(config.sessionId, "assistant", finalDiagnosis, { input: totalTokensIn, output: estimateTokens(finalDiagnosis) });
+        addPart(guardMsg.id, "text", finalDiagnosis);
         touchSession(config.sessionId);
-        yield { type: "text_delta", content: diagnosis };
+        yield { type: "text_delta", content: finalDiagnosis };
         yield { type: "error", message: diagnosis };
         yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
         return;
@@ -349,7 +377,7 @@ export async function* runAgent(
     // If no tool calls, the turn is complete
     if (toolCalls.length === 0 || hadError) {
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasPassingVerifyApp(messages)) {
-        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded app work must call verify_app and pass placeholder_scan, install, check, build, start_route, and browser_smoke before claiming done. Call verify_app on the app directory now, then produce the final report from that result.";
+        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded app work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke before claiming done. Call verify_app on the app directory now, then produce the final report from that result.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -375,6 +403,17 @@ export async function* runAgent(
         addPart(toolMsg.id, "error", result, tc.name, tc.id);
         messages.push({ role: "tool", content: result, tool_call_id: tc.id });
       }
+
+      noProgressRecoveries += 1;
+      if (noProgressRecoveries <= maxNoProgressRecoveries) {
+        const recoveryPrompt = buildNoProgressRecoveryPrompt(messages, roundRepeatCheck);
+        const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
+        addPart(recoveryMsg.id, "text", recoveryPrompt);
+        messages.push({ role: "user", content: recoveryPrompt });
+        yield { type: "text_delta", content: recoveryPrompt };
+        continue;
+      }
+
       const forcedSummary = buildNoProgressStopSummary(messages, roundRepeatCheck);
       const guardMsg = addMessage(config.sessionId, "assistant", forcedSummary, { input: 0, output: estimateTokens(forcedSummary) });
       addPart(guardMsg.id, "text", forcedSummary);
@@ -439,7 +478,14 @@ export async function* runAgent(
     log.debug(`Agent round ${round + 1}: ${toolCalls.length} tool(s) executed, continuing`);
   }
 
-  // Max rounds exceeded
+  // Max rounds exceeded. Do not leave the operator with only a framework error;
+  // persist a concrete recap from captured tool evidence so completed work,
+  // verification status, and localhost URL are still visible.
+  const maxRoundsSummary = buildNoProgressStopSummary(messages, `Agent loop exceeded maximum rounds (${maxRounds}).`);
+  const maxRoundsMsg = addMessage(config.sessionId, "assistant", maxRoundsSummary, { input: 0, output: estimateTokens(maxRoundsSummary) });
+  addPart(maxRoundsMsg.id, "text", maxRoundsSummary);
+  touchSession(config.sessionId);
+  yield { type: "text_delta", content: maxRoundsSummary };
   yield { type: "error", message: `Agent loop exceeded maximum rounds (${maxRounds})` };
   yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
 
@@ -517,6 +563,16 @@ export function buildStuckDiagnosis(args: {
     `Context: backend=${args.backend} model=${args.model} round=${args.round + 1} elapsed=${Math.round(args.elapsedMs / 1000)}s.`,
     "Action taken: aborted the model stream and persisted this diagnosis instead of allowing Jeriko to spin indefinitely.",
     "Exit status: timeout/non-zero for foreground ask clients.",
+  ].join("\n");
+}
+
+export function buildModelStreamNoProgressRecoveryPrompt(diagnosis: string, beforeTokens: number, afterTokens: number): string {
+  return [
+    "MODEL_STREAM_NO_PROGRESS_RECOVERY: The previous model request produced no stream/tool/DB progress before the watchdog fired.",
+    diagnosis,
+    `History was compacted before retry: ${beforeTokens} estimated tokens → ${afterTokens} estimated tokens.`,
+    "Do not repeat broad file/status inspection. Use the evidence already present, take one distinct next action only, then report the result.",
+    "If the requested work is already implemented and verified, stop using tools and provide the final report now.",
   ].join("\n");
 }
 
@@ -608,27 +664,243 @@ function summarizeToolCall(toolCall: ToolCall): string {
 }
 
 export function buildNoProgressStopSummary(messages: DriverMessage[], reason: string): string {
+  const state = getCapturedVerificationState(messages);
+  const gateLines = state.verifyAppGates.length > 0
+    ? state.verifyAppGates.map((gate) => `  - ${gate.name}: ${gate.ok ? "passed" : "FAILED"}${gate.output ? ` — ${gate.output}` : ""}`)
+    : ["  - verify_app: not run or not captured"];
+  const localUrlLines = state.localUrls.length > 0
+    ? state.localUrls.map((url) => `- ${url}`)
+    : ["- not captured"];
+  const doneLines = state.completedActions.length > 0
+    ? state.completedActions.map((item) => `- ${item}`)
+    : ["- no concrete completed actions were captured before the guard stopped the run"];
+  const notDoneLines = state.notDone.length > 0
+    ? state.notDone.map((item) => `- ${item}`)
+    : ["- no captured blockers; review the verification lines above before claiming more"];
+
+  const lines = [
+    reason.startsWith("Agent loop exceeded") ? "Agent loop stopped at the maximum-round safety limit." : "No-progress guard stopped the run.",
+    reason,
+    "",
+    "Operator recap:",
+    "",
+    "What Jeriko did:",
+    ...doneLines,
+    "",
+    "Localhost URL:",
+    ...localUrlLines,
+    "",
+    "Verification gates:",
+    ...gateLines,
+    "",
+    "Current verified state:",
+    `- pnpm check: ${state.checkPassed ? "passed" : "not verified in the captured context"}`,
+    `- pnpm build: ${state.buildPassed ? "passed" : "not verified in the captured context"}`,
+    `- changed files: ${state.noChangedFiles ? "none" : "not verified in the captured context"}`,
+    `- code_integrity guard triggered: ${state.codeIntegrityTriggered ? "yes" : "no"}`,
+    state.changedFilesSummary ? `- latest changed files: ${state.changedFilesSummary}` : "- latest changed files: not captured",
+    state.checkpoint ? `- checkpoint: ${state.checkpoint}` : "- checkpoint: not captured",
+    "",
+    "What Jeriko did not finish / did not prove:",
+    ...notDoneLines,
+    "",
+    "Action taken: stopped after bounded recovery attempts instead of rereading the same files or rerunning the same checks.",
+  ];
+  return lines.join("\n");
+}
+
+export function buildNoProgressRecoveryPrompt(messages: DriverMessage[], reason: string): string {
+  const state = getCapturedVerificationState(messages);
+  const nextStep = !state.checkPassed
+    ? "Run the existing typecheck/check command once, or report the exact blocker if it cannot run."
+    : !state.buildPassed
+      ? "Run the existing build command once, or report the exact blocker if it cannot run."
+      : "Stop using tools and provide the final answer from the verified evidence already in context.";
+
+  return [
+    "NO_PROGRESS_RECOVERY: You repeated the same no-progress tool round.",
+    reason,
+    "Do not call the same tool(s) with the same arguments again.",
+    "Use the existing context and take the next distinct step only.",
+    `Next required action: ${nextStep}`,
+  ].join("\n");
+}
+
+interface CapturedGateState {
+  name: string;
+  ok: boolean;
+  output?: string;
+}
+
+interface CapturedVerificationState {
+  checkPassed: boolean;
+  buildPassed: boolean;
+  noChangedFiles: boolean;
+  codeIntegrityTriggered: boolean;
+  changedFilesSummary: string;
+  checkpoint: string;
+  localUrls: string[];
+  verifyAppGates: CapturedGateState[];
+  completedActions: string[];
+  notDone: string[];
+}
+
+function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerificationState {
   const toolTexts = messages.filter((msg) => msg.role === "tool").map((msg) => messageText(msg));
-  const checkPassed = toolTexts.some((text) => text.includes("tsc --noEmit") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
-  const buildPassed = toolTexts.some((text) => text.includes("vite build") && text.includes("✓ built in") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
+  const latestMutationIndex = latestGeneratedAppMutationIndex(toolTexts);
+  const checkPassed = toolTexts.some((text, index) => index > latestMutationIndex && text.includes("tsc --noEmit") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
+  const buildPassed = toolTexts.some((text, index) => index > latestMutationIndex && ((text.includes("vite build") && text.includes("✓ built in")) || (text.includes("bun build") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text))));
   const workspaceTexts = toolTexts.filter((text) => text.includes('"diffStat"') || text.includes('"changed_files"'));
   const latestWorkspace = workspaceTexts.at(-1) ?? "";
   const noChangedFiles = latestWorkspace.includes('"diffStat":""') || latestWorkspace.includes('"diffStat": ""') || latestWorkspace.includes('changed_files: 0') || latestWorkspace.includes('"changed_files": 0');
   const codeIntegrityTriggered = toolTexts.some((text) => text.includes('"guard":"code_integrity"') || text.includes("code_integrity"));
+  const parsedToolResults = toolTexts.map(parseToolResultJson).filter((value): value is Record<string, any> => Boolean(value && typeof value === "object" && !Array.isArray(value)));
 
-  const lines = [
-    "No-progress guard stopped the run.",
-    reason,
-    "",
-    "Current verified state:",
-    `- pnpm check: ${checkPassed ? "passed" : "not verified in the captured context"}`,
-    `- pnpm build: ${buildPassed ? "passed" : "not verified in the captured context"}`,
-    `- changed files: ${noChangedFiles ? "none" : "not verified in the captured context"}`,
-    `- code_integrity guard triggered: ${codeIntegrityTriggered ? "yes" : "no"}`,
-    "",
-    "Action taken: stopped instead of rereading the same files or rerunning the same checks.",
-  ];
-  return lines.join("\n");
+  const localUrls = uniqueStrings([
+    ...toolTexts.flatMap(extractLocalUrls),
+    ...parsedToolResults.flatMap((parsed) => {
+      const urls: string[] = [];
+      if (typeof parsed?.data?.server?.url === "string") urls.push(parsed.data.server.url);
+      if (typeof parsed?.server?.url === "string") urls.push(parsed.server.url);
+      return urls;
+    }),
+  ]).slice(0, 4);
+
+  const verifyResults = parsedToolResults.filter((parsed) => {
+    const gates = parsed?.data?.gates ?? parsed?.gates;
+    return Array.isArray(gates);
+  });
+  const latestVerify = verifyResults.at(-1);
+  const verifyAppGates: CapturedGateState[] = Array.isArray(latestVerify?.data?.gates ?? latestVerify?.gates)
+    ? (latestVerify?.data?.gates ?? latestVerify?.gates).map((gate: any) => ({
+      name: String(gate?.name ?? "unknown"),
+      ok: gate?.ok === true,
+      output: summarizeGateOutput(gate?.output),
+    }))
+    : [];
+
+  const latestWorkspaceJson = parseToolResultJson(latestWorkspace);
+  const changedFilesSummary = summarizeChangedFiles(latestWorkspaceJson) || summarizeChangedFilesFromText(latestWorkspace);
+
+  const checkpointResult = parsedToolResults.findLast((parsed) => typeof parsed?.data?.hash === "string" || typeof parsed?.hash === "string");
+  const checkpointHash = checkpointResult?.data?.hash ?? checkpointResult?.hash;
+  const checkpointMessage = checkpointResult?.data?.message ?? checkpointResult?.message;
+  const checkpoint = checkpointHash ? `${checkpointHash}${checkpointMessage ? ` — ${checkpointMessage}` : ""}` : "";
+
+  const completedActions = buildCompletedActions(parsedToolResults, verifyAppGates, changedFilesSummary, checkpoint, checkPassed, buildPassed);
+  const notDone = buildNotDoneList(verifyAppGates, latestVerify, checkPassed, buildPassed, localUrls);
+
+  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, changedFilesSummary, checkpoint, localUrls, verifyAppGates, completedActions, notDone };
+}
+
+function parseToolResultJson(text: string): Record<string, any> | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, any> : null;
+  } catch {
+    const firstBrace = text.indexOf("{");
+    const lastBrace = text.lastIndexOf("}");
+    if (firstBrace < 0 || lastBrace <= firstBrace) return null;
+    try {
+      const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, any> : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function latestGeneratedAppMutationIndex(toolTexts: string[]): number {
+  let latest = -1;
+  for (let index = 0; index < toolTexts.length; index += 1) {
+    const parsed = parseToolResultJson(toolTexts[index] ?? "");
+    const changedPath = typeof parsed?.path === "string"
+      ? parsed.path
+      : typeof parsed?.data?.path === "string"
+        ? parsed.data.path
+        : "";
+    if (parsed?.ok === true && isCodeMutationPath(changedPath)) latest = index;
+  }
+  return latest;
+}
+
+function isCodeMutationPath(filePath: string): boolean {
+  return /\.(tsx?|jsx?|css|json|html|mdx?)$/i.test(filePath);
+}
+
+function extractLocalUrls(text: string): string[] {
+  return [...text.matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[\w./?=&%-]*)?/g)].map((match) => match[0]);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function summarizeGateOutput(output: unknown): string {
+  if (typeof output !== "string" || !output.trim()) return "";
+  return output.trim().replace(/\s+/g, " ").slice(0, 220);
+}
+
+function summarizeChangedFiles(workspace: Record<string, any> | null): string {
+  const git = workspace?.git;
+  if (!git || typeof git !== "object") return "";
+  const diffStat = typeof git.diffStat === "string" ? git.diffStat.trim() : "";
+  const status = typeof git.status === "string" ? git.status.trim() : "";
+  return (diffStat || status).replace(/\n/g, "; ").slice(0, 500);
+}
+
+function summarizeChangedFilesFromText(text: string): string {
+  const match = text.match(/"diffStat"\s*:\s*"([\s\S]*?)"\s*[,}]/);
+  if (!match?.[1]) return "";
+  return match[1].replace(/\\n/g, "; ").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function buildCompletedActions(
+  parsedToolResults: Record<string, any>[],
+  gates: CapturedGateState[],
+  changedFilesSummary: string,
+  checkpoint: string,
+  checkPassed: boolean,
+  buildPassed: boolean,
+): string[] {
+  const actions: string[] = [];
+  if (changedFilesSummary) actions.push(`changed files: ${changedFilesSummary}`);
+  if (checkPassed) actions.push("TypeScript/check command passed");
+  if (buildPassed) actions.push("production build passed");
+  if (gates.length > 0) actions.push(`verify_app ran with ${gates.filter((gate) => gate.ok).length}/${gates.length} passing gates`);
+  if (checkpoint) actions.push(`saved checkpoint ${checkpoint}`);
+  const webdevStatus = parsedToolResults.findLast((parsed) => parsed?.data?.server?.running === true);
+  if (webdevStatus?.data?.project) actions.push(`webdev reports project ${webdevStatus.data.project} running`);
+  return uniqueStrings(actions);
+}
+
+function buildNotDoneList(
+  gates: CapturedGateState[],
+  latestVerify: Record<string, any> | undefined,
+  checkPassed: boolean,
+  buildPassed: boolean,
+  localUrls: string[],
+): string[] {
+  const items: string[] = [];
+  if (!checkPassed) items.push("pnpm check / TypeScript was not proven passing in captured output");
+  if (!buildPassed) items.push("production build was not proven passing in captured output");
+  if (gates.length === 0) {
+    items.push("verify_app did not run or its result was not captured");
+  } else {
+    for (const gate of gates.filter((gate) => !gate.ok)) {
+      items.push(`${gate.name} failed${gate.output ? `: ${gate.output}` : ""}`);
+    }
+    if (latestVerify?.ok !== true) items.push("latest verify_app result was not fully green");
+  }
+  if (localUrls.length === 0) items.push("localhost URL was not captured");
+  return uniqueStrings(items);
 }
 
 export function requiresAppFactoryVerification(messages: DriverMessage[], finalText: string): boolean {
@@ -648,7 +920,7 @@ export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
       const parsed = JSON.parse(text);
       const gates = parsed?.data?.gates;
       if (parsed?.ok === true && Array.isArray(gates)) {
-        const required = ["placeholder_scan", "install", "check", "build", "start_route", "browser_smoke"];
+        const required = ["placeholder_scan", "unsafe_env_scan", "install", "check", "build", "start_route", "browser_smoke"];
         if (required.every((name) => gates.some((gate: any) => gate?.name === name && gate?.ok === true))) return true;
       }
     } catch {
