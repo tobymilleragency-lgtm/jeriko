@@ -372,7 +372,7 @@ ${bulletList(report.prioritizedFixes.p2)}
 
 ## Raw Evidence
 
-${bulletList(report.rawPaths.map((path: string) => `- ${path}`), "- No raw evidence files found")}
+${bulletList(report.rawPaths)}
 `;
 }
 

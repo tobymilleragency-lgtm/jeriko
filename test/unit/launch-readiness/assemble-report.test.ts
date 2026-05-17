@@ -145,7 +145,10 @@ describe("launch-readiness assemble-report", () => {
     const report = readReportJson(runDir);
     expect(report.verdict).toBe("GO");
     expect(report.summary.criticalIssues).toBe(0);
-    expect(readFileSync(join(runDir, "report.md"), "utf-8")).toContain("**Verdict:** ✅ GO");
+    const markdown = readFileSync(join(runDir, "report.md"), "utf-8");
+    expect(markdown).toContain("**Verdict:** ✅ GO");
+    expect(markdown).toContain("- raw/home.html");
+    expect(markdown).not.toContain("- - raw/home.html");
   });
 
   test("HTTPS fail produces NO-GO with actionable P0 listing", async () => {
