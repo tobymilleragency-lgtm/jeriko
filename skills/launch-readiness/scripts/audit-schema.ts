@@ -37,6 +37,10 @@ type PageResult = {
   summary: { passed: number; failed: number; warned: number };
 };
 
+type ValidationContext = {
+  refs: Map<string, Record<string, unknown>>;
+};
+
 const CONTEXTS = new Set(["https://schema.org", "http://schema.org"]);
 const COVERED_TYPES = new Set([
   "LocalBusiness",
@@ -171,6 +175,43 @@ function typeIntersects(value: unknown, expected: string[]): boolean {
   return types.some((type) => expected.includes(type));
 }
 
+function collectReferences(value: unknown, refs = new Map<string, Record<string, unknown>>()): Map<string, Record<string, unknown>> {
+  if (!isRecord(value)) return refs;
+  if (typeof value["@id"] === "string" && value["@id"].trim() !== "") refs.set(value["@id"], value);
+  if (Array.isArray(value["@graph"])) {
+    for (const item of value["@graph"]) collectReferences(item, refs);
+  }
+  return refs;
+}
+
+function resolveReferenceField(
+  field: string,
+  value: unknown,
+  expectedTypes: string[],
+  expectedMessage: string,
+  missing: string[],
+  warnings: string[],
+  context?: ValidationContext,
+): boolean {
+  if (!isRecord(value)) return false;
+  if (!("@id" in value) || typeIntersects(value, expectedTypes)) return false;
+
+  const id = value["@id"];
+  if (typeof id !== "string" || id.trim() === "") {
+    missing.push(`${field}.@id valid string`);
+    return true;
+  }
+
+  const resolved = context?.refs.get(id);
+  if (!resolved) {
+    warnings.push(`Reference @id ${id} not found in graph — manual validation recommended`);
+    return true;
+  }
+
+  if (!typeIntersects(resolved, expectedTypes)) warnings.push(expectedMessage);
+  return true;
+}
+
 function validatePostalAddress(obj: Record<string, unknown>, warnings: string[]): void {
   if (hasField(obj, "address")) {
     const address = obj.address;
@@ -178,22 +219,29 @@ function validatePostalAddress(obj: Record<string, unknown>, warnings: string[])
   }
 }
 
-function validateProvider(obj: Record<string, unknown>, warnings: string[]): void {
+function validateProvider(obj: Record<string, unknown>, missing: string[], warnings: string[], context?: ValidationContext): void {
   if (hasField(obj, "provider")) {
     const provider = obj.provider;
+    if (resolveReferenceField("provider", provider, ["LocalBusiness", "ProfessionalService"], "provider should reference LocalBusiness", missing, warnings, context)) return;
     if (isRecord(provider) && !typeIntersects(provider, ["LocalBusiness", "ProfessionalService"])) {
       warnings.push("provider should reference LocalBusiness");
     }
   }
 }
 
-function validateAuthorPublisher(obj: Record<string, unknown>, warnings: string[]): void {
+function validateAuthorPublisher(obj: Record<string, unknown>, missing: string[], warnings: string[], context?: ValidationContext): void {
   if (hasField(obj, "author")) {
     const author = obj.author;
+    if (resolveReferenceField("author", author, ["Person", "Organization"], "author should be Person or Organization", missing, warnings, context)) {
+      // Reference handling supplied the validation result.
+    } else
     if (isRecord(author) && !typeIntersects(author, ["Person", "Organization"])) warnings.push("author should be Person or Organization");
   }
   if (hasField(obj, "publisher")) {
     const publisher = obj.publisher;
+    if (resolveReferenceField("publisher", publisher, ["Organization"], "publisher should be Organization", missing, warnings, context)) {
+      // Reference handling supplied the validation result.
+    } else
     if (isRecord(publisher) && !typeIncludes(publisher, "Organization")) warnings.push("publisher should be Organization");
   }
 }
@@ -225,16 +273,17 @@ function validateFaq(obj: Record<string, unknown>, missing: string[]): void {
   });
 }
 
-function validateContactPage(obj: Record<string, unknown>, warnings: string[]): void {
+function validateContactPage(obj: Record<string, unknown>, missing: string[], warnings: string[], context?: ValidationContext): void {
   if (hasField(obj, "mainEntity")) {
     const mainEntity = obj.mainEntity;
+    if (resolveReferenceField("mainEntity", mainEntity, ["LocalBusiness", "ProfessionalService", "Organization"], "mainEntity should reference LocalBusiness/Organization", missing, warnings, context)) return;
     if (isRecord(mainEntity) && !typeIntersects(mainEntity, ["LocalBusiness", "ProfessionalService", "Organization"])) {
       warnings.push("mainEntity should reference LocalBusiness/Organization");
     }
   }
 }
 
-function validateKnownType(type: string, obj: Record<string, unknown>): TypeCheck {
+function validateKnownType(type: string, obj: Record<string, unknown>, context?: ValidationContext): TypeCheck {
   const missing: string[] = [];
   const warnings: string[] = [];
 
@@ -249,14 +298,14 @@ function validateKnownType(type: string, obj: Record<string, unknown>): TypeChec
   } else if (type === "Service") {
     addMissing(missing, ["name", "provider"], obj);
     addRecommended(warnings, ["serviceType"], obj);
-    validateProvider(obj, warnings);
+    validateProvider(obj, missing, warnings, context);
   } else if (type === "Person") {
     addMissing(missing, ["name"], obj);
     addRecommended(warnings, ["jobTitle", "worksFor"], obj);
   } else if (type === "Article" || type === "BlogPosting") {
     addMissing(missing, ["headline", "datePublished", "author", "publisher"], obj);
     addRecommended(warnings, ["image", "mainEntityOfPage"], obj);
-    validateAuthorPublisher(obj, warnings);
+    validateAuthorPublisher(obj, missing, warnings, context);
   } else if (type === "BreadcrumbList") {
     validateBreadcrumb(obj, missing);
   } else if (type === "FAQPage") {
@@ -266,7 +315,7 @@ function validateKnownType(type: string, obj: Record<string, unknown>): TypeChec
     if (!hasField(obj, "mainEntity") && !hasField(obj, "hasPart")) warnings.push("mainEntity or hasPart");
   } else if (type === "ContactPage") {
     addRecommended(warnings, ["mainEntity"], obj);
-    validateContactPage(obj, warnings);
+    validateContactPage(obj, missing, warnings, context);
   }
 
   const status: Status = missing.length > 0 ? "fail" : warnings.length > 0 ? "warn" : "pass";
@@ -278,7 +327,7 @@ function contextOk(value: unknown, inheritedContext?: unknown): boolean {
   return typeof context === "string" && CONTEXTS.has(context);
 }
 
-function validateNode(obj: unknown, inheritedContext?: unknown, prefix = ""): { types: string[]; checks: TypeCheck[] } {
+function validateNode(obj: unknown, inheritedContext?: unknown, prefix = "", context?: ValidationContext): { types: string[]; checks: TypeCheck[] } {
   if (!isRecord(obj)) {
     return { types: [], checks: [{ type: prefix || "JSON-LD", status: "fail", missing: ["object"], warnings: [] }] };
   }
@@ -293,7 +342,7 @@ function validateNode(obj: unknown, inheritedContext?: unknown, prefix = ""): { 
     checks.push({ type: prefix || "JSON-LD", status: "fail", missing: missingStructure, warnings: [] });
   }
 
-  for (const type of types) checks.push(validateKnownType(type, obj));
+  for (const type of types) checks.push(validateKnownType(type, obj, context));
   return { types, checks };
 }
 
@@ -302,6 +351,8 @@ function validateParsedJson(parsed: unknown): { types: string[]; checks: TypeChe
     return { types: [], checks: [{ type: "JSON-LD", status: "fail", missing: ["object"], warnings: [] }] };
   }
 
+  const context: ValidationContext = { refs: collectReferences(parsed) };
+
   if (Array.isArray(parsed["@graph"])) {
     const allTypes: string[] = [];
     const allChecks: TypeCheck[] = [];
@@ -309,14 +360,14 @@ function validateParsedJson(parsed: unknown): { types: string[]; checks: TypeChe
       allChecks.push({ type: "JSON-LD", status: "fail", missing: ["@context"], warnings: [] });
     }
     parsed["@graph"].forEach((item, index) => {
-      const result = validateNode(item, parsed["@context"], `@graph[${index}]`);
+      const result = validateNode(item, parsed["@context"], `@graph[${index}]`, context);
       allTypes.push(...result.types);
       allChecks.push(...result.checks);
     });
     return { types: allTypes, checks: allChecks };
   }
 
-  return validateNode(parsed);
+  return validateNode(parsed, undefined, "", context);
 }
 
 function summarize(blocks: BlockResult[]): { passed: number; failed: number; warned: number } {

@@ -168,6 +168,61 @@ describe("launch-readiness audit-schema", () => {
     expect(check.summary.failed).toBe(0);
   });
 
+  test("passes Service provider when @id resolves to LocalBusiness in the same @graph", async () => {
+    const schema = {
+      "@context": "https://schema.org",
+      "@graph": [
+        localBusiness({ "@context": undefined, "@id": "https://www.example.com/#business" }),
+        { "@type": "Service", name: "Kitchen Remodeling", provider: { "@id": "https://www.example.com/#business" }, serviceType: "Remodeling" },
+      ],
+    };
+    delete (schema["@graph"][0] as any)["@context"];
+    const { runId, runDir } = createRun([{ path: "/services", source: "sitemap", html: htmlWithJsonLd([jsonLd(schema)]) }]);
+
+    await runAudit(runId);
+
+    const check = readCheck(runDir, "services");
+    const serviceCheck = check.blocks[0].checks.find((c: any) => c.type === "Service");
+    expect(serviceCheck.status).toBe("pass");
+    expect(serviceCheck.warnings).not.toContain("provider should reference LocalBusiness");
+    expect(check.summary.failed).toBe(0);
+  });
+
+  test("warns when a schema @id reference cannot be resolved in the same block", async () => {
+    const schema = {
+      "@context": "https://schema.org",
+      "@graph": [
+        { "@type": "Service", name: "Kitchen Remodeling", provider: { "@id": "https://www.example.com/#missing" }, serviceType: "Remodeling" },
+      ],
+    };
+    const { runId, runDir } = createRun([{ path: "/services", source: "sitemap", html: htmlWithJsonLd([jsonLd(schema)]) }]);
+
+    await runAudit(runId);
+
+    const check = readCheck(runDir, "services");
+    const serviceCheck = check.blocks[0].checks[0];
+    expect(serviceCheck.status).toBe("warn");
+    expect(serviceCheck.warnings).toContain("Reference @id https://www.example.com/#missing not found in graph — manual validation recommended");
+    expect(check.summary.failed).toBe(0);
+  });
+
+  test("fails when a schema reference has invalid @id format", async () => {
+    const schema = {
+      "@context": "https://schema.org",
+      "@type": "Service",
+      name: "Kitchen Remodeling",
+      provider: { "@id": 42 },
+      serviceType: "Remodeling",
+    };
+    const { runId, runDir } = createRun([{ path: "/services", source: "sitemap", html: htmlWithJsonLd([jsonLd(schema)]) }]);
+
+    await runAudit(runId);
+
+    const check = readCheck(runDir, "services");
+    expect(check.blocks[0].checks[0].status).toBe("fail");
+    expect(check.blocks[0].checks[0].missing).toContain("provider.@id valid string");
+  });
+
   test("fails malformed JSON with block index and parse error message", async () => {
     const { runId, runDir } = createRun([{ path: "/", source: "input", html: htmlWithJsonLd(["{ bad json"]) }]);
 
