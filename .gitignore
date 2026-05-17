@@ -21,7 +21,9 @@ bun.lockb
 data/
 auth_info_baileys/
 screenshots/
-skills/
+skills/*
+!skills/launch-readiness/
+!skills/launch-readiness/**
 skills-lock.json
 *.log
 
