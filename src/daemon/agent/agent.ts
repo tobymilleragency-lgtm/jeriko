@@ -88,6 +88,16 @@ export class AgentNoProgressError extends Error {
   }
 }
 
+export function createModelRequestAbortController(runSignal: AbortSignal): AbortController {
+  const requestAbort = new AbortController();
+  if (runSignal.aborted) {
+    requestAbort.abort(runSignal.reason);
+  } else {
+    runSignal.addEventListener("abort", () => requestAbort.abort(runSignal.reason), { once: true });
+  }
+  return requestAbort;
+}
+
 /**
  * Run the agent loop as an async generator.
  *
@@ -115,7 +125,11 @@ export async function* runAgent(
   const maxDurationMs = config.maxDurationMs ?? DEFAULT_AGENT_MAX_DURATION_MS;
   const noProgressTimeoutMs = config.noProgressTimeoutMs ?? DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS;
   const runAbort = new AbortController();
-  const forwardAbort = () => runAbort.abort(config.signal?.reason);
+  let activeRequestAbort: AbortController | null = null;
+  const forwardAbort = () => {
+    runAbort.abort(config.signal?.reason);
+    activeRequestAbort?.abort(config.signal?.reason);
+  };
   if (config.signal?.aborted) forwardAbort();
   else config.signal?.addEventListener("abort", forwardAbort, { once: true });
 
@@ -168,8 +182,10 @@ export async function* runAgent(
     system_prompt: config.systemPrompt,
     // Pass capabilities to driver for API-specific adaptations
     capabilities: caps,
-    // Forward abort signal to driver for cancellation/timeout
-    signal: runAbort.signal,
+    // Per-request abort signals are attached immediately before each driver call.
+    // A no-progress timeout must abort only the stuck model request; the overall
+    // run may still recover with a fresh request in the next loop iteration.
+    signal: undefined,
   };
 
   // ─── Step 4: Dynamic compaction threshold from context window ────────
@@ -253,13 +269,15 @@ export async function* runAgent(
     let hadError = false;
 
     try {
-      const stream = driver.chat(messages, driverConfig)[Symbol.asyncIterator]();
+      activeRequestAbort = createModelRequestAbortController(runAbort.signal);
+      const requestDriverConfig: DriverConfig = { ...driverConfig, signal: activeRequestAbort.signal };
+      const stream = driver.chat(messages, requestDriverConfig)[Symbol.asyncIterator]();
       while (true) {
         const chunkResult = await nextStreamChunkWithNoProgressTimeout(stream, {
           startedAt,
           maxDurationMs,
           noProgressTimeoutMs,
-          abort: () => runAbort.abort("agent-no-progress"),
+          abort: () => activeRequestAbort?.abort("agent-no-progress"),
           describe: () => buildStuckDiagnosis({
             reason: "No new model/tool/DB progress was observed while waiting for the model stream.",
             round,
