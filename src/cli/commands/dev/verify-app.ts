@@ -42,6 +42,8 @@ export interface CrawlerHtmlStatus {
   ok: boolean;
   file?: string;
   output: string;
+  checkedRoutes?: number;
+  issues?: string[];
 }
 
 const PLACEHOLDER_PATTERN = /\{\{[a-zA-Z0-9_]+\}\}|__PLACEHOLDER__|<%=?\s*[^%]+%>/g;
@@ -291,25 +293,52 @@ export function scanUnsafeEnvRefs(dir: string): UnsafeEnvHit[] {
 }
 
 export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
-  const indexPath = join(dir, "dist", "public", "index.html");
+  const publicDir = join(dir, "dist", "public");
+  const indexPath = join(publicDir, "index.html");
   if (!existsSync(indexPath)) {
     return { checked: false, ok: true, output: "dist/public/index.html not found; crawler HTML gate skipped." };
   }
 
   const html = readFileSync(indexPath, "utf8");
-  const hasPrerenderMarker = html.includes('data-jeriko-prerender="true"') || html.includes("data-jeriko-prerender='true'");
-  const hasRootFallback = /<div\s+id=["']root["'][^>]*>\s*\S[\s\S]*?<\/div>/i.test(html);
-  const hasMetaDescription = /<meta\s+name=["']description["'][^>]+content=["'][^"']{20,}["']/i.test(html);
-  const hasRobots = existsSync(join(dir, "dist", "public", "robots.txt"));
-  const hasSitemap = existsSync(join(dir, "dist", "public", "sitemap.xml"));
-  const ok = (hasPrerenderMarker || hasRootFallback) && hasMetaDescription && hasRobots && hasSitemap;
+  const hasPrerenderMarker = hasCrawlerMarker(html);
+  const hasRootFallback = hasCrawlerBody(html);
+  const hasMetaDescription = hasUsableMetaDescription(html);
+  const hasRobots = existsSync(join(publicDir, "robots.txt"));
+  const sitemapPath = join(publicDir, "sitemap.xml");
+  const hasSitemap = existsSync(sitemapPath);
+  const issues: string[] = [];
 
+  if (!(hasPrerenderMarker || hasRootFallback)) issues.push("Root route lacks crawler-visible body content.");
+  if (!hasMetaDescription) issues.push("Root route lacks a usable meta description.");
+  if (!hasRobots) issues.push("Build output is missing robots.txt.");
+  if (!hasSitemap) issues.push("Build output is missing sitemap.xml.");
+
+  let checkedRoutes = 0;
+  if (hasSitemap) {
+    const sitemap = readFileSync(sitemapPath, "utf8");
+    const routes = sitemapRoutes(sitemap);
+    checkedRoutes = routes.length;
+    for (const route of routes) {
+      const routeFile = routeHtmlPath(publicDir, route.path);
+      if (!existsSync(routeFile)) {
+        issues.push(`Sitemap route is missing prerendered HTML: ${route.path} (${routeFile})`);
+        continue;
+      }
+      const routeHtml = readFileSync(routeFile, "utf8");
+      const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml);
+      issues.push(...routeIssues);
+    }
+  }
+
+  const ok = issues.length === 0;
   return {
     checked: true,
     ok,
     file: indexPath,
+    checkedRoutes,
+    issues,
     output: ok
-      ? `Crawler-visible HTML found at ${indexPath}`
+      ? `Crawler-visible HTML found at ${indexPath}; checked ${checkedRoutes} sitemap route(s).`
       : [
         `Crawler-visible HTML gate failed for ${indexPath}.`,
         `hasPrerenderMarker=${hasPrerenderMarker}`,
@@ -317,9 +346,135 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
         `hasMetaDescription=${hasMetaDescription}`,
         `hasRobots=${hasRobots}`,
         `hasSitemap=${hasSitemap}`,
+        ...issues,
         "Build output must include prerendered/fallback body content plus robots.txt and sitemap.xml so Google can see public pages without running React.",
       ].join("\n"),
   };
+}
+
+function hasCrawlerMarker(html: string): boolean {
+  return html.includes('data-jeriko-prerender="true"')
+    || html.includes("data-jeriko-prerender='true'")
+    || html.includes('data-seo-prerender="true"')
+    || html.includes("data-seo-prerender='true'");
+}
+
+function hasCrawlerBody(html: string): boolean {
+  const rootMatch = html.match(/<div\s+id=["']root["'][^>]*>([\s\S]*?)<\/div>/i);
+  if (!rootMatch) return false;
+  const bodyText = stripHtml(rootMatch[1] ?? "");
+  return bodyText.length >= 20;
+}
+
+function hasUsableMetaDescription(html: string): boolean {
+  return /<meta\s+name=["']description["'][^>]+content=["'][^"']{20,}["']/i.test(html);
+}
+
+function sitemapRoutes(sitemap: string): Array<{ loc: string; path: string }> {
+  const routes: Array<{ loc: string; path: string }> = [];
+  const locPattern = /<loc>\s*([^<]+?)\s*<\/loc>/gi;
+  for (const match of sitemap.matchAll(locPattern)) {
+    const loc = decodeXml(match[1] ?? "").trim();
+    if (!loc) continue;
+    routes.push({ loc, path: pathFromLoc(loc) });
+  }
+  return routes;
+}
+
+function pathFromLoc(loc: string): string {
+  try {
+    const url = new URL(loc);
+    return normalizePath(url.pathname);
+  } catch {
+    return normalizePath(loc);
+  }
+}
+
+function routeHtmlPath(publicDir: string, routePath: string): string {
+  const normalized = normalizePath(routePath);
+  return normalized === "/" ? join(publicDir, "index.html") : join(publicDir, normalized.replace(/^\//, ""), "index.html");
+}
+
+function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string): string[] {
+  const issues: string[] = [];
+  const robots = metaContent(html, "robots");
+  if (robots && /\b(noindex|none)\b/i.test(robots)) {
+    issues.push(`Sitemap route is not indexable: ${routePath} meta robots=${robots}`);
+  }
+  if (!hasUsableMetaDescription(html)) {
+    issues.push(`Sitemap route lacks a usable meta description: ${routePath}`);
+  }
+  const title = titleText(html);
+  if (title.length < 8) {
+    issues.push(`Sitemap route lacks a usable title: ${routePath}`);
+  }
+  const canonical = canonicalHref(html);
+  if (!canonical) {
+    issues.push(`Sitemap route lacks canonical URL: ${routePath}`);
+  } else if (normalizeUrl(canonical) !== normalizeUrl(sitemapLoc)) {
+    issues.push(`Sitemap route canonical mismatch: ${routePath} canonical=${canonical} sitemap=${sitemapLoc}`);
+  }
+  if (!hasCrawlerBody(html)) {
+    issues.push(`Sitemap route lacks crawler-visible body content: ${routePath}`);
+  }
+  return issues;
+}
+
+function metaContent(html: string, name: string): string | null {
+  const pattern = new RegExp(`<meta\\s+[^>]*name=["']${escapeRegExp(name)}["'][^>]*>`, "i");
+  const tag = html.match(pattern)?.[0];
+  if (!tag) return null;
+  return attrValue(tag, "content");
+}
+
+function canonicalHref(html: string): string | null {
+  const tag = html.match(/<link\s+[^>]*rel=["']canonical["'][^>]*>/i)?.[0];
+  if (!tag) return null;
+  return attrValue(tag, "href");
+}
+
+function titleText(html: string): string {
+  const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return stripHtml(match?.[1] ?? "");
+}
+
+function attrValue(tag: string, attr: string): string | null {
+  const pattern = new RegExp(`${escapeRegExp(attr)}=["']([^"']*)["']`, "i");
+  const value = tag.match(pattern)?.[1];
+  return value ? decodeXml(value.trim()) : null;
+}
+
+function stripHtml(html: string): string {
+  return decodeXml(html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+}
+
+function normalizePath(pathname: string): string {
+  const raw = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  const noHash = raw.split("#")[0]?.split("?")[0] ?? "/";
+  const noTrailing = noHash.length > 1 ? noHash.replace(/\/+$/, "") : noHash;
+  return noTrailing || "/";
+}
+
+function normalizeUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${normalizePath(url.pathname)}`;
+  } catch {
+    return normalizePath(value);
+  }
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function walkTextFiles(dir: string, visit: (file: string, content: string) => void): void {

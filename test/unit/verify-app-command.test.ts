@@ -114,6 +114,71 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails crawler HTML scan when a sitemap route is noindex", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-sitemap-noindex-"));
+    try {
+      writeCrawlerRoute(dir, "/", { body: "Home crawler content for search." });
+      writeCrawlerRoute(dir, "/services/kitchen-remodel-consulting", {
+        robots: "noindex,nofollow",
+        body: "Kitchen remodel consulting crawler content for search.",
+      });
+      writeCrawlerSitemap(dir, ["/", "/services/kitchen-remodel-consulting"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Sitemap route is not indexable");
+      expect(result.output).toContain("/services/kitchen-remodel-consulting");
+      expect(result.output).toContain("noindex,nofollow");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML scan when a sitemap route lacks route-specific raw content", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-sitemap-empty-route-"));
+    try {
+      writeCrawlerRoute(dir, "/", { body: "Home crawler content for search." });
+      writeCrawlerRoute(dir, "/serving/pittsburg-ks", { body: "" });
+      writeCrawlerSitemap(dir, ["/", "/serving/pittsburg-ks"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Sitemap route lacks crawler-visible body content");
+      expect(result.output).toContain("/serving/pittsburg-ks");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML scan when sitemap route canonical points elsewhere", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-canonical-mismatch-"));
+    try {
+      writeCrawlerRoute(dir, "/", { body: "Home crawler content for search." });
+      writeCrawlerRoute(dir, "/contact", {
+        canonical: "https://example.com/about",
+        body: "Contact crawler content for search.",
+      });
+      writeCrawlerSitemap(dir, ["/", "/contact"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Sitemap route canonical mismatch");
+      expect(result.output).toContain("/contact");
+      expect(result.output).toContain("https://example.com/about");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs install/check/build gates and reports success", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-pass-"));
     try {
@@ -516,6 +581,29 @@ describe("verify-app command", () => {
     }
   });
 });
+
+function writeCrawlerRoute(dir: string, route: string, options: { body: string; robots?: string; canonical?: string; title?: string; description?: string }): void {
+  const publicDir = path.join(dir, "dist", "public");
+  const routeDir = route === "/" ? publicDir : path.join(publicDir, route.replace(/^\//, ""));
+  fs.mkdirSync(routeDir, { recursive: true });
+  const canonical = options.canonical ?? `https://example.com${route === "/" ? "" : route}`;
+  const title = options.title ?? (route === "/" ? "Home" : route.split("/").filter(Boolean).join(" "));
+  const description = options.description ?? "A long enough public marketing description for crawler verification.";
+  fs.writeFileSync(path.join(routeDir, "index.html"), `<!doctype html><html><head><title>${title}</title><meta name="description" content="${description}"><link rel="canonical" href="${canonical}"><meta name="robots" content="${options.robots ?? "index,follow"}"></head><body><div id="root"><article data-jeriko-prerender="true">${options.body}</article></div></body></html>`);
+}
+
+function writeCrawlerSitemap(dir: string, routes: string[]): void {
+  const publicDir = path.join(dir, "dist", "public");
+  fs.mkdirSync(publicDir, { recursive: true });
+  const urls = routes.map((route) => `<url><loc>https://example.com${route === "/" ? "" : route}</loc></url>`).join("\n");
+  fs.writeFileSync(path.join(publicDir, "sitemap.xml"), `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>\n`);
+}
+
+function writeCrawlerRobots(dir: string): void {
+  const publicDir = path.join(dir, "dist", "public");
+  fs.mkdirSync(publicDir, { recursive: true });
+  fs.writeFileSync(path.join(publicDir, "robots.txt"), "User-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n");
+}
 
 async function getFreePort(): Promise<number> {
   const server = createServer((_req, res) => res.end("reserved"));
