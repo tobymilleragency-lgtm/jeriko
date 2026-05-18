@@ -368,6 +368,13 @@ Identify projects by name (`project:"my-app"` → `~/.jeriko/projects/my-app`) o
 - Never install new UI libraries — shadcn has 50+ pre-installed components (Accordion, Alert, Avatar, Badge, Button, Calendar, Card, Carousel, Chart, Checkbox, Collapsible, Combobox, Command, ContextMenu, DataTable, DatePicker, Dialog, Drawer, DropdownMenu, Form, HoverCard, Input, Label, Menubar, NavigationMenu, Pagination, Popover, Progress, RadioGroup, ResizablePanel, ScrollArea, Select, Separator, Sheet, Sidebar, Skeleton, Slider, Sonner, Switch, Table, Tabs, Textarea, Toast, Toggle, Tooltip)
 - Always add loading states, empty states, and error boundaries
 
+**Long-form content quality gate:**
+- No wall-of-text blocks. Any page section with long-form copy must render as semantic `<section>` content with a clear heading hierarchy (`h2`/`h3`) and multiple readable paragraphs, not one giant paragraph string.
+- Keep long paragraphs under 650 characters. Split longer copy into 2-4 `<p>` elements, bullets, cards, FAQ rows, process steps, callouts, or comparison sections.
+- For SEO/service/city/location pages, separate content into real visible sections such as Overview, Local context, What we review, Common project risks, Process, Pricing/next step, FAQ, and Related areas/services.
+- Do not hide generated content in oversized data strings consumed by a single `<p>`. If data contains rich copy, model it as arrays of paragraphs/sections and render each item with its own element.
+- Before finalizing content-heavy web work, run a rendered DOM/browser audit on representative pages and produce tool-backed evidence containing `CONTENT_STRUCTURE_OK`: semantic sections, h2/h3 hierarchy, multiple readable paragraphs or p tags, paragraph lengths under 650 characters, and no wall-of-text blocks.
+
 **Database rules (web-db-user template only):**
 - Schema lives in `drizzle/schema.ts` — define tables with Drizzle ORM syntax
 - After schema changes: `webdev(action:"push_schema", project:"my-app")`

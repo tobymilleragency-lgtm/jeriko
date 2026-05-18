@@ -3,8 +3,9 @@
 // Tests guard boundaries, rate limiting, and JSON repair for OSS models.
 
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -56,6 +57,15 @@ describe("Repeated tool-call guard", () => {
     const blocked = guard(round.map((call, index) => ({ ...call, id: `third-${index}` })));
     expect(blocked).toContain("Repeated no-progress tool round blocked");
     expect(blocked).toContain("Home.tsx");
+  });
+});
+
+describe("Agent prompt quality rules", () => {
+  test("requires structured long-form web content instead of wall-of-text blocks", () => {
+    const prompt = readFileSync("AGENT.md", "utf-8");
+    expect(prompt).toContain("Long-form content quality gate");
+    expect(prompt).toContain("No wall-of-text blocks");
+    expect(prompt).toContain("CONTENT_STRUCTURE_OK");
   });
 });
 
@@ -203,6 +213,51 @@ describe("App-factory final done gate", () => {
     expect(requiresAppFactoryVerification([
       { role: "user", content: "Add programmatic local SEO architecture to the existing React + Vite + Tailwind + Vercel site" },
     ], report)).toBe(true);
+  });
+
+  test("content-heavy service and city page work requires structure verification", () => {
+    expect(requiresContentStructureVerification([
+      { role: "user", content: "Generate real content for the service pages and city pages on the existing Vite site" },
+    ])).toBe(true);
+  });
+
+  test("content-heavy app work is not done without tool-backed structure evidence", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Add local SEO route architecture" } });
+    expect(hasAppFactoryDoneEvidence([
+      { role: "user", content: "Generate real content for the service pages and city pages" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+    ])).toBe(false);
+  });
+
+  test("content-heavy app work is done only after content structure evidence", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Add local SEO route architecture" } });
+    const structureTool = "CONTENT_STRUCTURE_OK: audited rendered service/city pages; every long-form page has semantic sections, h2/h3 hierarchy, multiple p tags, max paragraph length under 650 chars, no wall-of-text blocks.";
+    expect(hasContentStructureEvidence([{ role: "tool", content: structureTool }])).toBe(true);
+    expect(hasAppFactoryDoneEvidence([
+      { role: "user", content: "Generate real content for the service pages and city pages" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: structureTool },
+    ])).toBe(true);
   });
 });
 

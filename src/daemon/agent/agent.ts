@@ -395,7 +395,10 @@ export async function* runAgent(
     // If no tool calls, the turn is complete
     if (toolCalls.length === 0 || hadError) {
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
-        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke, then save a git checkpoint/commit before claiming done. If screenshots, Lighthouse, preview deploy, or disabled-route checks were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint now, then produce the final report from that evidence.";
+        const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
+        const gateMessage = missingContentStructure
+          ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint evidence."
+          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke, then save a git checkpoint/commit before claiming done. If screenshots, Lighthouse, preview deploy, or disabled-route checks were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -933,7 +936,30 @@ export function requiresAppFactoryVerification(messages: DriverMessage[], finalT
 }
 
 export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
-  return hasPassingVerifyApp(messages) && hasCheckpointEvidence(messages);
+  if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages)) return false;
+  if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
+  return true;
+}
+
+export function requiresContentStructureVerification(messages: DriverMessage[]): boolean {
+  const combined = messages.map((msg) => messageText(msg)).join("\n").toLowerCase();
+  const contentWork = /\b(generate|write|rewrite|replace|populate|add|improve|update)\b[\s\S]{0,160}\b(content|copy|paragraph|page copy|seo copy|service pages?|city pages?|location pages?|local seo pages?)\b/.test(combined)
+    || /\b(service pages?|city pages?|location pages?|local seo pages?)\b[\s\S]{0,160}\b(content|copy|paragraph|section|real content)\b/.test(combined);
+  const existingWebApp = /\b(react|vite|tailwind|vercel|website|web app|site|local seo|programmatic seo)\b/.test(combined);
+  const explicitlyReadOnly = /\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(combined);
+  return contentWork && existingWebApp && !explicitlyReadOnly;
+}
+
+export function hasContentStructureEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    return /CONTENT_STRUCTURE_OK/i.test(text)
+      && /semantic sections?/i.test(text)
+      && /h2\/?h3|heading hierarchy|h2\/h3 hierarchy/i.test(text)
+      && /multiple (readable )?(paragraphs?|p tags?)/i.test(text)
+      && /no wall[- ]of[- ]text/i.test(text);
+  });
 }
 
 export function hasCheckpointEvidence(messages: DriverMessage[]): boolean {
