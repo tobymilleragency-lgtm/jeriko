@@ -31,4 +31,45 @@ describe("workspace status project-state", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("reports stale verification when source files changed after the last successful verify-app run", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-workspace-stale-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"));
+      fs.mkdirSync(path.join(dir, "src"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "stale-app" }));
+      fs.writeFileSync(path.join(dir, "src", "App.tsx"), "export const version = 1;\n");
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "stale-app",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        commands: { check: "pnpm run check", build: "pnpm run build" },
+        routes: { home: "/" },
+        verification: {
+          requiredGates: ["placeholder_scan", "unsafe_env_scan", "check", "build"],
+          lastSuccessfulVerification: {
+            ok: true,
+            profile: "web-static",
+            completedAt: "2026-01-01T00:00:00.000Z",
+            command: "jeriko verify-app /tmp/stale-app",
+            gates: [{ name: "check", ok: true }],
+            sourceFingerprint: { sha256: "0".repeat(64), fileCount: 2 },
+          },
+        },
+      }, null, 2));
+
+      const status = buildWorkspaceStatus({ cwd: dir, sessionId: "missing-session" });
+
+      expect((status.verificationStatus as any).hasSuccessfulVerification).toBe(true);
+      expect((status.verificationStatus as any).fresh).toBe(false);
+      expect((status.verificationStatus as any).reason).toContain("source fingerprint changed");
+      expect((status.verificationStatus as any).currentSourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect((status.verificationStatus as any).verifiedSourceFingerprint.sha256).toBe("0".repeat(64));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

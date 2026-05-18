@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { readProjectState, writeProjectState, type AppProfile, type ProjectState } from "./project-state.js";
+import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState } from "./project-state.js";
 
 export { readProjectState } from "./project-state.js";
 
@@ -237,6 +237,7 @@ function recordSuccessfulVerification(dir: string, projectState: ProjectState, p
         completedAt: new Date().toISOString(),
         command: `jeriko verify-app ${dir}`,
         gates: slimGates,
+        sourceFingerprint: computeSourceFingerprint(dir),
       },
     },
   };

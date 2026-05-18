@@ -1,7 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 
 export type AppProfile = "web-static" | "web-db-user";
+
+export interface SourceFingerprint {
+  sha256: string;
+  fileCount: number;
+  bytes: number;
+}
 
 export interface ProjectState {
   version: 1;
@@ -35,9 +42,21 @@ export interface ProjectState {
         command?: string;
         status?: number;
       }>;
+      sourceFingerprint?: SourceFingerprint;
     };
   };
 }
+
+export interface VerificationStatus {
+  hasSuccessfulVerification: boolean;
+  fresh: boolean;
+  reason: string;
+  currentSourceFingerprint: SourceFingerprint;
+  verifiedSourceFingerprint?: SourceFingerprint;
+  completedAt?: string;
+}
+
+const FINGERPRINT_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage", ".jeriko"]);
 
 export const REQUIRED_APP_FACTORY_GATES = [
   "placeholder_scan",
@@ -99,5 +118,88 @@ export function buildProjectState(args: {
     verification: {
       requiredGates: [...REQUIRED_APP_FACTORY_GATES],
     },
+  };
+}
+
+export function computeSourceFingerprint(dir: string): SourceFingerprint {
+  const files: string[] = [];
+  const walk = (current: string) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(current).sort();
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (FINGERPRINT_SKIP_DIRS.has(entry)) continue;
+      const fullPath = join(current, entry);
+      let stat;
+      try {
+        stat = lstatSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        walk(fullPath);
+      } else if (stat.isFile()) {
+        files.push(fullPath);
+      }
+    }
+  };
+
+  walk(dir);
+  files.sort((a, b) => relative(dir, a).localeCompare(relative(dir, b)));
+
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for (const file of files) {
+    const rel = relative(dir, file).replaceAll("\\", "/");
+    const content = readFileSync(file);
+    bytes += content.length;
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(content);
+    hash.update("\0");
+  }
+
+  return { sha256: hash.digest("hex"), fileCount: files.length, bytes };
+}
+
+export function assessVerificationStatus(dir: string, state: ProjectState | null): VerificationStatus {
+  const currentSourceFingerprint = computeSourceFingerprint(dir);
+  const lastSuccessful = state?.verification?.lastSuccessfulVerification;
+  if (!lastSuccessful) {
+    return {
+      hasSuccessfulVerification: false,
+      fresh: false,
+      reason: "no successful verify-app run recorded",
+      currentSourceFingerprint,
+    };
+  }
+
+  const verifiedSourceFingerprint = lastSuccessful.sourceFingerprint;
+  if (!verifiedSourceFingerprint) {
+    return {
+      hasSuccessfulVerification: true,
+      fresh: false,
+      reason: "last successful verify-app run lacks source fingerprint; rerun verify-app",
+      currentSourceFingerprint,
+      completedAt: lastSuccessful.completedAt,
+    };
+  }
+
+  const fresh = verifiedSourceFingerprint.sha256 === currentSourceFingerprint.sha256
+    && verifiedSourceFingerprint.fileCount === currentSourceFingerprint.fileCount
+    && verifiedSourceFingerprint.bytes === currentSourceFingerprint.bytes;
+
+  return {
+    hasSuccessfulVerification: true,
+    fresh,
+    reason: fresh ? "last successful verify-app source fingerprint matches current source" : "source fingerprint changed since last successful verify-app run",
+    currentSourceFingerprint,
+    verifiedSourceFingerprint,
+    completedAt: lastSuccessful.completedAt,
   };
 }

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getDatabase } from "../storage/db.js";
-import { readProjectState } from "../../cli/commands/dev/project-state.js";
+import { assessVerificationStatus, readProjectState } from "../../cli/commands/dev/project-state.js";
 import { getDependencyStatus } from "../../cli/commands/dev/verify-app.js";
 
 type Row = Record<string, unknown>;
@@ -122,6 +122,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
     ok: true,
     cwd,
     projectState,
+    verificationStatus: assessVerificationStatus(cwd, projectState),
     dependencyStatus: getDependencyStatus(cwd),
     git: isLocalGitRepo ? {
       branch: git(["branch", "--show-current"], cwd),

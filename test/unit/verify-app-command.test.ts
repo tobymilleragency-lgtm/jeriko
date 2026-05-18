@@ -237,6 +237,8 @@ describe("verify-app command", () => {
       expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "check", "build"]);
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
+      expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.fileCount).toBeGreaterThan(0);
       expect(result.data.projectState.verification.lastSuccessfulVerification.ok).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
