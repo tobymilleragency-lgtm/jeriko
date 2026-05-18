@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -162,6 +162,47 @@ describe("App-factory final done gate", () => {
       { name: "start_route", ok: true },
     ] } });
     expect(hasPassingVerifyApp([{ role: "tool", content: tool }])).toBe(false);
+  });
+
+  test("rejects app-factory final report without checkpoint evidence", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+
+    expect(hasAppFactoryDoneEvidence([
+      { role: "tool", content: verifyTool },
+    ])).toBe(false);
+  });
+
+  test("recognizes app-factory done evidence only after verify_app plus checkpoint", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Add local SEO route architecture" } });
+
+    expect(hasAppFactoryDoneEvidence([
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+    ])).toBe(true);
+  });
+
+  test("existing app implementation reports are gated like generated app work", () => {
+    const report = `## Verification results\nDone.\n- pnpm check passed\n- pnpm build passed\n- preview deployed`;
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Add programmatic local SEO architecture to the existing React + Vite + Tailwind + Vercel site" },
+    ], report)).toBe(true);
   });
 });
 

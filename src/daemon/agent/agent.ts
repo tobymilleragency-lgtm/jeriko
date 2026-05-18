@@ -376,8 +376,8 @@ export async function* runAgent(
 
     // If no tool calls, the turn is complete
     if (toolCalls.length === 0 || hadError) {
-      if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasPassingVerifyApp(messages)) {
-        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded app work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke before claiming done. Call verify_app on the app directory now, then produce the final report from that result.";
+      if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
+        const gateMessage = "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke, then save a git checkpoint/commit before claiming done. If screenshots, Lighthouse, preview deploy, or disabled-route checks were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -906,9 +906,27 @@ function buildNotDoneList(
 export function requiresAppFactoryVerification(messages: DriverMessage[], finalText: string): boolean {
   if (!isFinalAssistantReport(finalText)) return false;
   const combined = [...messages.map((msg) => messageText(msg)), finalText].join("\n").toLowerCase();
-  const mentionsAppBuilderWork = /\b(scaffold|scaffolded|generated app|generate(d)?\s+(a\s+)?(full-stack|web|app)|jeriko\s+create|create\s+web-static|create\s+web-db-user|web-static|web-db-user)\b/.test(combined);
-  const explicitlyNotAppBuilder = /\b(no scaffold|do not scaffold|existing app only|not generated)\b/.test(combined);
-  return mentionsAppBuilderWork && !explicitlyNotAppBuilder;
+  const mentionsGeneratedAppWork = /\b(scaffold|scaffolded|generated app|generate(d)?\s+(a\s+)?(full-stack|web|app)|jeriko\s+create|create\s+web-static|create\s+web-db-user|web-static|web-db-user)\b/.test(combined);
+  const mentionsExistingWebAppImplementation = /\b(existing\s+(react|vite|tailwind|vercel|web)\s+(site|app)|react\s*\+\s*vite|vite\s*\+\s*tailwind|vercel\s+(site|app|preview)|programmatic\s+local\s+seo|local\s+seo\s+architecture|preview\s+deploy(?:ed|ment)?)\b/.test(combined)
+    && /\b(add|build|implement|update|modify|fix|deploy(?:ed)?|created?|committed?|verified)\b/.test(combined);
+  const explicitlyReadOnly = /\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(combined);
+  const explicitlyNotAppBuilder = /\b(no scaffold|do not scaffold|not generated)\b/.test(combined);
+  return (mentionsGeneratedAppWork && !explicitlyNotAppBuilder) || (mentionsExistingWebAppImplementation && !explicitlyReadOnly);
+}
+
+export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
+  return hasPassingVerifyApp(messages) && hasCheckpointEvidence(messages);
+}
+
+export function hasCheckpointEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    const parsed = parseToolResultJson(text);
+    const hash = parsed?.data?.hash ?? parsed?.hash ?? parsed?.commit ?? parsed?.data?.commit;
+    if (typeof hash === "string" && /^[a-f0-9]{7,40}$/i.test(hash)) return true;
+    return /\b\[[\w/-]+\s+[a-f0-9]{7,40}\]\s+.+/.test(text) || /\bcommit(?:ted)?\b[\s\S]{0,120}\b[a-f0-9]{7,40}\b/i.test(text);
+  });
 }
 
 export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
