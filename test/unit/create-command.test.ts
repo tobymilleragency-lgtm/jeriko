@@ -168,6 +168,19 @@ describe("create command templates", () => {
       expect(script).toContain("robots.txt");
       expect(script).toContain("sitemap.xml");
       expect(script).toContain("llms.txt");
+      expect(script).toContain("google-site-verification");
+      expect(script).toContain("msvalidate.01");
+
+      const siteConfig = fs.readFileSync(path.join(projectDir, "client", "src", "site.config.ts"), "utf8");
+      const analytics = fs.readFileSync(path.join(projectDir, "client", "src", "lib", "analytics.ts"), "utf8");
+      expect(siteConfig).toContain("googleSiteVerification");
+      expect(siteConfig).toContain("bingSiteVerification");
+      expect(siteConfig).toContain("ga4MeasurementId");
+      expect(siteConfig).toContain("analyticsProvider");
+      expect(analytics).toContain("trackFormSubmit");
+      expect(analytics).toContain("trackPhoneClick");
+      expect(analytics).toContain("trackBookingClick");
+      expect(analytics).toContain("trackEmailClick");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

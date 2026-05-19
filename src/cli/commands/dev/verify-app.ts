@@ -315,6 +315,7 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
   if (!hasSitemap) issues.push("Build output is missing sitemap.xml.");
 
   let checkedRoutes = 0;
+  let launchTrackingChecked = 0;
   if (hasSitemap) {
     const sitemap = readFileSync(sitemapPath, "utf8");
     const routes = sitemapRoutes(sitemap);
@@ -327,7 +328,9 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
       }
       const routeHtml = readFileSync(routeFile, "utf8");
       const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml);
-      issues.push(...routeIssues);
+      const trackingAudit = auditLaunchTracking(route.path, routeHtml);
+      launchTrackingChecked += trackingAudit.checked;
+      issues.push(...routeIssues, ...trackingAudit.issues);
     }
   }
 
@@ -339,7 +342,7 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
     checkedRoutes,
     issues,
     output: ok
-      ? `Crawler-visible HTML found at ${indexPath}; checked ${checkedRoutes} sitemap route(s).`
+      ? `Crawler-visible HTML found at ${indexPath}; checked ${checkedRoutes} sitemap route(s); launch tracking checked ${launchTrackingChecked} conversion target(s).`
       : [
         `Crawler-visible HTML gate failed for ${indexPath}.`,
         `hasPrerenderMarker=${hasPrerenderMarker}`,
@@ -419,6 +422,53 @@ function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string):
     issues.push(`Sitemap route lacks crawler-visible body content: ${routePath}`);
   }
   return issues;
+}
+
+function auditLaunchTracking(routePath: string, html: string): { checked: number; issues: string[] } {
+  const issues: string[] = [];
+  let checked = 0;
+  const forms = html.match(/<form\b[^>]*>/gi) ?? [];
+  for (const tag of forms) {
+    checked += 1;
+    if (!hasTrackHook(tag, "form_submit")) issues.push(`Conversion target lacks Jeriko tracking hook: form_submit on ${routePath} tag=${tagSummary(tag)}`);
+  }
+  const anchors = html.match(/<a\b[^>]*>/gi) ?? [];
+  for (const tag of anchors) {
+    const href = attrValue(tag, "href") ?? "";
+    const expected = conversionEventForHref(href);
+    if (!expected) continue;
+    checked += 1;
+    if (!hasTrackHook(tag, expected)) issues.push(`Conversion target lacks Jeriko tracking hook: ${expected} on ${routePath} href=${href}`);
+  }
+  return { checked, issues: uniqueIssueMessages(issues) };
+}
+
+function conversionEventForHref(href: string): string | null {
+  if (/^tel:/i.test(href)) return "call_click";
+  if (/^mailto:/i.test(href)) return "email_click";
+  if (/(book|booking|schedule|appointment|calendar)/i.test(href)) return "booking_click";
+  return null;
+}
+
+function tagSummary(tag: string): string {
+  const name = tag.match(/^<\s*([a-z0-9-]+)/i)?.[1]?.toLowerCase() ?? "tag";
+  const id = attrValue(tag, "id");
+  const nameAttr = attrValue(tag, "name");
+  const action = attrValue(tag, "action");
+  const parts = [`<${name}`];
+  if (id) parts.push(`id=${id}`);
+  if (nameAttr) parts.push(`name=${nameAttr}`);
+  if (action) parts.push(`action=${action}`);
+  return `${parts.join(" ")}>`;
+}
+
+function hasTrackHook(tag: string, event: string): boolean {
+  const track = attrValue(tag, "data-jeriko-track") || attrValue(tag, "data-conversion") || attrValue(tag, "data-track");
+  return track === event;
+}
+
+function uniqueIssueMessages(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function metaContent(html: string, name: string): string | null {

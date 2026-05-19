@@ -628,6 +628,7 @@ export function applyCrawlerPrerenderSupport(dir: string, projectName: string): 
   if (!buildScript.includes("vite build")) return false;
 
   mkdirSync(join(dir, "scripts"), { recursive: true });
+  writeWebsiteLaunchKitFiles(dir, projectName);
   const scriptPath = join(dir, "scripts", "jeriko-prerender-seo.mjs");
   if (!existsSync(scriptPath)) {
     writeFileSync(scriptPath, buildCrawlerPrerenderScript(projectName));
@@ -639,6 +640,84 @@ export function applyCrawlerPrerenderSupport(dir: string, projectName: string): 
   }
 
   return true;
+}
+
+function writeWebsiteLaunchKitFiles(dir: string, projectName: string): void {
+  const srcDir = join(dir, "client", "src");
+  const libDir = join(srcDir, "lib");
+  if (!existsSync(srcDir)) return;
+  mkdirSync(libDir, { recursive: true });
+  const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
+  const siteConfigPath = join(srcDir, "site.config.ts");
+  if (!existsSync(siteConfigPath)) {
+    writeFileSync(siteConfigPath, `export const siteConfig = {
+  name: ${JSON.stringify(projectTitle)},
+  url: import.meta.env.VITE_SITE_URL || "",
+  analyticsProvider: import.meta.env.VITE_ANALYTICS_PROVIDER || "none",
+  ga4MeasurementId: import.meta.env.VITE_GA4_MEASUREMENT_ID || "",
+  plausibleDomain: import.meta.env.VITE_PLAUSIBLE_DOMAIN || "",
+  posthogKey: import.meta.env.VITE_POSTHOG_KEY || "",
+  googleSiteVerification: import.meta.env.VITE_GOOGLE_SITE_VERIFICATION || "",
+  bingSiteVerification: import.meta.env.VITE_BING_SITE_VERIFICATION || "",
+};
+
+export type SiteConfig = typeof siteConfig;
+`);
+  }
+
+  const analyticsPath = join(libDir, "analytics.ts");
+  if (!existsSync(analyticsPath)) {
+    writeFileSync(analyticsPath, `import { siteConfig } from "../site.config";
+
+export type JerikoConversionEvent =
+  | "form_submit"
+  | "call_click"
+  | "booking_click"
+  | "email_click";
+
+type EventPayload = Record<string, string | number | boolean | undefined>;
+
+declare global {
+  interface Window {
+    gtag?: (...args: unknown[]) => void;
+    plausible?: (event: string, options?: { props?: EventPayload }) => void;
+    posthog?: { capture?: (event: string, properties?: EventPayload) => void };
+  }
+}
+
+export function trackEvent(event: JerikoConversionEvent, payload: EventPayload = {}) {
+  if (typeof window === "undefined") return;
+  const provider = siteConfig.analyticsProvider.toLowerCase();
+  if (provider === "ga4" && typeof window.gtag === "function") {
+    window.gtag("event", event, payload);
+    return;
+  }
+  if (provider === "plausible" && typeof window.plausible === "function") {
+    window.plausible(event, { props: payload });
+    return;
+  }
+  if (provider === "posthog" && typeof window.posthog?.capture === "function") {
+    window.posthog.capture(event, payload);
+  }
+}
+
+export function trackFormSubmit(form: string, payload: EventPayload = {}) {
+  trackEvent("form_submit", { form, ...payload });
+}
+
+export function trackPhoneClick(location: string, payload: EventPayload = {}) {
+  trackEvent("call_click", { location, ...payload });
+}
+
+export function trackBookingClick(location: string, payload: EventPayload = {}) {
+  trackEvent("booking_click", { location, ...payload });
+}
+
+export function trackEmailClick(location: string, payload: EventPayload = {}) {
+  trackEvent("email_click", { location, ...payload });
+}
+`);
+  }
 }
 
 function buildCrawlerPrerenderScript(projectName: string): string {
@@ -653,10 +732,12 @@ const dist = join(root, "dist", "public");
 const templatePath = join(dist, "index.html");
 const appPath = join(root, "client", "src", "App.tsx");
 const pagesDir = join(root, "client", "src", "pages");
+const siteConfigPath = join(root, "client", "src", "site.config.ts");
 const siteUrl = (process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL || "").replace(new RegExp("^https?://"), "").replace(new RegExp("/$"), "");
 const baseUrl = siteUrl ? \`https://\${siteUrl}\` : "";
 const projectTitle = ${JSON.stringify(projectTitle)};
 const generatedAt = new Date().toISOString();
+const siteConfig = readSiteConfig();
 
 if (!existsSync(templatePath)) {
   console.warn("Jeriko SEO prerender skipped: dist/public/index.html not found");
@@ -751,6 +832,8 @@ function injectHead(html, page) {
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="\${escapeAttr(projectTitle)}" />
     <meta name="robots" content="index,follow" />
+    \${renderVerificationMeta()}
+    \${renderAnalyticsScripts()}
     <script type="application/ld+json">\${page.jsonLd}</script>\`;
 
   return html
@@ -760,6 +843,43 @@ function injectHead(html, page) {
     .replace(/<meta name="robots"[^>]*>\\s*/i, "")
     .replace(/<link rel="canonical"[^>]*>\\s*/i, "")
     .replace(/<\\/head>/i, \`\${head}\\n  </head>\`);
+}
+
+function readSiteConfig() {
+  const source = existsSync(siteConfigPath) ? readFileSync(siteConfigPath, "utf8") : "";
+  const fromEnv = (name) => process.env[name] || "";
+  return {
+    analyticsProvider: fromEnv("VITE_ANALYTICS_PROVIDER") || literalConfigValue(source, "analyticsProvider") || "none",
+    ga4MeasurementId: fromEnv("VITE_GA4_MEASUREMENT_ID") || literalConfigValue(source, "ga4MeasurementId") || "",
+    plausibleDomain: fromEnv("VITE_PLAUSIBLE_DOMAIN") || literalConfigValue(source, "plausibleDomain") || "",
+    googleSiteVerification: fromEnv("VITE_GOOGLE_SITE_VERIFICATION") || literalConfigValue(source, "googleSiteVerification") || "",
+    bingSiteVerification: fromEnv("VITE_BING_SITE_VERIFICATION") || literalConfigValue(source, "bingSiteVerification") || "",
+  };
+}
+
+function literalConfigValue(source, key) {
+  const match = source.match(new RegExp(key + "\\\\s*:\\\\s*[\\\"']([^\\\"']*)[\\\"']"));
+  return match?.[1] || "";
+}
+
+function renderVerificationMeta() {
+  const tags = [];
+  if (siteConfig.googleSiteVerification) tags.push(\`<meta name="google-site-verification" content="\${escapeAttr(siteConfig.googleSiteVerification)}" />\`);
+  if (siteConfig.bingSiteVerification) tags.push(\`<meta name="msvalidate.01" content="\${escapeAttr(siteConfig.bingSiteVerification)}" />\`);
+  return tags.join("\\n    ");
+}
+
+function renderAnalyticsScripts() {
+  const provider = String(siteConfig.analyticsProvider || "none").toLowerCase();
+  if (provider === "ga4" && siteConfig.ga4MeasurementId) {
+    const id = escapeAttr(siteConfig.ga4MeasurementId);
+    return \`<script async src="https://www.googletagmanager.com/gtag/js?id=\${id}"></script>
+    <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','\${id}');</script>\`;
+  }
+  if (provider === "plausible" && siteConfig.plausibleDomain) {
+    return \`<script defer data-domain="\${escapeAttr(siteConfig.plausibleDomain)}" src="https://plausible.io/js/script.js"></script>\`;
+  }
+  return "";
 }
 
 function extractPageContent(route) {

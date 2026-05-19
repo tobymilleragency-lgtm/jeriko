@@ -114,6 +114,47 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails crawler HTML scan when conversion-ready CTAs lack launch tracking hooks", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-launch-kit-"));
+    try {
+      const publicDir = path.join(dir, "dist", "public");
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(path.join(publicDir, "index.html"), '<html><head><title>Launch Site</title><meta name="description" content="A long enough public marketing description for crawlers."><link rel="canonical" href="/"><meta name="robots" content="index,follow"></head><body><div id="root"><article data-jeriko-prerender="true"><h1>Launch Site</h1><p>Visible route content for search engines and visitors.</p><form><button type="submit">Send</button></form><a href="tel:+15555550123">Call</a><a href="mailto:hello@example.com">Email</a></article></div></body></html>');
+      fs.writeFileSync(path.join(publicDir, "robots.txt"), "User-agent: *\nAllow: /\n");
+      fs.writeFileSync(path.join(publicDir, "sitemap.xml"), "<urlset><url><loc>/</loc></url></urlset>\n");
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.issues).toContain("Conversion target lacks Jeriko tracking hook: form_submit on / tag=<form>");
+      expect(result.issues.some((issue) => issue.includes("call_click on / href=tel:+155") && issue.includes("0123"))).toBe(true);
+      expect(result.issues).toContain("Conversion target lacks Jeriko tracking hook: email_click on / href=mailto:hello@example.com");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes crawler HTML scan when conversion CTAs include launch tracking hooks", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-launch-kit-pass-"));
+    try {
+      writeCrawlerRoute(dir, "/", {
+        title: "Launch Site",
+        body: '<h1>Launch Site</h1><p>Visible route content for search engines and visitors.</p><form data-jeriko-track="form_submit"><button type="submit">Send</button></form><a href="tel:+15555550123" data-jeriko-track="call_click">Call</a><a href="mailto:hello@example.com" data-jeriko-track="email_click">Email</a><a href="/book" data-jeriko-track="booking_click">Book</a>',
+      });
+      writeCrawlerSitemap(dir, ["/"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("launch tracking checked");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails crawler HTML scan when a sitemap route is noindex", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-sitemap-noindex-"));
     try {

@@ -580,10 +580,11 @@ export function buildStuckDiagnosis(args: {
   model: string;
   backend: string;
 }): string {
+  const idleSeconds = Math.max(1, Math.round((args.idleMs > 0 ? args.idleMs : args.elapsedMs) / 1000));
   return [
     "Agent stuck/no-progress guard stopped the run.",
     args.reason,
-    `Diagnosis: model loop produced no new stream, tool, or persisted DB progress for ${Math.round(args.idleMs / 1000)}s while the foreground ask was still active.`,
+    `Diagnosis: model loop produced no new stream, tool, or persisted DB progress for ${idleSeconds}s while the foreground ask was still active.`,
     `Context: backend=${args.backend} model=${args.model} round=${args.round + 1} elapsed=${Math.round(args.elapsedMs / 1000)}s.`,
     "Action taken: aborted the model stream and persisted this diagnosis instead of allowing Jeriko to spin indefinitely.",
     "Exit status: timeout/non-zero for foreground ask clients.",

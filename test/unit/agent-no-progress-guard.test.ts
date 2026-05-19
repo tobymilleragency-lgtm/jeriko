@@ -263,6 +263,22 @@ describe("agent no-progress guard", () => {
     expect(diagnosis).toContain("Agent stuck/no-progress guard stopped the run.");
     expect(diagnosis).toContain("no new stream, tool, or persisted DB progress");
     expect(diagnosis).toContain("backend=test-backend model=test-model round=3");
+    expect(diagnosis).toContain("progress for 180s");
     expect(diagnosis).toContain("timeout/non-zero");
+  });
+
+  it("does not report zero idle seconds when elapsed time is nonzero", () => {
+    const diagnosis = buildStuckDiagnosis({
+      reason: "No new model/tool/DB progress was observed while waiting for the model stream.",
+      round: 30,
+      elapsedMs: 600_000,
+      idleMs: 0,
+      model: "gpt-5.5",
+      backend: "openai-codex",
+    });
+
+    expect(diagnosis).not.toContain("progress for 0s");
+    expect(diagnosis).toContain("progress for 600s");
+    expect(diagnosis).toContain("elapsed=600s");
   });
 });
