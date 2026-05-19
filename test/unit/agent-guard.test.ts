@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -271,6 +271,76 @@ describe("App-factory final done gate", () => {
       { role: "tool", content: verifyTool },
       { role: "tool", content: checkpointTool },
       { role: "tool", content: structureTool },
+    ])).toBe(true);
+  });
+});
+
+describe("Explicit deliverable final done gate", () => {
+  const a2pPrompt = `A2P COMPLIANCE FIX — Round 2
+
+DELIVERABLES
+1. Commit each fix as a separate clean commit:
+   - fix1-contact-form-message-type
+   - fix2-privacy-cookies
+   - fix3-privacy-data-security
+   - fix4-privacy-sms-no-sharing-CRITICAL
+   - fix5-terms-carrier-liability
+   - fix6-terms-age-restriction
+
+2. Push to main, deploy via Vercel.
+3. Verify on live production using curl/raw HTML check:
+   curl -s https://www.relaxremodelconsulting.com/contact | grep -i "transactional"
+   curl -s https://www.relaxremodelconsulting.com/privacy-policy | grep -i "cookies"
+   curl -s https://www.relaxremodelconsulting.com/privacy-policy | grep -i "data security"
+   curl -s https://www.relaxremodelconsulting.com/privacy-policy | grep -i "no third-party sharing"
+   curl -s https://www.relaxremodelconsulting.com/terms-of-service | grep -i "carrier liability"
+   curl -s https://www.relaxremodelconsulting.com/terms-of-service | grep -i "18 years"
+4. Confirm no NEW P0s introduced.
+
+PAUSE at HERMES-A2P-COMPLIANCE-ROUND-2-COMPLETE with all 6 commit hashes.`;
+
+  test("requires explicit deliverable evidence for numbered commit/curl/pause tasks", () => {
+    expect(requiresExplicitDeliverableVerification([
+      { role: "user", content: a2pPrompt },
+    ], "## Verification results\nDone. pnpm check passed and build passed.")).toBe(true);
+  });
+
+  test("rejects a halfway A2P report that only committed the first two fixes", () => {
+    const partialGit = `e2219f9 fix1-contact-form-message-type\n8cca08e fix2-privacy-cookies`;
+    const partialCurl = `--- https://www.relaxremodelconsulting.com/contact | grep -i 'transactional'\ntransactional SMS messages`;
+    expect(hasExplicitDeliverableDoneEvidence([
+      { role: "user", content: a2pPrompt },
+      { role: "tool", content: partialGit },
+      { role: "tool", content: partialCurl },
+    ])).toBe(false);
+  });
+
+  test("accepts A2P completion only with all requested commit labels, live curl evidence, and P0 proof", () => {
+    const gitLog = `
+bdd10ed bdd10edcafe3f6e56abdcef5d3d8dfa80f3865d0 fix6-terms-age-restriction
+df986df df986dfe17fa4a23a9497f8a18447ba474a1d457 fix5-terms-carrier-liability
+a67c23d a67c23d65126eba828b661aab9a6f77a0ff7e35d fix4-privacy-sms-no-sharing-CRITICAL
+c00568c c00568c0c61e8f872fc8b634bae8750ef0dea727 fix3-privacy-data-security
+8cca08e 8cca08e70bb681d1d55ff8f86cf81a8e495e1b9c fix2-privacy-cookies
+e2219f9 e2219f92e9c388789c9657704cf0667a85317d21 fix1-contact-form-message-type`;
+    const liveCurl = `
+--- https://www.relaxremodelconsulting.com/contact | grep -i 'transactional'
+transactional SMS messages
+--- https://www.relaxremodelconsulting.com/privacy-policy | grep -i 'cookies'
+Cookies and Tracking
+--- https://www.relaxremodelconsulting.com/privacy-policy | grep -i 'data security'
+Data Security
+--- https://www.relaxremodelconsulting.com/privacy-policy | grep -i 'no third-party sharing'
+SMS Opt-In Data — No Third-Party Sharing
+--- https://www.relaxremodelconsulting.com/terms-of-service | grep -i 'carrier liability'
+Carrier Liability Disclaimer
+--- https://www.relaxremodelconsulting.com/terms-of-service | grep -i '18 years'
+18 years of age
+P0_FAILS= 0`;
+    expect(hasExplicitDeliverableDoneEvidence([
+      { role: "user", content: a2pPrompt },
+      { role: "tool", content: gitLog },
+      { role: "tool", content: liveCurl },
     ])).toBe(true);
   });
 });

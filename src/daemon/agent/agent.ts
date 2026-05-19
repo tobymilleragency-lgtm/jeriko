@@ -397,6 +397,14 @@ export async function* runAgent(
 
     // If no tool calls, the turn is complete
     if (toolCalls.length === 0 || hadError) {
+      if (!hadError && requiresExplicitDeliverableVerification(messages, fullText) && !hasExplicitDeliverableDoneEvidence(messages)) {
+        const gateMessage = "\n\nEXPLICIT_DELIVERABLE_DONE_GATE: Final report blocked. This task listed concrete deliverables (separate fix commits, push/deploy, live curl/raw-HTML checks, P0/no-new-blocker confirmation, or a required pause marker). Do not claim completion from partial progress. Gather tool-backed evidence for every requested commit label/hash, every requested live verification check, and every requested audit/P0 confirmation, then produce the final report from that evidence.";
+        const gateMsg = addMessage(config.sessionId, "user", gateMessage);
+        addPart(gateMsg.id, "text", gateMessage);
+        messages.push({ role: "user", content: gateMessage });
+        yield { type: "text_delta", content: gateMessage };
+        continue;
+      }
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
         const gateMessage = missingContentStructure
@@ -947,6 +955,75 @@ export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
   if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
   return true;
+}
+
+export function requiresExplicitDeliverableVerification(messages: DriverMessage[], finalText: string): boolean {
+  if (!isFinalAssistantReport(finalText)) return false;
+  const combined = [...messages.map((msg) => messageText(msg)), finalText].join("\n");
+  const lower = combined.toLowerCase();
+  const explicitlyReadOnly = /\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(lower);
+  if (explicitlyReadOnly) return false;
+
+  const fixLabels = extractRequestedFixLabels(messages);
+  const grepPhrases = extractRequestedGrepPhrases(messages);
+  const asksSeparateCommits = /commit each fix as (a )?separate|separate clean commits?|all \d+ commit hashes/i.test(combined);
+  const asksLiveRawChecks = /curl\/raw html|raw html check|live production.*curl|curl\s+-s[\s\S]{0,80}grep\s+-i/i.test(combined);
+  const asksPauseMarker = /\bPAUSE at\b|HERMES-[A-Z0-9-]+-COMPLETE/i.test(combined);
+  const asksP0Confirmation = /no new p0|p0s? introduced|launch-readiness audit/i.test(lower);
+
+  return (asksSeparateCommits && fixLabels.length >= 2)
+    || (asksLiveRawChecks && grepPhrases.length >= 2)
+    || (asksPauseMarker && (fixLabels.length > 0 || grepPhrases.length > 0))
+    || (asksP0Confirmation && (fixLabels.length > 0 || grepPhrases.length > 0));
+}
+
+export function hasExplicitDeliverableDoneEvidence(messages: DriverMessage[]): boolean {
+  const fixLabels = extractRequestedFixLabels(messages);
+  const grepPhrases = extractRequestedGrepPhrases(messages);
+  const requestedText = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n").toLowerCase();
+  const toolText = messages.filter((msg) => msg.role === "tool").map((msg) => messageText(msg)).join("\n");
+  const toolLower = toolText.toLowerCase();
+
+  if (fixLabels.length > 0) {
+    for (const label of fixLabels) {
+      const labelIndex = toolLower.indexOf(label.toLowerCase());
+      if (labelIndex < 0) return false;
+      const near = toolText.slice(Math.max(0, labelIndex - 90), labelIndex + label.length + 90);
+      if (!/[a-f0-9]{7,40}/i.test(near)) return false;
+    }
+  }
+
+  if (grepPhrases.length > 0) {
+    const hasLiveDomain = /https?:\/\/[^\s'"`]*relaxremodelconsulting\.com/i.test(toolText) || /live production|raw html/i.test(toolLower);
+    if (!hasLiveDomain) return false;
+    for (const phrase of grepPhrases) {
+      if (!toolLower.includes(phrase.toLowerCase())) return false;
+    }
+    if (/no match \(exit|NO MATCH/i.test(toolText)) return false;
+  }
+
+  if (/no new p0|p0s? introduced|launch-readiness audit/i.test(requestedText)) {
+    const hasP0Proof = /P0_FAILS\s*=\s*0/i.test(toolText)
+      || /no new p0s? introduced/i.test(toolText)
+      || /no new p0/i.test(toolText);
+    if (!hasP0Proof) return false;
+  }
+
+  return fixLabels.length > 0 || grepPhrases.length > 0;
+}
+
+function extractRequestedFixLabels(messages: DriverMessage[]): string[] {
+  const text = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n");
+  const labels = [...text.matchAll(/\bfix\d+-[A-Za-z0-9_-]+\b/g)].map((match) => match[0]);
+  return uniqueStrings(labels);
+}
+
+function extractRequestedGrepPhrases(messages: DriverMessage[]): string[] {
+  const text = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n");
+  const phrases = [...text.matchAll(/grep\s+-i\s+["']([^"']+)["']/gi)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean);
+  return uniqueStrings(phrases);
 }
 
 export function requiresContentStructureVerification(messages: DriverMessage[]): boolean {
