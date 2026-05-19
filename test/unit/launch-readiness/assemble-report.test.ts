@@ -228,6 +228,53 @@ describe("launch-readiness assemble-report", () => {
     expect(report.prioritizedFixes.p1.some((fix: string) => fix.includes("telephone"))).toBe(true);
   });
 
+  test("metadata failures are included in report JSON, markdown, and P0/P1 fixes", async () => {
+    const { runId, runDir } = createRun([{ path: "/", source: "input" }]);
+    writeChecks(runDir, { path: "/" });
+    writeJson(join(runDir, "checks", "metadata", "home.json"), {
+      url: "https://relaxremodelconsulting.com/",
+      checks: {
+        title: { status: "fail", value: null, missing: ["title"], warnings: [] },
+        metaDescription: { status: "fail", value: null, missing: ["meta description"], warnings: [] },
+        canonical: { status: "fail", value: "https://example.vercel.app/", missing: [], warnings: ["Canonical URL is off-host: https://example.vercel.app/"] },
+        robots: { status: "fail", value: "noindex,nofollow", missing: ["indexable sitemap page"], warnings: ["noindex present on a sitemap page"] },
+        viewport: { status: "fail", value: null, missing: ["viewport"], warnings: [] },
+        openGraph: { status: "fail", value: null, missing: ["og:title", "og:description"], warnings: [] },
+        twitterCard: { status: "warn", value: null, missing: ["twitter:card"], warnings: ["Missing Twitter Card tags: twitter:card"], values: [] },
+        duplicates: { status: "warn", value: 2, missing: [], warnings: ["multiple title tags", "multiple meta descriptions"] },
+      },
+      summary: { passed: 0, failed: 6, warned: 2 },
+    });
+
+    await runAssemble(runId);
+
+    const report = readReportJson(runDir);
+    const markdown = readFileSync(join(runDir, "report.md"), "utf-8");
+    expect(report.verdict).toBe("NO_GO");
+    expect(report.pageResults[0].checks.metadata.summary).toEqual({ passed: 0, failed: 6, warned: 2 });
+    expect(report.prioritizedFixes.p0.some((fix: string) => fix.includes("Metadata canonical") && fix.includes("off-host"))).toBe(true);
+    expect(report.prioritizedFixes.p0.some((fix: string) => fix.includes("Metadata robots") && fix.includes("noindex"))).toBe(true);
+    expect(report.prioritizedFixes.p1.some((fix: string) => fix.includes("Metadata title") && fix.includes("title"))).toBe(true);
+    expect(report.prioritizedFixes.p1.some((fix: string) => fix.includes("Metadata openGraph") && fix.includes("og:title"))).toBe(true);
+    expect(report.prioritizedFixes.p2.some((fix: string) => fix.includes("Metadata twitterCard") && fix.includes("twitter:card"))).toBe(true);
+    expect(report.prioritizedFixes.p2.some((fix: string) => fix.includes("Metadata duplicates") && fix.includes("multiple title tags"))).toBe(true);
+    expect(markdown).toContain("### Metadata / Indexability");
+    expect(markdown).toContain("title fail");
+    expect(markdown).toContain("checks/metadata/home.json");
+  });
+
+  test("missing metadata check files are reported as not run without breaking GO", async () => {
+    const { runId, runDir } = createRun([{ path: "/", source: "input" }]);
+    writeChecks(runDir, { path: "/" });
+
+    await runAssemble(runId);
+
+    const report = readReportJson(runDir);
+    expect(report.verdict).toBe("GO");
+    expect(report.pageResults[0].checks.metadata.status).toBe("not_run");
+    expect(report.prioritizedFixes.p2.some((fix: string) => fix.includes("Metadata / Indexability") && fix.includes("check file not run"))).toBe(true);
+  });
+
   test("latest.md is created and refreshed as hard copy", async () => {
     const { runId, runDir } = createRun([{ path: "/", source: "input" }]);
     writeChecks(runDir, { path: "/" });

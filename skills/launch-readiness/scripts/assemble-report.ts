@@ -156,6 +156,30 @@ function collectSchema(schema: any, page: PageEntry, fixes: Fixes): Status[] {
   return statuses.length ? statuses : [checkStatus(schema)];
 }
 
+function collectMetadata(metadata: any, page: PageEntry, fixes: Fixes): Status[] {
+  if (!metadata?.checks) {
+    addFix(fixes, "p2", page.url, "Metadata / Indexability", "check file not run");
+    return [];
+  }
+
+  const statuses: Status[] = [];
+  for (const [name, check] of Object.entries<any>(metadata.checks)) {
+    const status = checkStatus(check);
+    statuses.push(status);
+    const missing = Array.isArray(check?.missing) && check.missing.length > 0 ? check.missing.join(", ") : "";
+    const warnings = Array.isArray(check?.warnings) && check.warnings.length > 0 ? check.warnings.join(", ") : "";
+    const detail = warnings || missing || `${name} ${status}`;
+
+    if (status === "fail") {
+      if (["canonical", "robots"].includes(name)) addFix(fixes, "p0", page.url, `Metadata ${name}`, detail);
+      else addFix(fixes, "p1", page.url, `Metadata ${name}`, detail);
+    } else if (status === "warn") {
+      addFix(fixes, "p2", page.url, `Metadata ${name}`, detail);
+    }
+  }
+  return statuses.length ? statuses : [checkStatus(metadata)];
+}
+
 function collectOgImage(og: any, page: PageEntry, fixes: Fixes): Status[] {
   if (!og) {
     addFix(fixes, "p2", page.url, "OG image", "check file not run");
@@ -217,6 +241,7 @@ function synthesize(runDir: string, run: any, pagesDoc: any): { reportJson: any;
     const slug = slugForUrl(page.url);
     const staticCheck = readJson(join(runDir, "checks", "static", `${slug}.json`));
     const schema = readJson(join(runDir, "checks", "schema", `${slug}.json`));
+    const metadata = readJson(join(runDir, "checks", "metadata", `${slug}.json`));
     const ogImage = readJson(join(runDir, "checks", "og-images", `${slug}.json`));
     const pageSpeedMobile = readJson(join(runDir, "checks", "pagespeed", `${slug}.mobile.json`));
     const pageSpeedDesktop = readJson(join(runDir, "checks", "pagespeed", `${slug}.desktop.json`));
@@ -224,6 +249,7 @@ function synthesize(runDir: string, run: any, pagesDoc: any): { reportJson: any;
     const statuses = [
       ...collectStatic(staticCheck, page, fixes),
       ...collectSchema(schema, page, fixes),
+      ...collectMetadata(metadata, page, fixes),
       ...collectOgImage(ogImage, page, fixes),
       ...collectPageSpeed(pageSpeedMobile, page, "mobile", fixes),
       ...collectPageSpeed(pageSpeedDesktop, page, "desktop", fixes),
@@ -238,6 +264,7 @@ function synthesize(runDir: string, run: any, pagesDoc: any): { reportJson: any;
         canonical: staticCheck?.checks?.canonical ?? notRun("Canonical"),
         static: staticCheck ?? notRun("Static"),
         schema: schema ?? notRun("Schema"),
+        metadata: metadata ?? notRun("Metadata / Indexability"),
         ogImage: ogImage ?? notRun("OG image"),
         pagespeed: { mobile: pageSpeedMobile ?? notRun("PageSpeed mobile"), desktop: pageSpeedDesktop ?? notRun("PageSpeed desktop") },
       },
@@ -296,6 +323,13 @@ function schemaStatusLine(schema: any): { status: Status; note: string } {
   };
 }
 
+function metadataStatusLine(page: PageResult): string {
+  const metadata: any = (page.checks as any).metadata;
+  if (!metadata?.checks) return `- NOT RUN — ${page.url} — checks/metadata/${slugForUrl(page.url)}.json missing`;
+  const checks = metadata.checks;
+  return `- ${String(pageStatus(Object.values<any>(checks).map((check) => checkStatus(check)))).toUpperCase()} — ${page.url} — title ${checks.title?.status ?? "not_run"}, description ${checks.metaDescription?.status ?? "not_run"}, canonical ${checks.canonical?.status ?? "not_run"}, robots ${checks.robots?.status ?? "not_run"}, viewport ${checks.viewport?.status ?? "not_run"}, OG ${checks.openGraph?.status ?? "not_run"}, Twitter ${checks.twitterCard?.status ?? "not_run"}, duplicates ${checks.duplicates?.status ?? "not_run"} — checks/metadata/${slugForUrl(page.url)}.json`;
+}
+
 function renderMarkdown(report: any, pagesDoc: any): string {
   const verdictLabel = report.verdict === "GO" ? "✅ GO" : "⚠️ NO-GO";
   const skippedReasons = new Set<string>();
@@ -349,6 +383,9 @@ ${renderStatusLine(report.pageResults, (page) => page.checks.static?.checks?.met
 
 ### Meta tags (title, description, OG, Twitter)
 ${report.pageResults.map((page: any) => `- ${page.url} — title ${page.checks.static?.checks?.title?.status ?? "not_run"}, description ${page.checks.static?.checks?.metaDescription?.status ?? "not_run"}, OG ${page.checks.static?.checks?.ogTags?.status ?? "not_run"}, Twitter ${page.checks.static?.checks?.twitterCard?.status ?? "not_run"}`).join("\n")}
+
+### Metadata / Indexability
+${report.pageResults.map((page: PageResult) => metadataStatusLine(page)).join("\n")}
 
 ### JSON-LD / Schema
 ${renderStatusLine(report.pageResults, (page) => schemaStatusLine(page.checks.schema))}
