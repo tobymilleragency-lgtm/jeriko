@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { applyCrawlerPrerenderSupport, command as createCommand, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
@@ -181,6 +182,31 @@ describe("create command templates", () => {
       expect(analytics).toContain("trackPhoneClick");
       expect(analytics).toContain("trackBookingClick");
       expect(analytics).toContain("trackEmailClick");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prerender script auto-adds launch tracking hooks to conversion targets", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-prerender-tracking-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "dist", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { build: "vite build && esbuild server/index.ts --outdir=dist" } }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html lang="en"><head><title>SEO App</title></head><body><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), 'export default function App(){return <div/>}\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), 'export default function Home(){return <main><h1>SEO App</h1><p>Useful launch content for homeowners and search crawlers.</p></main>}\n');
+      expect(applyCrawlerPrerenderSupport(dir, "SEO App")).toBe(true);
+      fs.writeFileSync(path.join(dir, "dist", "public", "index.html"), '<html lang="en"><head><title>SEO App</title></head><body><form><button>Send</button></form><a href="tel:+16201230263">Call</a><a href="mailto:hello@example.com">Email</a><a href="/schedule">Schedule</a><div id="root"></div></body></html>');
+
+      const result = spawnSync(process.execPath, [path.join(dir, "scripts", "jeriko-prerender-seo.mjs")], { cwd: dir, encoding: "utf8" });
+      const html = fs.readFileSync(path.join(dir, "dist", "public", "index.html"), "utf8");
+
+      expect(result.status).toBe(0);
+      expect(html).toContain('<form data-jeriko-track="form_submit"');
+      expect(html).toContain('<a href="tel:+16201230263" data-jeriko-track="call_click"');
+      expect(html).toContain('<a href="mailto:hello@example.com" data-jeriko-track="email_click"');
+      expect(html).toContain('<a href="/schedule" data-jeriko-track="booking_click"');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

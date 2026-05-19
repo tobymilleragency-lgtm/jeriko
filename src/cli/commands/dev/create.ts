@@ -816,9 +816,17 @@ function renderRoute(route) {
       </article>
     </div>\`;
 
-  return injectHead(template, { title, description, canonical, jsonLd })
+  return addLaunchTrackingHooks(injectHead(template, { title, description, canonical, jsonLd })
     .replace(/<div id="root"><\\/div>/, fallback)
-    .replace(/<html lang="en">/, \`<html lang="en" data-jeriko-seo-generated-at="\${escapeAttr(generatedAt)}">\`);
+    .replace(/<html lang="en">/, \`<html lang="en" data-jeriko-seo-generated-at="\${escapeAttr(generatedAt)}">\`));
+}
+
+function addLaunchTrackingHooks(html) {
+  return html
+    .replace(/<form\\b(?![^>]*\\bdata-jeriko-track=)([^>]*)>/gi, '<form data-jeriko-track="form_submit"$1>')
+    .replace(/<a\\b(?![^>]*\\bdata-jeriko-track=)([^>]*\\bhref=["']tel:[^"']*["'][^>]*)>/gi, '<a$1 data-jeriko-track="call_click">')
+    .replace(/<a\\b(?![^>]*\\bdata-jeriko-track=)([^>]*\\bhref=["']mailto:[^"']*["'][^>]*)>/gi, '<a$1 data-jeriko-track="email_click">')
+    .replace(/<a\\b(?![^>]*\\bdata-jeriko-track=)([^>]*\\bhref=["'][^"']*(?:book|booking|schedule|appointment|calendar)[^"']*["'][^>]*)>/gi, '<a$1 data-jeriko-track="booking_click">');
 }
 
 function injectHead(html, page) {
