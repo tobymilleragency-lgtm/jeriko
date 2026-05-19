@@ -116,6 +116,20 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("start_route failed: port 3002 is already in use");
   });
 
+  test("includes generated-copy block guidance in forced recaps", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: JSON.stringify({
+        ok: false,
+        guard: "generated_copy_target",
+        error: "WRITE BLOCKED: This workspace is a Jeriko generated copy with a matching real repo at /real. Re-run from the real repo with: jeriko ask --cwd /real \"<your request>\".",
+        realRepoPath: "/real",
+      }) },
+    ], "Repeated no-progress tool round blocked after 3 matching rounds: write_file {}");
+
+    expect(summary).toContain("WRITE BLOCKED");
+    expect(summary).toContain("jeriko ask --cwd /real");
+  });
+
   test("builds a no-progress recovery prompt that does not claim stale verification after a later edit", () => {
     const prompt = buildNoProgressRecoveryPrompt([
       { role: "tool", content: "> relax-remodel-consulting check\n> tsc --noEmit\n" },

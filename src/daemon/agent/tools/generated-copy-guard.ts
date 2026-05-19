@@ -50,7 +50,7 @@ export function generatedCopyMutationBlock(options: GuardOptions): GeneratedCopy
     generatedCopyPath,
     realRepoPath,
     gitRemote,
-    error: `WRITE BLOCKED: This workspace is a Jeriko generated copy with a matching real repo at ${realRepoPath}. Production edits probably belong there. Re-run from the real repo, or explicitly confirm generated-copy edits with: ${GENERATED_COPY_EDIT_CONFIRMATION}`,
+    error: `WRITE BLOCKED: This workspace is a Jeriko generated copy with a matching real repo at ${realRepoPath}. Production edits probably belong there. Re-run from the real repo with: jeriko ask --cwd ${realRepoPath} "<your request>". Or explicitly confirm generated-copy edits with: ${GENERATED_COPY_EDIT_CONFIRMATION}`,
   };
 }
 

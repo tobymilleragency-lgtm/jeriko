@@ -722,6 +722,7 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
     `- pnpm build: ${state.buildPassed ? "passed" : "not verified in the captured context"}`,
     `- changed files: ${state.noChangedFiles ? "none" : "not verified in the captured context"}`,
     `- code_integrity guard triggered: ${state.codeIntegrityTriggered ? "yes" : "no"}`,
+    state.generatedCopyBlocker ? `- generated-copy guard: ${state.generatedCopyBlocker}` : "- generated-copy guard: no block captured",
     state.changedFilesSummary ? `- latest changed files: ${state.changedFilesSummary}` : "- latest changed files: not captured",
     state.checkpoint ? `- checkpoint: ${state.checkpoint}` : "- checkpoint: not captured",
     "",
@@ -761,6 +762,7 @@ interface CapturedVerificationState {
   buildPassed: boolean;
   noChangedFiles: boolean;
   codeIntegrityTriggered: boolean;
+  generatedCopyBlocker: string;
   changedFilesSummary: string;
   checkpoint: string;
   localUrls: string[];
@@ -779,6 +781,8 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
   const noChangedFiles = latestWorkspace.includes('"diffStat":""') || latestWorkspace.includes('"diffStat": ""') || latestWorkspace.includes('changed_files: 0') || latestWorkspace.includes('"changed_files": 0');
   const codeIntegrityTriggered = toolTexts.some((text) => text.includes('"guard":"code_integrity"') || text.includes("code_integrity"));
   const parsedToolResults = toolTexts.map(parseToolResultJson).filter((value): value is Record<string, any> => Boolean(value && typeof value === "object" && !Array.isArray(value)));
+  const generatedCopyBlockResult = parsedToolResults.findLast((parsed) => parsed?.guard === "generated_copy_target");
+  const generatedCopyBlocker = typeof generatedCopyBlockResult?.error === "string" ? generatedCopyBlockResult.error : "";
 
   const localUrls = uniqueStrings([
     ...toolTexts.flatMap(extractLocalUrls),
@@ -814,7 +818,7 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
   const completedActions = buildCompletedActions(parsedToolResults, verifyAppGates, changedFilesSummary, checkpoint, checkPassed, buildPassed);
   const notDone = buildNotDoneList(verifyAppGates, latestVerify, checkPassed, buildPassed, localUrls);
 
-  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, changedFilesSummary, checkpoint, localUrls, verifyAppGates, completedActions, notDone };
+  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, generatedCopyBlocker, changedFilesSummary, checkpoint, localUrls, verifyAppGates, completedActions, notDone };
 }
 
 function parseToolResultJson(text: string): Record<string, any> | null {

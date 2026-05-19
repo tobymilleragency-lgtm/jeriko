@@ -4,8 +4,14 @@ import { ok, fail } from "../../../shared/output.js";
 import { ExitCode } from "../../../shared/types.js";
 import { loadSystemPrompt } from "../../../shared/prompt.js";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+
+export function resolveAskCwd(flags: Record<string, string | boolean>, callerCwd = process.cwd()): string {
+  const cwdFlag = flags.cwd;
+  if (typeof cwdFlag !== "string" || !cwdFlag.trim()) return callerCwd;
+  return isAbsolute(cwdFlag) ? resolve(cwdFlag) : resolve(callerCwd, cwdFlag);
+}
 
 export const command: CommandHandler = {
   name: "ask",
@@ -22,6 +28,7 @@ export const command: CommandHandler = {
       console.log("  --model <name>    Model to use (default: from config)");
       console.log("  --system <text>   Override system prompt");
       console.log("  --max-tokens <n>  Max response tokens");
+      console.log("  --cwd <path>      Working directory to run tools from");
       console.log("  --no-tools        Disable tool use for this query");
       process.exit(0);
     }
@@ -40,6 +47,7 @@ export const command: CommandHandler = {
     const systemOverride = flagStr(parsed, "system", "");
     const maxTokens = flagStr(parsed, "max-tokens", "");
     const noTools = flagBool(parsed, "no-tools");
+    const askCwd = resolveAskCwd(parsed.flags, process.cwd());
 
     // Parse "provider:model" syntax (e.g. "openrouter:deepseek")
     // The full spec is passed to the daemon for resolution — the CLI doesn't
@@ -60,7 +68,7 @@ export const command: CommandHandler = {
       // stays alive for arbitrarily long agent operations (multi-delegate, fan-out).
       try {
         const { sendStreamRequest } = await import("../../../daemon/api/socket.js");
-        const params: Record<string, unknown> = { message: question, cwd: process.cwd() };
+        const params: Record<string, unknown> = { message: question, cwd: askCwd };
         if (model) params.model = model;
         if (system) params.system = system;
         if (maxTokens) params.max_tokens = parseInt(maxTokens, 10);
@@ -163,7 +171,7 @@ export const command: CommandHandler = {
           temperature: config.agent.temperature,
           extendedThinking: config.agent.extendedThinking,
           toolIds: noTools ? [] : null,
-          cwd: process.cwd(),
+          cwd: askCwd,
         };
 
         const history = [{ role: "user" as const, content: question }];

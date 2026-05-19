@@ -49,6 +49,7 @@ describe("generated-copy mutation guard", () => {
       expect(result.ok).toBe(false);
       expect(result.guard).toBe("generated_copy_target");
       expect(result.realRepoPath).toBe(ws.realRepo);
+      expect(result.error).toContain(`jeriko ask --cwd ${ws.realRepo}`);
       expect(fs.readFileSync(path.join(ws.generated, "note.txt"), "utf8")).toBe("old\n");
     } finally {
       fs.rmSync(ws.root, { recursive: true, force: true });
