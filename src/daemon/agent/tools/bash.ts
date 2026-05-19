@@ -6,6 +6,7 @@ import { auditAllow, auditDeny } from "../../exec/audit.js";
 import type { ToolDefinition } from "./registry.js";
 import { spawn } from "node:child_process";
 import { detectSnapshotIntegrityProblems, restoreSnapshotFiles, snapshotCodeFiles } from "./code-integrity-guard.js";
+import { generatedCopyMutationBlock, isReadOnlyShellCommand } from "./generated-copy-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
@@ -13,6 +14,15 @@ async function execute(args: Record<string, unknown>): Promise<string> {
   const cwd = (args.cwd as string) ?? process.cwd();
 
   if (!command) return JSON.stringify({ ok: false, error: "command is required" });
+
+  if (!isReadOnlyShellCommand(command)) {
+    const generatedCopyBlock = generatedCopyMutationBlock({
+      cwd,
+      projectSearchRoot: typeof args.project_search_root === "string" ? args.project_search_root : undefined,
+      confirmation: args.__jeriko_generated_copy_edit_confirmation,
+    });
+    if (generatedCopyBlock) return JSON.stringify(generatedCopyBlock);
+  }
 
   const lease = createLease("agent:daemon", command, { timeout });
   const decision = validateLease(lease);

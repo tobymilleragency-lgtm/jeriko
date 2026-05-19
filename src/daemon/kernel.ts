@@ -694,6 +694,7 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
       maxHistoryMessages: state.config!.agent.maxHistoryMessages,
       maxHistoryTokens: state.config!.agent.maxHistoryTokens,
       toolIds: params.tools === false ? [] : null,
+      cwd: typeof params.cwd === "string" && params.cwd ? params.cwd : process.cwd(),
     };
 
     let response = "";

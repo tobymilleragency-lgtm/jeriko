@@ -21,6 +21,8 @@ import { ExecutionGuard } from "./guard.js";
 import { trimHistory, compactHistory, sanitizeToolPairs } from "./history.js";
 import { setActiveContext, clearActiveContext } from "./orchestrator-context.js";
 import { getLogger } from "../../shared/logger.js";
+import { isAbsolute, resolve } from "node:path";
+import { GENERATED_COPY_EDIT_CONFIRMATION } from "./tools/generated-copy-guard.js";
 
 const log = getLogger();
 
@@ -54,6 +56,8 @@ export interface AgentRunConfig {
   maxHistoryTokens?: number;
   /** Optional AbortSignal for cancellation/timeout. Forwarded to the LLM driver. */
   signal?: AbortSignal;
+  /** Working directory for this run. Injected into cwd-aware tools when the model omits cwd. */
+  cwd?: string;
   /** Hard wall-clock cap for the whole agent run. Defaults to 10 minutes. */
   maxDurationMs?: number;
   /** Max time to wait for a new model stream event before diagnosing a stuck/no-progress loop. Defaults to 3 minutes. */
@@ -218,8 +222,7 @@ export async function* runAgent(
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let streamNoProgressRecoveries = 0;
-  let noProgressRecoveries = 0;
-  const maxNoProgressRecoveries = 2;
+  const generatedCopyEditConfirmed = messages.some((message) => message.role === "user" && messageText(message).includes(GENERATED_COPY_EDIT_CONFIRMATION));
   const repeatGuard = createToolRepeatGuard();
   const roundRepeatGuard = createToolRoundRepeatGuard();
 
@@ -425,16 +428,6 @@ export async function* runAgent(
         messages.push({ role: "tool", content: result, tool_call_id: tc.id });
       }
 
-      noProgressRecoveries += 1;
-      if (noProgressRecoveries <= maxNoProgressRecoveries) {
-        const recoveryPrompt = buildNoProgressRecoveryPrompt(messages, roundRepeatCheck);
-        const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
-        addPart(recoveryMsg.id, "text", recoveryPrompt);
-        messages.push({ role: "user", content: recoveryPrompt });
-        yield { type: "text_delta", content: recoveryPrompt };
-        continue;
-      }
-
       const forcedSummary = buildNoProgressStopSummary(messages, roundRepeatCheck);
       const guardMsg = addMessage(config.sessionId, "assistant", forcedSummary, { input: 0, output: estimateTokens(forcedSummary) });
       addPart(guardMsg.id, "text", forcedSummary);
@@ -469,6 +462,16 @@ export async function* runAgent(
             // Inject inferred action from dotted name (e.g. "browser.click" → action:"click")
             if (inferredAction && !args.action) {
               args.action = inferredAction;
+            }
+            if (config.cwd && tool.parameters?.properties?.cwd) {
+              if (!args.cwd) {
+                args.cwd = config.cwd;
+              } else if (typeof args.cwd === "string" && !isAbsolute(args.cwd)) {
+                args.cwd = resolve(config.cwd, args.cwd);
+              }
+            }
+            if (generatedCopyEditConfirmed) {
+              args.__jeriko_generated_copy_edit_confirmation = GENERATED_COPY_EDIT_CONFIRMATION;
             }
             result = await tool.execute(args);
           } catch (err) {

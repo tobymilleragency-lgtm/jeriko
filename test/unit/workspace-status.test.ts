@@ -3,7 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { spawnSync } from "node:child_process";
+
 import { buildWorkspaceStatus } from "../../src/daemon/diagnostics/session.js";
+
+function git(dir: string, args: string[]) {
+  const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout || `git ${args.join(" ")} failed`);
+}
 
 describe("workspace status project-state", () => {
   it("includes .jeriko/project-state.json when present", () => {
@@ -29,6 +36,31 @@ describe("workspace status project-state", () => {
       expect((status.dependencyStatus as any).message).toContain("node_modules missing");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("flags a generated project copy when another local repo has the same Git remote", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-workspace-target-"));
+    const generated = path.join(root, ".jeriko", "projects", "relax-remodel-consulting");
+    const realRepo = path.join(root, "relax-remodel-consulting-site");
+    try {
+      fs.mkdirSync(generated, { recursive: true });
+      fs.mkdirSync(realRepo, { recursive: true });
+      fs.writeFileSync(path.join(generated, "package.json"), JSON.stringify({ name: "relax-remodel-consulting" }));
+      fs.writeFileSync(path.join(realRepo, "package.json"), JSON.stringify({ name: "relax-remodel-consulting" }));
+      for (const dir of [generated, realRepo]) {
+        git(dir, ["init"]);
+        git(dir, ["remote", "add", "origin", "https://github.com/tobymilleragency-lgtm/relax-remodel-consulting-site.git"]);
+      }
+
+      const status = buildWorkspaceStatus({ cwd: generated, sessionId: "missing-session", projectSearchRoot: root });
+
+      expect((status.workspaceTarget as any).classification).toBe("generated_copy_with_real_repo_match");
+      expect((status.workspaceTarget as any).generatedCopyPath).toBe(generated);
+      expect((status.workspaceTarget as any).realRepoPath).toBe(realRepo);
+      expect((status.workspaceTarget as any).warning).toContain("real local repo with the same git remote");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

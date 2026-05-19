@@ -10,6 +10,7 @@ import {
   runAgent,
 } from "../../src/daemon/agent/agent.js";
 import { registerDriver, type DriverConfig, type DriverMessage, type LLMDriver, type StreamChunk } from "../../src/daemon/agent/drivers/index.js";
+import { registerTool } from "../../src/daemon/agent/tools/registry.js";
 import { createSession } from "../../src/daemon/agent/session/session.js";
 import { closeDatabase, initDatabase } from "../../src/daemon/storage/db.js";
 
@@ -129,6 +130,124 @@ describe("agent no-progress guard", () => {
 
     expect(seenRequestSignals).toEqual([false, false]);
     expect(events.some((event) => event.type === "text_delta" && event.content.includes("RECOVERED"))).toBe(true);
+  });
+
+  it("hard-stops with an operator recap on repeated tool rounds without asking the model to recover", async () => {
+    let callCount = 0;
+    const driver: LLMDriver = {
+      name: "test-repeated-round-hard-stop",
+      chat() {
+        callCount += 1;
+        const callNumber = callCount;
+        let yielded = false;
+        const iterator: AsyncGenerator<StreamChunk> = {
+          async next() {
+            if (yielded) return { done: true, value: undefined as never };
+            yielded = true;
+            if (callNumber <= 3) {
+              return {
+                done: false,
+                value: {
+                  type: "tool_call",
+                  tool_call: {
+                    id: `read-${callNumber}`,
+                    name: "missing_read_probe",
+                    arguments: JSON.stringify({ file_path: "/tmp/Home.tsx", offset: 0, limit: 80 }),
+                  },
+                },
+              };
+            }
+            return { done: false, value: { type: "text", content: "MODEL_WAS_REASKED_AFTER_REPEAT_GUARD" } };
+          },
+          async return() {
+            return { done: true, value: undefined as never };
+          },
+          async throw(error?: unknown) {
+            throw error;
+          },
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+        };
+        return iterator;
+      },
+    };
+    registerDriver(driver);
+    const session = createSession({ title: "repeated-round-hard-stop-test", model: "test-model" });
+
+    const text: string[] = [];
+    for await (const event of runAgent({
+      sessionId: session.id,
+      backend: "test-repeated-round-hard-stop",
+      model: "test-model",
+      noProgressTimeoutMs: 10_000,
+      maxDurationMs: 60_000,
+      maxRounds: 8,
+    }, [{ role: "user", content: "inspect the app" }])) {
+      if (event.type === "text_delta") text.push(event.content);
+    }
+
+    const output = text.join("\n");
+    expect(callCount).toBe(3);
+    expect(output).toContain("No-progress guard stopped the run.");
+    expect(output).toContain("Operator recap:");
+    expect(output).toContain("Repeated no-progress tool round blocked after 3 matching rounds");
+    expect(output).not.toContain("NO_PROGRESS_RECOVERY");
+    expect(output).not.toContain("MODEL_WAS_REASKED_AFTER_REPEAT_GUARD");
+  });
+
+  it("injects the run cwd into cwd-aware tools when the model omits cwd", async () => {
+    registerTool({
+      id: "cwd_probe_agent_test",
+      name: "cwd_probe_agent_test",
+      description: "Test-only cwd probe",
+      parameters: {
+        type: "object",
+        properties: {
+          cwd: { type: "string", description: "Working directory" },
+        },
+      },
+      execute: async (args) => JSON.stringify({ cwd: args.cwd ?? null }),
+    });
+
+    let callCount = 0;
+    const driver: LLMDriver = {
+      name: "test-agent-cwd-injection",
+      async *chat() {
+        callCount += 1;
+        if (callCount === 1) {
+          yield {
+            type: "tool_call",
+            content: "",
+            tool_call: {
+              id: "cwd-probe-1",
+              name: "cwd_probe_agent_test",
+              arguments: JSON.stringify({ cwd: "." }),
+            },
+          };
+          return;
+        }
+        yield { type: "text", content: "done" };
+      },
+    };
+    registerDriver(driver);
+    const session = createSession({ title: "cwd-injection-test", model: "test-model" });
+    const runCwd = "/tmp/jeriko-caller-cwd";
+    const toolResults: string[] = [];
+
+    for await (const event of runAgent({
+      sessionId: session.id,
+      backend: "test-agent-cwd-injection",
+      model: "test-model",
+      cwd: runCwd,
+      noProgressTimeoutMs: 10_000,
+      maxDurationMs: 60_000,
+      maxRounds: 4,
+    }, [{ role: "user", content: "probe cwd" }])) {
+      if (event.type === "tool_result") toolResults.push(event.result);
+    }
+
+    expect(toolResults.some((result) => result.includes(`"cwd":"${runCwd}"`))).toBe(true);
   });
 
   it("builds a foreground stuck diagnosis with timeout/non-zero guidance", () => {

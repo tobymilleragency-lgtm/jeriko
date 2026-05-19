@@ -4,20 +4,29 @@ import { registerTool } from "./registry.js";
 import { isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { validateCodeIntegrity } from "./code-integrity-guard.js";
+import { generatedCopyMutationBlock, resolveAgainstCwd } from "./generated-copy-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
   const oldString = args.old_string as string;
   const newString = args.new_string as string;
   const replaceAll = (args.replace_all as boolean) ?? false;
+  const cwd = typeof args.cwd === "string" ? args.cwd : process.cwd();
 
   if (!filePath) return JSON.stringify({ ok: false, error: "file_path is required" });
   if (!oldString) return JSON.stringify({ ok: false, error: "old_string is required" });
   if (newString === undefined) return JSON.stringify({ ok: false, error: "new_string is required" });
 
-  const absPath = resolve(filePath);
+  const absPath = resolveAgainstCwd(cwd, filePath);
+
+  const generatedCopyBlock = generatedCopyMutationBlock({
+    cwd,
+    targetPath: absPath,
+    projectSearchRoot: typeof args.project_search_root === "string" ? args.project_search_root : undefined,
+    confirmation: args.__jeriko_generated_copy_edit_confirmation,
+  });
+  if (generatedCopyBlock) return JSON.stringify(generatedCopyBlock);
 
   const blocked = isPathBlocked(absPath);
   if (blocked.blocked) {
@@ -65,6 +74,7 @@ export const editTool: ToolDefinition = {
     type: "object",
     properties: {
       file_path: { type: "string", description: "Absolute path to the file" },
+      cwd: { type: "string", description: "Working directory for resolving relative file_path values" },
       old_string: { type: "string", description: "The exact text to find and replace" },
       new_string: { type: "string", description: "The replacement text" },
       replace_all: { type: "boolean", description: "Replace all occurrences (default: false)" },

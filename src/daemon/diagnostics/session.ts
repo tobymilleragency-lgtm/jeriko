@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getDatabase } from "../storage/db.js";
 import { assessVerificationStatus, readProjectState } from "../../cli/commands/dev/project-state.js";
@@ -11,6 +12,7 @@ export interface DiagnoseLatestOptions {
   sessionId?: string;
   cwd?: string;
   limit?: number;
+  projectSearchRoot?: string;
 }
 
 function asString(value: unknown): string {
@@ -100,6 +102,66 @@ function localGitRepository(cwd: string): boolean {
   return Boolean(topLevel) && samePath(topLevel, cwd);
 }
 
+function gitOrigin(cwd: string): string {
+  return git(["remote", "get-url", "origin"], cwd);
+}
+
+function isGeneratedProjectCopy(cwd: string, searchRoot: string): boolean {
+  const generatedRoot = resolve(searchRoot, ".jeriko", "projects");
+  const absolute = resolve(cwd);
+  return absolute === generatedRoot || absolute.startsWith(`${generatedRoot}/`);
+}
+
+function findRepoWithSameOrigin(cwd: string, origin: string, searchRoot: string): string {
+  if (!origin || !existsSync(searchRoot)) return "";
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(searchRoot);
+  } catch {
+    return "";
+  }
+  for (const entry of entries) {
+    if (entry === ".jeriko") continue;
+    const candidate = join(searchRoot, entry);
+    try {
+      if (!statSync(candidate).isDirectory()) continue;
+      if (!existsSync(join(candidate, ".git"))) continue;
+      if (samePath(candidate, cwd)) continue;
+      if (gitOrigin(candidate) === origin) return resolve(candidate);
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
+export function detectWorkspaceTarget(cwd: string, searchRoot = homedir()): Record<string, unknown> {
+  const absolute = resolve(cwd);
+  const origin = gitOrigin(absolute);
+  if (isGeneratedProjectCopy(absolute, searchRoot)) {
+    const realRepoPath = findRepoWithSameOrigin(absolute, origin, searchRoot);
+    if (realRepoPath) {
+      return {
+        classification: "generated_copy_with_real_repo_match",
+        generatedCopyPath: absolute,
+        realRepoPath,
+        gitRemote: origin,
+        warning: `This workspace is a Jeriko generated copy, but ${realRepoPath} is a real local repo with the same git remote. Confirm the target before editing; production work probably belongs in the real repo.`,
+      };
+    }
+    return {
+      classification: "generated_copy",
+      generatedCopyPath: absolute,
+      gitRemote: origin,
+    };
+  }
+  return {
+    classification: localGitRepository(absolute) ? "real_or_external_repo" : "unknown",
+    path: absolute,
+    gitRemote: origin,
+  };
+}
+
 export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
   const projectState = readProjectState(cwd);
@@ -122,6 +184,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
     ok: true,
     cwd,
     projectState,
+    workspaceTarget: detectWorkspaceTarget(cwd, opts.projectSearchRoot || homedir()),
     verificationStatus: assessVerificationStatus(cwd, projectState),
     dependencyStatus: getDependencyStatus(cwd),
     git: isLocalGitRepo ? {

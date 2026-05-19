@@ -4,19 +4,29 @@ import { registerTool } from "./registry.js";
 import { isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { dirname } from "node:path";
 import { validateCodeIntegrity } from "./code-integrity-guard.js";
+import { generatedCopyMutationBlock, resolveAgainstCwd } from "./generated-copy-guard.js";
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
   const content = args.content as string;
+  const cwd = typeof args.cwd === "string" ? args.cwd : process.cwd();
 
   if (!filePath) return JSON.stringify({ ok: false, error: "file_path is required" });
   if (content === undefined || content === null) {
     return JSON.stringify({ ok: false, error: "content is required" });
   }
 
-  const absPath = resolve(filePath);
+  const absPath = resolveAgainstCwd(cwd, filePath);
+
+  const generatedCopyBlock = generatedCopyMutationBlock({
+    cwd,
+    targetPath: absPath,
+    projectSearchRoot: typeof args.project_search_root === "string" ? args.project_search_root : undefined,
+    confirmation: args.__jeriko_generated_copy_edit_confirmation,
+  });
+  if (generatedCopyBlock) return JSON.stringify(generatedCopyBlock);
 
   const blocked = isPathBlocked(absPath);
   if (blocked.blocked) {
@@ -52,6 +62,7 @@ export const writeTool: ToolDefinition = {
     type: "object",
     properties: {
       file_path: { type: "string", description: "Absolute path to the file to write" },
+      cwd: { type: "string", description: "Working directory for resolving relative file_path values" },
       content: { type: "string", description: "The content to write" },
     },
     required: ["file_path", "content"],

@@ -60,7 +60,7 @@ export const command: CommandHandler = {
       // stays alive for arbitrarily long agent operations (multi-delegate, fan-out).
       try {
         const { sendStreamRequest } = await import("../../../daemon/api/socket.js");
-        const params: Record<string, unknown> = { message: question };
+        const params: Record<string, unknown> = { message: question, cwd: process.cwd() };
         if (model) params.model = model;
         if (system) params.system = system;
         if (maxTokens) params.max_tokens = parseInt(maxTokens, 10);
@@ -163,6 +163,7 @@ export const command: CommandHandler = {
           temperature: config.agent.temperature,
           extendedThinking: config.agent.extendedThinking,
           toolIds: noTools ? [] : null,
+          cwd: process.cwd(),
         };
 
         const history = [{ role: "user" as const, content: question }];
