@@ -66,6 +66,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "db_auth_workflow_wiring",
   "mock_data_import_scan",
   "provider_config_scan",
+  "image_uniqueness_scan",
   "install",
   "check",
   "build",

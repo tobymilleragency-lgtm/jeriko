@@ -409,7 +409,7 @@ export async function* runAgent(
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
         const gateMessage = missingContentStructure
           ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
-          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
+          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -1098,12 +1098,12 @@ export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
       const parsed = JSON.parse(text);
       const gates = parsed?.data?.gates;
       if (parsed?.ok === true && Array.isArray(gates)) {
-        const required = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "install", "check", "build", "start_route", "browser_smoke"];
+        const required = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "image_uniqueness_scan", "install", "check", "build", "start_route", "browser_smoke"];
         if (required.every((name) => gates.some((gate: any) => gate?.name === name && gate?.ok === true))) return true;
       }
     } catch {
       // Fall back to text detection for older captured tool outputs.
-      const hasAllGateNames = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "install", "check", "build", "start_route", "browser_smoke"].every((name) => text.includes(`"${name}"`));
+      const hasAllGateNames = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "image_uniqueness_scan", "install", "check", "build", "start_route", "browser_smoke"].every((name) => text.includes(`"${name}"`));
       if (hasAllGateNames && /"ok"\s*:\s*true/.test(text) && !/"ok"\s*:\s*false/.test(text)) return true;
     }
   }

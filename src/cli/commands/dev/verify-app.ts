@@ -4,6 +4,7 @@ import { fail, failWithDetails, ok } from "../../../shared/output.js";
 import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState } from "./project-state.js";
@@ -196,6 +197,19 @@ export const command: CommandHandler = {
         profile,
         projectState,
         providerConfigDrift,
+        gates,
+      });
+    }
+
+    const duplicateSectionImages = scanDuplicateSectionImages(dir);
+    gates.push({ name: "image_uniqueness_scan", ok: duplicateSectionImages.length === 0 });
+    if (duplicateSectionImages.length > 0) {
+      failWithDetails("Generated app reuses the same section image in multiple places. Every visible section/card must use a distinct image unless reuse was explicitly requested.", {
+        errorCode: "E_DUPLICATE_SECTION_IMAGES",
+        directory: dir,
+        profile,
+        projectState,
+        duplicateSectionImages,
         gates,
       });
     }
@@ -544,6 +558,69 @@ export function scanMisleadingProviderConfig(dir: string): RealnessHit[] {
       });
     }
   });
+  return hits;
+}
+
+export function scanDuplicateSectionImages(dir: string): RealnessHit[] {
+  const refs = new Map<string, Array<{ file: string; line: number }>>();
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!normalized.includes("/client/src/")) return;
+    if (normalized.endsWith("/site.config.ts") || normalized.endsWith("/site.config.tsx")) return;
+    if (normalized.includes("/components/ui/") || normalized.includes("/test") || normalized.includes(".test.")) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const matches = [
+        ...line.matchAll(/["'`](\/images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))["'`]/gi),
+        ...line.matchAll(/url\(["']?(\/images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))["']?\)/gi),
+      ];
+      for (const match of matches) {
+        const ref = match[1];
+        if (!ref || /(?:logo|icon|favicon|sprite|badge)/i.test(ref)) continue;
+        const entries = refs.get(ref) ?? [];
+        entries.push({ file, line: i + 1 });
+        refs.set(ref, entries);
+      }
+    }
+  });
+
+  const hits: RealnessHit[] = [];
+  for (const [ref, entries] of refs) {
+    const uniqueLocations = new Set(entries.map((entry) => `${entry.file}:${entry.line}`));
+    if (uniqueLocations.size <= 1) continue;
+    for (const entry of entries.slice(1)) {
+      hits.push({
+        file: entry.file,
+        line: entry.line,
+        token: ref,
+        reason: "The same generated/site image URL is reused across multiple visible sections. Generate or wire a distinct section-specific image.",
+      });
+    }
+  }
+
+  const hashOwners = new Map<string, { ref: string; file: string; line: number }>();
+  for (const [ref, entries] of refs) {
+    const assetPath = join(dir, "client", "public", ref.replace(/^\//, ""));
+    if (!existsSync(assetPath)) continue;
+    const hash = createHash("sha256").update(readFileSync(assetPath)).digest("hex");
+    const firstEntry = entries[0];
+    if (!firstEntry) continue;
+    const owner = hashOwners.get(hash);
+    if (!owner) {
+      hashOwners.set(hash, { ref, file: firstEntry.file, line: firstEntry.line });
+      continue;
+    }
+    if (owner.ref === ref) continue;
+    for (const entry of entries) {
+      hits.push({
+        file: entry.file,
+        line: entry.line,
+        token: `${ref} duplicates ${owner.ref}`,
+        reason: "Different section image paths resolve to the same file bytes. Generate or wire genuinely distinct assets, not renamed duplicates.",
+      });
+    }
+  }
   return hits;
 }
 

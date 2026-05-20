@@ -12,23 +12,29 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const HOME = process.env.HOME || homedir();
-const MEMORY_DIR = join(HOME, ".jeriko", "memory");
-const MEMORY_FILE = join(MEMORY_DIR, "MEMORY.md");
+function memoryDir(): string {
+  return join(process.env.HOME || homedir(), ".jeriko", "memory");
+}
+
+function memoryFile(): string {
+  return join(memoryDir(), "MEMORY.md");
+}
 
 /** Max size for memory file (64KB). Prevents unbounded growth. */
 const MAX_MEMORY_SIZE = 64 * 1024;
 
 function ensureDir(): void {
-  if (!existsSync(MEMORY_DIR)) {
-    mkdirSync(MEMORY_DIR, { recursive: true });
+  const dir = memoryDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 }
 
 function readMemory(): string {
   ensureDir();
-  if (!existsSync(MEMORY_FILE)) return "";
-  return readFileSync(MEMORY_FILE, "utf-8");
+  const file = memoryFile();
+  if (!existsSync(file)) return "";
+  return readFileSync(file, "utf-8");
 }
 
 function writeMemory(content: string): void {
@@ -36,7 +42,20 @@ function writeMemory(content: string): void {
   if (Buffer.byteLength(content, "utf-8") > MAX_MEMORY_SIZE) {
     throw new Error(`Memory file would exceed ${MAX_MEMORY_SIZE / 1024}KB limit. Remove old entries first.`);
   }
-  writeFileSync(MEMORY_FILE, content, "utf-8");
+  writeFileSync(memoryFile(), content, "utf-8");
+}
+
+function stableMemoryMarker(content: string): string {
+  const marker = content.match(/CasEtEsT-[A-Za-z0-9_-]+/i)?.[0];
+  if (marker) return marker.toLowerCase();
+  const heading = content.match(/^##\s+(.+)$/m)?.[1]?.trim().toLowerCase();
+  return heading ?? "";
+}
+
+function hasEquivalentMemory(existing: string, content: string): boolean {
+  const marker = stableMemoryMarker(content);
+  if (!marker) return existing.includes(content.trim());
+  return existing.toLowerCase().includes(marker);
 }
 
 async function execute(args: Record<string, unknown>): Promise<string> {
@@ -71,6 +90,9 @@ async function execute(args: Record<string, unknown>): Promise<string> {
       }
       try {
         const existing = readMemory();
+        if (hasEquivalentMemory(existing, content)) {
+          return JSON.stringify({ ok: true, skipped: true, message: "Memory already contains this stable preference", bytes: Buffer.byteLength(existing, "utf-8") });
+        }
         const updated = existing ? `${existing}\n${content}` : content;
         writeMemory(updated);
         return JSON.stringify({ ok: true, message: "Memory appended", bytes: Buffer.byteLength(updated, "utf-8") });
