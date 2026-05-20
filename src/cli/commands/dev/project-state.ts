@@ -10,6 +10,15 @@ export interface SourceFingerprint {
   bytes: number;
 }
 
+export interface AppSpecWorkflow {
+  id: string;
+  label: string;
+  inputs: string[];
+  actions: string[];
+  outputs: string[];
+  persistence: string[];
+}
+
 export interface AppSpecContract {
   version: 1;
   source: "prompt" | "template";
@@ -17,6 +26,7 @@ export interface AppSpecContract {
   appType: string;
   pages: Array<{ path: string; title: string }>;
   features: string[];
+  workflows?: AppSpecWorkflow[];
   integrations: {
     allowed: string[];
     forbidden: string[];
@@ -84,6 +94,9 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "provider_config_scan",
   "image_uniqueness_scan",
   "forbidden_integration_scan",
+  "workflow_contract",
+  "primary_action_wiring",
+  "business_math_realness",
   "app_spec_verifier",
   "install",
   "check",
@@ -163,13 +176,29 @@ function buildAppSpecContract(args: {
   const prompt = args.prompt?.trim() || `Create ${args.name} from the ${args.template} template.`;
   const localService = args.seoProfile === "local-service" || /contractor|roof|remodel|plumb|electric|hvac|local|seo|service area|near me/i.test(prompt);
   const fullStack = args.profile === "web-db-user";
+  return buildPromptAppSpecContract(args, prompt, localService, fullStack);
+}
+
+function buildPromptAppSpecContract(args: {
+  name: string;
+  template: string;
+  profile: AppProfile;
+  prompt?: string;
+  seoProfile?: string;
+}, prompt: string, localService: boolean, fullStack: boolean): AppSpecContract {
+  const productWorkflow = inferProductWorkflow(prompt, fullStack);
+  const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages];
+  const features = fullStack
+    ? uniqueStrings(["authenticated user workflow", "database-backed app state", ...productWorkflow.features])
+    : ["production homepage", localService ? "local service SEO content" : "customer-ready marketing content"];
   return {
     version: 1,
     source: args.prompt ? "prompt" : "template",
     prompt,
-    appType: fullStack ? "authenticated-web-app" : localService ? "local-service-site" : "marketing-site",
-    pages: [{ path: "/", title: "Home" }],
-    features: fullStack ? ["authenticated user workflow", "database-backed app state"] : ["production homepage", localService ? "local service SEO content" : "customer-ready marketing content"],
+    appType: fullStack ? productWorkflow.appType : localService ? "local-service-site" : "marketing-site",
+    pages: uniquePages(pages),
+    features,
+    ...(productWorkflow.workflow ? { workflows: [productWorkflow.workflow] } : {}),
     integrations: {
       allowed: [],
       forbidden: ["stripe"],
@@ -178,8 +207,51 @@ function buildAppSpecContract(args: {
       "Full required verify-app gate passes",
       "Generated app matches this app spec contract",
       "No forbidden integrations appear unless explicitly allowed in this spec",
+      ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
     ],
   };
+}
+
+function inferProductWorkflow(prompt: string, fullStack: boolean): { appType: string; pages: Array<{ path: string; title: string }>; features: string[]; workflow?: NonNullable<AppSpecContract["workflows"]>[number] } {
+  const text = prompt.toLowerCase();
+  const scanner = /scanner|scan|resale|flip|inventory|listing|profit|upload|paste|photo/.test(text);
+  if (!fullStack || !scanner) return { appType: fullStack ? "authenticated-web-app" : "marketing-site", pages: [], features: [] };
+
+  return {
+    appType: "full-stack-product-app",
+    pages: [
+      { path: "/scanner", title: "Scanner" },
+      { path: "/inventory", title: "Inventory" },
+    ],
+    features: [
+      "photo upload",
+      "paste/manual item input",
+      "cost/profit calculator",
+      "database-backed inventory",
+      "AI-assisted scan workflow",
+    ],
+    workflow: {
+      id: "resale-scanner",
+      label: "Resale scanner workflow",
+      inputs: ["upload", "paste", "cost", "shipping", "fees"],
+      actions: ["upload", "paste", "scan", "save", "list", "edit", "delete"],
+      outputs: ["price", "profit", "decision", "confidence"],
+      persistence: ["items", "scans", "inventory", "uploads"],
+    },
+  };
+}
+
+function uniquePages(pages: Array<{ path: string; title: string }>): Array<{ path: string; title: string }> {
+  const seen = new Set<string>();
+  return pages.filter((page) => {
+    if (seen.has(page.path)) return false;
+    seen.add(page.path);
+    return true;
+  });
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 export function computeSourceFingerprint(dir: string): SourceFingerprint {

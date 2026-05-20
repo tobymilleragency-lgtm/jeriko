@@ -303,6 +303,45 @@ export const command: CommandHandler = {
         });
       }
 
+      const workflowContractIssues = scanWorkflowContract(dir, projectState);
+      gates.push({ name: "workflow_contract", ok: workflowContractIssues.length === 0 });
+      if (workflowContractIssues.length > 0) {
+        failWithDetails("Generated full-stack app is missing required product workflow contract details.", {
+          errorCode: "E_WORKFLOW_CONTRACT",
+          directory: dir,
+          profile,
+          projectState,
+          workflowContractIssues,
+          gates,
+        });
+      }
+
+      const primaryActionWiring = scanPrimaryActionWiring(dir, profile);
+      gates.push({ name: "primary_action_wiring", ok: primaryActionWiring.length === 0 });
+      if (primaryActionWiring.length > 0) {
+        failWithDetails("Generated app has visible primary action buttons that are not wired to handlers, API calls, state changes, or visible setup-required fallback.", {
+          errorCode: "E_PRIMARY_ACTION_WIRING",
+          directory: dir,
+          profile,
+          projectState,
+          primaryActionWiring,
+          gates,
+        });
+      }
+
+      const businessMathRealness = scanBusinessMathRealness(dir, profile);
+      gates.push({ name: "business_math_realness", ok: businessMathRealness.length === 0 });
+      if (businessMathRealness.length > 0) {
+        failWithDetails("Generated app hard-codes business pricing/cost/profit outputs. Product apps must calculate these values from user inputs or persisted records.", {
+          errorCode: "E_BUSINESS_MATH_REALNESS",
+          directory: dir,
+          profile,
+          projectState,
+          businessMathRealness,
+          gates,
+        });
+      }
+
       const appSpecIssues = scanAppSpecCompliance(dir, projectState);
       gates.push({ name: "app_spec_verifier", ok: appSpecIssues.length === 0 });
       if (appSpecIssues.length > 0) {
@@ -537,6 +576,9 @@ export function validateAppSpecContract(projectState: ProjectState | null): AppS
   if (!spec.integrations || !Array.isArray(spec.integrations.allowed) || !Array.isArray(spec.integrations.forbidden)) {
     issues.push({ file: "project-state.json", line: 0, token: "appSpec.integrations", reason: "App spec contract must include allowed and forbidden integration lists." });
   }
+  if (projectState.profile === "web-db-user" && spec.appType === "full-stack-product-app" && (!Array.isArray(spec.workflows) || spec.workflows.length === 0)) {
+    issues.push({ file: "project-state.json", line: 0, token: "appSpec.workflows", reason: "Full-stack product apps must list workflows with inputs, actions, outputs, and persistence requirements." });
+  }
   return issues;
 }
 
@@ -585,6 +627,88 @@ export function scanAppSpecCompliance(dir: string, projectState: ProjectState | 
     });
   }
   return issues;
+}
+
+export function scanWorkflowContract(_dir: string, projectState: ProjectState | null): AppSpecIssue[] {
+  const spec = projectState?.appSpec;
+  if (!spec) return [];
+  const prompt = `${spec.prompt} ${spec.features?.join(" ") ?? ""}`.toLowerCase();
+  const productWorkflowRequired = projectState.profile === "web-db-user" && /scanner|scan|resale|flip|inventory|listing|profit|upload|paste|photo|cost/.test(prompt);
+  if (!productWorkflowRequired) return [];
+
+  const issues: AppSpecIssue[] = [];
+  const workflows = Array.isArray(spec.workflows) ? spec.workflows : [];
+  if (workflows.length === 0) {
+    issues.push({ file: "project-state.json", line: 0, token: "appSpec.workflows", reason: "Prompt describes a full-stack product workflow, but appSpec.workflows is missing." });
+  }
+  const merged = {
+    inputs: new Set(workflows.flatMap((workflow) => workflow.inputs ?? []).map((item) => item.toLowerCase())),
+    actions: new Set(workflows.flatMap((workflow) => workflow.actions ?? []).map((item) => item.toLowerCase())),
+    outputs: new Set(workflows.flatMap((workflow) => workflow.outputs ?? []).map((item) => item.toLowerCase())),
+    persistence: new Set(workflows.flatMap((workflow) => workflow.persistence ?? []).map((item) => item.toLowerCase())),
+  };
+  const requiredInputs = ["upload", "paste", "cost"];
+  const requiredActions = ["scan", "save"];
+  const requiredOutputs = ["profit", "price", "decision"];
+  const requiredPersistence = ["items", "scans", "inventory"];
+  for (const input of requiredInputs) if (!merged.inputs.has(input)) issues.push({ file: "project-state.json", line: 0, token: `input:${input}`, reason: `Product workflow must declare ${input} input support.` });
+  for (const action of requiredActions) if (!merged.actions.has(action)) issues.push({ file: "project-state.json", line: 0, token: `action:${action}`, reason: `Product workflow must declare ${action} action support.` });
+  for (const output of requiredOutputs) if (!merged.outputs.has(output)) issues.push({ file: "project-state.json", line: 0, token: `output:${output}`, reason: `Product workflow must declare ${output} output support.` });
+  for (const table of requiredPersistence) if (!merged.persistence.has(table)) issues.push({ file: "project-state.json", line: 0, token: `persistence:${table}`, reason: `Product workflow must declare durable ${table} persistence.` });
+  return issues;
+}
+
+export function scanPrimaryActionWiring(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const hits: RealnessHit[] = [];
+  const allText = buildSourceIndex(dir).text;
+  const hasSetupFallback = /setup_required|setup required|database_url|sign in|provider setup|configuration required/.test(allText);
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/").toLowerCase();
+    if (!normalized.includes("/client/src/") || normalized.includes("/components/ui/") || normalized.includes("/componentshowcase") || normalized.includes(".test.")) return;
+    for (const match of content.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/gi)) {
+      const attrs = match[1] ?? "";
+      const rawLabel = stripJsx(match[2] ?? "");
+      const label = rawLabel.replace(/\s+/g, " ").trim();
+      if (!isPrimaryActionLabel(label)) continue;
+      const snippet = content.slice(Math.max(0, (match.index ?? 0) - 700), Math.min(content.length, (match.index ?? 0) + match[0].length + 700));
+      if (attrs.includes("onClick=") || /fetch\(|api\.|trpc\.|mutate\(|navigate\(|set[A-Z][A-Za-z0-9_]*\(|formAction=|type=["']submit["']/.test(snippet) || (attrs.includes("disabled") && hasSetupFallback)) continue;
+      hits.push({ file, line: lineNumberAt(content, match.index ?? 0), token: label, reason: "Visible primary action button is not wired to a handler/API/state change or explicit setup-required fallback." });
+    }
+  });
+  return hits;
+}
+
+export function scanBusinessMathRealness(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const hits: RealnessHit[] = [];
+  const mathTerms = /(?:estimatedSalePrice|salePrice|askingPrice|netProfit|profit|grossProfit|platformFee|shippingCost|totalCost)\s*[:=]\s*0\b/g;
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!/\/(client\/src|server)\//.test(normalized) || normalized.includes(".test.")) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      for (const match of line.matchAll(mathTerms)) {
+        const context = `${lines[Math.max(0, i - 1)] ?? ""}\n${line}\n${lines[i + 1] ?? ""}`;
+        if (/useState\(0\)|defaultValue=\{?0\}?|placeholder=/.test(context)) continue;
+        hits.push({ file, line: i + 1, token: match[0], reason: "Business pricing/cost/profit output is hard-coded to 0 instead of calculated from user input, API data, or persisted records." });
+      }
+    }
+  });
+  return hits;
+}
+
+function isPrimaryActionLabel(label: string): boolean {
+  return /\b(upload|paste|scan|save|add|create|generate|list|sell|delete|edit|submit|analyze)\b/i.test(label);
+}
+
+function stripJsx(value: string): string {
+  return value.replace(/<[^>]+>/g, " ").replace(/\{[^}]+\}/g, " ").replace(/&nbsp;/g, " ");
+}
+
+function lineNumberAt(content: string, index: number): number {
+  return content.slice(0, index).split(/\r?\n/).length;
 }
 
 function nonEmpty(value: unknown): value is string {

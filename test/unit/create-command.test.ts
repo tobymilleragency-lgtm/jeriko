@@ -6,11 +6,32 @@ import { spawnSync } from "node:child_process";
 
 import { applyCrawlerPrerenderSupport, command as createCommand, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
+import { buildProjectState } from "../../src/cli/commands/dev/project-state.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 const repoRoot = process.cwd();
 
 describe("create command templates", () => {
+  it("infers full-stack product workflow contracts from FlipScout-style prompts", () => {
+    const state = buildProjectState({
+      name: "FlipScout",
+      template: "web-db-user",
+      profile: "web-db-user",
+      prompt: "Build FlipScout, an AI resale scanner with photo upload, paste item details, item cost, shipping cost, platform fees, scan item, save inventory, and profit estimates.",
+    });
+
+    expect(state.verification.requiredGates).toEqual(expect.arrayContaining(["workflow_contract", "primary_action_wiring", "business_math_realness"]));
+    expect(state.appSpec?.pages.map((page) => page.path)).toEqual(expect.arrayContaining(["/", "/scanner", "/inventory"]));
+    expect(state.appSpec?.features).toEqual(expect.arrayContaining(["photo upload", "paste/manual item input", "cost/profit calculator", "database-backed inventory"]));
+    expect(state.appSpec?.workflows?.[0]).toMatchObject({
+      id: "resale-scanner",
+      inputs: expect.arrayContaining(["upload", "paste", "cost"]),
+      actions: expect.arrayContaining(["scan", "save", "list"]),
+      outputs: expect.arrayContaining(["price", "profit", "decision"]),
+      persistence: expect.arrayContaining(["items", "scans", "inventory"]),
+    });
+  });
+
   it("scaffolds production starter pages instead of demo residue", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-production-starter-"));
     const staticDir = path.join(dir, "static-site");
@@ -286,6 +307,24 @@ describe("create command templates", () => {
       expect(state.appSpec.prompt).toBe("Build a roofing contractor website in Tulsa with SEO pages and quote photos");
       expect(state.appSpec.appType).toBe("local-service-site");
       expect(state.appSpec.integrations.forbidden).toContain("stripe");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes natural-language full-stack product prompts to the database app template", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-from-product-prompt-"));
+    const projectDir = path.join(dir, "flipscout");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build FlipScout, an AI resale scanner with photo upload, paste item details, item costs, scan item, save inventory, and profit estimates", "--name", "FlipScout", "--dir", projectDir]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-db-user");
+      expect(result.data.inferredFromPrompt).toBe(true);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      expect(state.profile).toBe("web-db-user");
+      expect(state.appSpec.appType).toBe("full-stack-product-app");
+      expect(state.appSpec.workflows[0].id).toBe("resale-scanner");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

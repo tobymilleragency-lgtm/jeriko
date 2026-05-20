@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -1151,6 +1151,110 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_FORBIDDEN_INTEGRATION");
       expect(result.forbiddenIntegrations.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects missing full-stack workflow contract pieces for FlipScout-style apps", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-workflow-contract-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "flipscout",
+        template: "web-db-user",
+        profile: "web-db-user",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/", health: "/api/health" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build FlipScout, an AI resale scanner that lets users upload photos, paste item details, enter costs, scan items, save inventory, and calculate profit.",
+          appType: "authenticated-web-app",
+          pages: [{ path: "/", title: "Home" }],
+          features: ["ai resale scanner"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["Full required verify-app gate passes"],
+        },
+        verification: { requiredGates: ["workflow_contract"] },
+      }, null, 2));
+
+      const hits = scanWorkflowContract(dir, readProjectState(dir));
+
+      expect(hits.map((hit) => hit.token)).toContain("appSpec.workflows");
+      expect(hits.map((hit) => hit.token)).toContain("input:upload");
+      expect(hits.map((hit) => hit.token)).toContain("input:paste");
+      expect(hits.map((hit) => hit.token)).toContain("input:cost");
+      expect(hits.map((hit) => hit.token)).toContain("output:profit");
+      expect(hits.map((hit) => hit.token)).toContain("action:save");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects unwired primary actions and hardcoded business math in product apps", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-action-wiring-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export default function Home(){
+          const scanResult = { estimatedSalePrice: 0, netProfit: 0 };
+          return <main>
+            <button>Upload photo</button>
+            <button>Paste details</button>
+            <button>Scan item</button>
+            <button>Save to inventory</button>
+            <div>Net profit: {scanResult.netProfit}</div>
+          </main>;
+        }
+      `);
+
+      const actionHits = scanPrimaryActionWiring(dir, "web-db-user");
+      const mathHits = scanBusinessMathRealness(dir, "web-db-user");
+
+      expect(actionHits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["Upload photo", "Paste details", "Scan item", "Save to inventory"]));
+      expect(mathHits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["estimatedSalePrice: 0", "netProfit: 0"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts wired full-stack scanner actions with real inputs, API calls, and calculated profit", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-wired-actions-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "server", "routes"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export default function Home(){
+          const [cost, setCost] = useState(0);
+          async function uploadPhoto(file){ await fetch('/api/uploads', { method: 'POST', body: file }); }
+          async function pasteDetails(text){ await fetch('/api/scans', { method: 'POST', body: JSON.stringify({ text, cost }) }); }
+          async function scanItem(){ await fetch('/api/scan-item', { method: 'POST' }); }
+          async function saveInventory(){ await fetch('/api/inventory', { method: 'POST' }); }
+          const netProfit = calculateNetProfit(estimatedSalePrice, cost, shippingCost, platformFee);
+          return <main>
+            <input type="file" onChange={(event) => uploadPhoto(event.target.files?.[0])} />
+            <textarea onPaste={(event) => pasteDetails(event.clipboardData.getData('text'))} />
+            <input type="number" value={cost} onChange={(event) => setCost(Number(event.target.value))} />
+            <button onClick={scanItem}>Scan item</button>
+            <button onClick={saveInventory}>Save to inventory</button>
+            <div>Net profit: {netProfit}</div>
+          </main>;
+        }
+      `);
+      fs.writeFileSync(path.join(dir, "server", "routes", "scanner.ts"), `
+        app.post('/api/uploads', uploadHandler);
+        app.post('/api/scans', scanHandler);
+        app.post('/api/scan-item', aiScanHandler);
+        app.post('/api/inventory', inventorySaveHandler);
+        function calculateNetProfit(price, cost, shipping, fee){ return price - cost - shipping - fee; }
+      `);
+
+      expect(scanPrimaryActionWiring(dir, "web-db-user")).toHaveLength(0);
+      expect(scanBusinessMathRealness(dir, "web-db-user")).toHaveLength(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

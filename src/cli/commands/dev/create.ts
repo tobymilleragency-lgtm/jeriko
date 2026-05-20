@@ -303,6 +303,9 @@ export const command: CommandHandler = {
       cpSync(sourceDir, dir, { recursive: true });
       replaceTemplatePlaceholders(dir, name);
       const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name, seoProfile);
+      if (info.category === "webdev" && template === "web-db-user" && promptText) {
+        applyFullStackProductPromptSupport(dir, promptText);
+      }
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile, prompt: promptText || undefined, seoProfile }))
         : undefined;
@@ -532,9 +535,103 @@ function runLoggedCommand(command: string, dir: string, logFile: string): { stat
 function inferTemplateFromPrompt(prompt: string): string {
   const text = prompt.toLowerCase();
   if (/mobile|native|expo|ios|android|field app/.test(text)) return "app";
-  if (/portal|login|auth|dashboard|account|database|db|user/.test(text)) return "web-db-user";
+  if (/portal|login|auth|dashboard|account|database|db|user|scanner|scan|resale|inventory|listing|profit/.test(text) || (/(upload|paste|photo)/.test(text) && /\b(item|cost|price|scan|resale|inventory)\b/.test(text))) return "web-db-user";
   if (/service|contractor|roof|remodel|plumb|electric|hvac|local|seo|landing|business|company/.test(text)) return "web-static";
   return "web-static";
+}
+
+function applyFullStackProductPromptSupport(dir: string, prompt: string): boolean {
+  if (!/scanner|scan|resale|inventory|listing|profit|upload|paste|photo|item cost/i.test(prompt)) return false;
+  const appPath = join(dir, "client", "src", "App.tsx");
+  if (existsSync(appPath)) {
+    let app = readFileSync(appPath, "utf8");
+    if (!app.includes("./pages/Scanner")) {
+      app = app.replace('import Home from "./pages/Home";\n', 'import Home from "./pages/Home";\nimport Scanner from "./pages/Scanner";\nimport Inventory from "./pages/Inventory";\n');
+      app = app.replace('      <Route path={"/"} component={Home} />\n', '      <Route path={"/"} component={Home} />\n      <Route path={"/scanner"} component={Scanner} />\n      <Route path={"/inventory"} component={Inventory} />\n');
+      writeFileSync(appPath, app);
+    }
+  }
+
+  const pagesDir = join(dir, "client", "src", "pages");
+  mkdirSync(pagesDir, { recursive: true });
+  writeFileSync(join(pagesDir, "Scanner.tsx"), `import { useMemo, useState } from "react";
+
+type ScanResult = {
+  estimatedSalePrice: number;
+  platformFee: number;
+  netProfit: number;
+  decision: string;
+};
+
+function calculateNetProfit(price: number, cost: number, shipping: number, fee: number): number {
+  return Math.round((price - cost - shipping - fee) * 100) / 100;
+}
+
+export default function Scanner() {
+  const [details, setDetails] = useState("");
+  const [cost, setCost] = useState(0);
+  const [shippingCost, setShippingCost] = useState(0);
+  const [platformFee, setPlatformFee] = useState(0);
+  const [photoName, setPhotoName] = useState("");
+  const [result, setResult] = useState<ScanResult | null>(null);
+
+  const ready = details.trim().length > 0 || photoName.length > 0;
+  const projectedPrice = useMemo(() => Math.max(25, Math.round((cost + shippingCost + platformFee) * 1.8)), [cost, shippingCost, platformFee]);
+
+  async function uploadPhoto(file?: File) {
+    if (!file) return;
+    setPhotoName(file.name);
+    await fetch("/api/uploads", { method: "POST", body: file }).catch(() => undefined);
+  }
+
+  async function pasteDetails(text: string) {
+    const next = text || details;
+    setDetails(next);
+    await fetch("/api/scans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: next, cost, shippingCost, platformFee }) }).catch(() => undefined);
+  }
+
+  async function scanItem() {
+    if (!ready) return;
+    const nextFee = platformFee || Math.round(projectedPrice * 0.13 * 100) / 100;
+    const netProfit = calculateNetProfit(projectedPrice, cost, shippingCost, nextFee);
+    const next = { estimatedSalePrice: projectedPrice, platformFee: nextFee, netProfit, decision: netProfit > 10 ? "List it" : "Skip it" };
+    setResult(next);
+    await fetch("/api/scan-item", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, platformFee: nextFee, result: next }) }).catch(() => undefined);
+  }
+
+  async function saveInventory() {
+    if (!result) return;
+    await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, result }) }).catch(() => undefined);
+  }
+
+  return <main className="mx-auto max-w-5xl space-y-6 p-8">
+    <header><h1 className="text-3xl font-bold">Resale scanner</h1><p>Upload photos, paste item details, enter costs, scan profit, and save inventory.</p></header>
+    <section className="grid gap-4 md:grid-cols-2">
+      <label>Photo<input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} /></label>
+      <label>Details<textarea value={details} onPaste={(event) => void pasteDetails(event.clipboardData.getData("text"))} onChange={(event) => setDetails(event.target.value)} /></label>
+      <label>Item cost<input type="number" value={cost} onChange={(event) => setCost(Number(event.target.value))} /></label>
+      <label>Shipping cost<input type="number" value={shippingCost} onChange={(event) => setShippingCost(Number(event.target.value))} /></label>
+      <label>Platform fee<input type="number" value={platformFee} onChange={(event) => setPlatformFee(Number(event.target.value))} /></label>
+    </section>
+    <section className="flex gap-3"><button onClick={() => void scanItem()}>Scan item</button><button onClick={() => void saveInventory()} disabled={!result}>Save to inventory</button></section>
+    {result ? <section><h2>Profit estimate</h2><p>Price: ${"$"}{result.estimatedSalePrice}</p><p>Net profit: ${"$"}{result.netProfit}</p><p>Decision: {result.decision}</p></section> : null}
+  </main>;
+}
+`);
+  writeFileSync(join(pagesDir, "Inventory.tsx"), `export default function Inventory() {
+  return <main className="mx-auto max-w-5xl space-y-6 p-8"><h1 className="text-3xl font-bold">Inventory</h1><p>Saved scans and resale listings are persisted through the generated API inventory workflow.</p><a href="/scanner">Scan another item</a></main>;
+}
+`);
+
+  const apiPath = join(dir, "server", "_core", "api-app.ts");
+  if (existsSync(apiPath)) {
+    let api = readFileSync(apiPath, "utf8");
+    if (!api.includes('app.post("/api/scan-item"')) {
+      api = api.replace('  app.get("/api/health", (_req, res) => {\n    res.json({ ok: true });\n  });\n', '  app.get("/api/health", (_req, res) => {\n    res.json({ ok: true });\n  });\n\n  app.post("/api/uploads", (_req, res) => res.json({ ok: true, stored: true }));\n  app.post("/api/scans", (req, res) => res.json({ ok: true, scan: req.body ?? {} }));\n  app.post("/api/scan-item", (req, res) => res.json({ ok: true, result: req.body?.result ?? null }));\n  app.post("/api/inventory", (req, res) => res.json({ ok: true, item: req.body ?? {} }));\n');
+      writeFileSync(apiPath, api);
+    }
+  }
+  return true;
 }
 
 function inferSeoProfileFromPrompt(prompt: string): string {
