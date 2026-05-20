@@ -234,6 +234,19 @@ export const command: CommandHandler = {
       });
     }
 
+    const readinessClaims = scanMisleadingReadinessClaims(dir, profile);
+    gates.push({ name: "readiness_claim_scan", ok: readinessClaims.length === 0 });
+    if (readinessClaims.length > 0) {
+      failWithDetails("Generated app has hard-coded production/AI readiness claims. Replace them with live health/setup state and only claim readiness after route/API/browser proof.", {
+        errorCode: "E_MISLEADING_READINESS_CLAIMS",
+        directory: dir,
+        profile,
+        projectState,
+        readinessClaims,
+        gates,
+      });
+    }
+
     const duplicateSectionImages = scanDuplicateSectionImages(dir);
     gates.push({ name: "image_uniqueness_scan", ok: duplicateSectionImages.length === 0 });
     if (duplicateSectionImages.length > 0) {
@@ -779,6 +792,35 @@ export function scanMisleadingProviderConfig(dir: string): RealnessHit[] {
         token: "OPENAI_API_KEY is not configured",
         reason: "Template reads BUILT_IN_FORGE_API_KEY/forgeApiKey but tells users OPENAI_API_KEY is missing. Error text must name the real env key.",
       });
+    }
+  });
+  return hits;
+}
+
+export function scanMisleadingReadinessClaims(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  const hardClaimPattern = /\b(production[- ]ready|ready for production|AI connected|live AI connected|database connected)\b/gi;
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!normalized.includes("/client/src/")) return;
+    if (normalized.includes("/components/ui/") || normalized.includes("/test") || normalized.includes(".test.")) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const matches = [...line.matchAll(hardClaimPattern)];
+      if (matches.length === 0) continue;
+      const lowerLine = line.toLowerCase();
+      const dynamicStateNearby = /dataMode|setup|required|aiConfigured|health|isAuthed|statusLabel|connected\s*\?|\?\s*["'`][^"'`]*(connected|setup|required)/i.test(line);
+      if (dynamicStateNearby) continue;
+      if (profile === "web-db-user" && lowerLine.includes("database connected") && /dataMode|statusLabel|setup/i.test(content)) continue;
+      for (const match of matches) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: match[0],
+          reason: "Hard-coded readiness copy is not proof. Render live setup/auth/provider health state, or replace the claim with setup-required copy until verified by route/API/browser evidence.",
+        });
+      }
     }
   });
   return hits;
