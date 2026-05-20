@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -221,7 +221,31 @@ describe("App-factory final done gate", () => {
     ])).toBe(false);
   });
 
-  test("recognizes app-factory done evidence only after verify_app plus checkpoint", () => {
+  test("recognizes app-factory done evidence only after verify_app plus checkpoint and localhost preview", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Add local SEO route architecture" } });
+    const previewTool = JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:5173/", opened: true, directory: "/tmp/site" } });
+
+    expect(hasLocalhostPreviewEvidence([{ role: "tool", content: previewTool }])).toBe(true);
+    expect(hasAppFactoryDoneEvidence([
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+    ])).toBe(true);
+  });
+
+  test("rejects app-factory final report without a captured localhost preview URL", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
@@ -239,7 +263,7 @@ describe("App-factory final done gate", () => {
     expect(hasAppFactoryDoneEvidence([
       { role: "tool", content: verifyTool },
       { role: "tool", content: checkpointTool },
-    ])).toBe(true);
+    ])).toBe(false);
   });
 
   test("existing app implementation reports are gated like generated app work", () => {
@@ -290,12 +314,14 @@ describe("App-factory final done gate", () => {
       { name: "browser_smoke", ok: true },
     ] } });
     const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Add local SEO route architecture" } });
+    const previewTool = JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:5173/", opened: true, directory: "/tmp/site" } });
     const structureTool = "CONTENT_STRUCTURE_OK: audited rendered service/city pages; every long-form page has semantic sections, h2/h3 hierarchy, multiple p tags, max paragraph length under 650 chars, no wall-of-text blocks.";
     expect(hasContentStructureEvidence([{ role: "tool", content: structureTool }])).toBe(true);
     expect(hasAppFactoryDoneEvidence([
       { role: "user", content: "Generate real content for the service pages and city pages" },
       { role: "tool", content: verifyTool },
       { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
       { role: "tool", content: structureTool },
     ])).toBe(true);
   });

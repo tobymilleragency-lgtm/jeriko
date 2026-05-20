@@ -408,8 +408,8 @@ export async function* runAgent(
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
         const gateMessage = missingContentStructure
-          ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint evidence."
-          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke, then save a git checkpoint/commit before claiming done. If screenshots, Lighthouse, preview deploy, or disabled-route checks were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint now, then produce the final report from that evidence.";
+          ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
+          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -815,6 +815,8 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
       const urls: string[] = [];
       if (typeof parsed?.data?.server?.url === "string") urls.push(parsed.data.server.url);
       if (typeof parsed?.server?.url === "string") urls.push(parsed.server.url);
+      if (typeof parsed?.data?.url === "string") urls.push(parsed.data.url);
+      if (typeof parsed?.url === "string") urls.push(parsed.url);
       return urls;
     }),
   ]).slice(0, 4);
@@ -929,8 +931,9 @@ function buildCompletedActions(
   if (buildPassed) actions.push("production build passed");
   if (gates.length > 0) actions.push(`verify_app ran with ${gates.filter((gate) => gate.ok).length}/${gates.length} passing gates`);
   if (checkpoint) actions.push(`saved checkpoint ${checkpoint}`);
-  const webdevStatus = parsedToolResults.findLast((parsed) => parsed?.data?.server?.running === true);
+  const webdevStatus = parsedToolResults.findLast((parsed) => parsed?.data?.server?.running === true || (typeof parsed?.data?.url === "string" && /https?:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(parsed.data.url)));
   if (webdevStatus?.data?.project) actions.push(`webdev reports project ${webdevStatus.data.project} running`);
+  else if (typeof webdevStatus?.data?.url === "string") actions.push(`local preview running at ${webdevStatus.data.url}`);
   return uniqueStrings(actions);
 }
 
@@ -968,7 +971,7 @@ export function requiresAppFactoryVerification(messages: DriverMessage[], finalT
 }
 
 export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
-  if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages)) return false;
+  if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages) || !hasLocalhostPreviewEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
   return true;
 }
@@ -1071,6 +1074,18 @@ export function hasCheckpointEvidence(messages: DriverMessage[]): boolean {
     const hash = parsed?.data?.hash ?? parsed?.hash ?? parsed?.commit ?? parsed?.data?.commit;
     if (typeof hash === "string" && /^[a-f0-9]{7,40}$/i.test(hash)) return true;
     return /\b\[[\w/-]+\s+[a-f0-9]{7,40}\]\s+.+/.test(text) || /\bcommit(?:ted)?\b[\s\S]{0,120}\b[a-f0-9]{7,40}\b/i.test(text);
+  });
+}
+
+export function hasLocalhostPreviewEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    if (/https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[\w./?=&%-]*)?/i.test(text) && /\b(opened|preview|webdev|server|running)\b/i.test(text)) return true;
+    const parsed = parseToolResultJson(text);
+    const urls = [parsed?.data?.url, parsed?.url, parsed?.data?.server?.url, parsed?.server?.url]
+      .filter((value): value is string => typeof value === "string");
+    return urls.some((url) => /https?:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(url));
   });
 }
 
