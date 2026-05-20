@@ -574,20 +574,36 @@ export default function Scanner() {
   const [platformFee, setPlatformFee] = useState(0);
   const [photoName, setPhotoName] = useState("");
   const [result, setResult] = useState<ScanResult | null>(null);
+  const [workflowError, setWorkflowError] = useState("");
 
   const ready = details.trim().length > 0 || photoName.length > 0;
   const projectedPrice = useMemo(() => Math.max(25, Math.round((cost + shippingCost + platformFee) * 1.8)), [cost, shippingCost, platformFee]);
 
+  async function requireOk(response: Response, action: string) {
+    if (!response.ok) throw new Error(action + " failed with HTTP " + response.status);
+    return response;
+  }
+
   async function uploadPhoto(file?: File) {
     if (!file) return;
-    setPhotoName(file.name);
-    await fetch("/api/uploads", { method: "POST", body: file }).catch(() => undefined);
+    setWorkflowError("");
+    try {
+      await requireOk(await fetch("/api/uploads", { method: "POST", body: file }), "Photo upload");
+      setPhotoName(file.name);
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Photo upload failed");
+    }
   }
 
   async function pasteDetails(text: string) {
     const next = text || details;
     setDetails(next);
-    await fetch("/api/scans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: next, cost, shippingCost, platformFee }) }).catch(() => undefined);
+    setWorkflowError("");
+    try {
+      await requireOk(await fetch("/api/scans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: next, cost, shippingCost, platformFee }) }), "Scan draft save");
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Scan draft save failed");
+    }
   }
 
   async function scanItem() {
@@ -595,17 +611,28 @@ export default function Scanner() {
     const nextFee = platformFee || Math.round(projectedPrice * 0.13 * 100) / 100;
     const netProfit = calculateNetProfit(projectedPrice, cost, shippingCost, nextFee);
     const next = { estimatedSalePrice: projectedPrice, platformFee: nextFee, netProfit, decision: netProfit > 10 ? "List it" : "Skip it" };
-    setResult(next);
-    await fetch("/api/scan-item", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, platformFee: nextFee, result: next }) }).catch(() => undefined);
+    setWorkflowError("");
+    try {
+      await requireOk(await fetch("/api/scan-item", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, platformFee: nextFee, result: next }) }), "AI scan");
+      setResult(next);
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "AI scan failed");
+    }
   }
 
   async function saveInventory() {
     if (!result) return;
-    await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, result }) }).catch(() => undefined);
+    setWorkflowError("");
+    try {
+      await requireOk(await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ details, photoName, cost, shippingCost, result }) }), "Inventory save");
+    } catch (error) {
+      setWorkflowError(error instanceof Error ? error.message : "Inventory save failed");
+    }
   }
 
   return <main className="mx-auto max-w-5xl space-y-6 p-8">
     <header><h1 className="text-3xl font-bold">Resale scanner</h1><p>Upload photos, paste item details, enter costs, scan profit, and save inventory.</p></header>
+    {workflowError ? <section role="alert" className="rounded border border-red-300 p-3 text-red-700">{workflowError}</section> : null}
     <section className="grid gap-4 md:grid-cols-2">
       <label>Photo<input type="file" accept="image/*" onChange={(event) => void uploadPhoto(event.target.files?.[0])} /></label>
       <label>Details<textarea value={details} onPaste={(event) => void pasteDetails(event.clipboardData.getData("text"))} onChange={(event) => setDetails(event.target.value)} /></label>

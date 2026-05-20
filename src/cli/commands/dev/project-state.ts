@@ -97,6 +97,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "workflow_contract",
   "primary_action_wiring",
   "business_math_realness",
+  "primary_fetch_error_handling",
   "app_spec_verifier",
   "install",
   "check",

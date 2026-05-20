@@ -342,6 +342,19 @@ export const command: CommandHandler = {
         });
       }
 
+      const swallowedPrimaryFetchErrors = scanSwallowedPrimaryFetchErrors(dir, profile);
+      gates.push({ name: "primary_fetch_error_handling", ok: swallowedPrimaryFetchErrors.length === 0 });
+      if (swallowedPrimaryFetchErrors.length > 0) {
+        failWithDetails("Generated app swallows primary workflow network or persistence failures. Product actions must surface errors or setup-required state instead of ignoring failed API calls.", {
+          errorCode: "E_SWALLOWED_PRIMARY_FETCH_ERRORS",
+          directory: dir,
+          profile,
+          projectState,
+          swallowedPrimaryFetchErrors,
+          gates,
+        });
+      }
+
       const appSpecIssues = scanAppSpecCompliance(dir, projectState);
       gates.push({ name: "app_spec_verifier", ok: appSpecIssues.length === 0 });
       if (appSpecIssues.length > 0) {
@@ -694,6 +707,26 @@ export function scanBusinessMathRealness(dir: string, profile: AppProfile = infe
         if (/useState\(0\)|defaultValue=\{?0\}?|placeholder=/.test(context)) continue;
         hits.push({ file, line: i + 1, token: match[0], reason: "Business pricing/cost/profit output is hard-coded to 0 instead of calculated from user input, API data, or persisted records." });
       }
+    }
+  });
+  return hits;
+}
+
+export function scanSwallowedPrimaryFetchErrors(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const hits: RealnessHit[] = [];
+  const primaryApiPattern = /fetch\(\s*(["'`])([^"'`]*(?:\/api\/(?:uploads?|scans?|scan-item|inventory|items?|orders?|shipments?|listings?|expenses?|customers?))[^"'`]*)\1[\s\S]{0,400}?\.catch\s*\(\s*(?:\(\s*(?:error|err)?\s*\)|(?:error|err))?\s*=>\s*(?:undefined|void\s+0|null)\s*\)/g;
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!normalized.includes("/client/src/") || normalized.includes("/components/ui/") || normalized.includes("/componentshowcase") || normalized.includes(".test.")) return;
+    for (const match of content.matchAll(primaryApiPattern)) {
+      const endpoint = match[2] ?? match[0];
+      hits.push({
+        file,
+        line: lineNumberAt(content, match.index ?? 0),
+        token: endpoint,
+        reason: "Primary workflow API call swallows network or persistence failures instead of surfacing an error or setup-required state.",
+      });
     }
   });
   return hits;

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -1217,6 +1217,29 @@ describe("verify-app command", () => {
 
       expect(actionHits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["Upload photo", "Paste details", "Scan item", "Save to inventory"]));
       expect(mathHits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["estimatedSalePrice: 0", "netProfit: 0"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("detects swallowed primary workflow fetch errors", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-swallowed-fetch-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Scanner.tsx"), `
+        export default function Scanner(){
+          async function scanItem(){ await fetch('/api/scan-item', { method: 'POST' }).catch(() => undefined); }
+          async function saveInventory(){ await fetch('/api/inventory', { method: 'POST' }).catch((error) => undefined); }
+          async function loadTheme(){ await fetch('/api/theme').catch(() => undefined); }
+          return <main><button onClick={scanItem}>Scan item</button><button onClick={saveInventory}>Save to inventory</button></main>;
+        }
+      `);
+
+      const hits = scanSwallowedPrimaryFetchErrors(dir, "web-db-user");
+
+      expect(hits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["/api/scan-item", "/api/inventory"]));
+      expect(hits.map((hit) => hit.token)).not.toContain("/api/theme");
+      expect(hits.every((hit) => hit.reason.includes("swallows network or persistence failures"))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
