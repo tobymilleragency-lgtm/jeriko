@@ -642,6 +642,7 @@ export function createToolRoundRepeatGuard(maxSeen = 3): (toolCalls: ToolCall[])
   const seen = new Map<string, number>();
 
   return (toolCalls: ToolCall[]) => {
+    if (isVerificationOnlyRound(toolCalls)) return null;
     const signature = toolRoundSignature(toolCalls);
     const count = (seen.get(signature) ?? 0) + 1;
     seen.set(signature, count);
@@ -651,6 +652,21 @@ export function createToolRoundRepeatGuard(maxSeen = 3): (toolCalls: ToolCall[])
     }
     return null;
   };
+}
+
+function isVerificationOnlyRound(toolCalls: ToolCall[]): boolean {
+  if (toolCalls.length === 0) return false;
+  return toolCalls.every((toolCall) => {
+    if (toolCall.name !== "bash") return false;
+    try {
+      const parsed = JSON.parse(toolCall.arguments);
+      const command = typeof parsed.command === "string" ? parsed.command : "";
+      return /\b(pnpm|npm|yarn|bun)\s+run\s+(check|build|test|lint)\b/.test(command)
+        || /\b(tsc\s+--noEmit|vite\s+build)\b/.test(command);
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function toolRoundSignature(toolCalls: ToolCall[]): string {

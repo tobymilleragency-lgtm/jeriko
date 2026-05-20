@@ -1,6 +1,9 @@
 // Unit tests — generate_image agent tool.
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { clearTools, getTool, listTools, registerTool } from "../../../src/daemon/agent/tools/registry.js";
 import { generateImageTool } from "../../../src/daemon/agent/tools/generate-image.js";
 
@@ -86,6 +89,59 @@ describe("generate_image tool", () => {
     } finally {
       if (originalKey) process.env.OPENAI_API_KEY = originalKey;
       if (originalFalKey) process.env.FAL_KEY = originalFalKey;
+    }
+  });
+
+  it("saves generated images into a requested project asset path", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.OPENAI_API_KEY;
+    const originalFalKey = process.env.FAL_KEY;
+    const cwd = mkdtempSync(join(tmpdir(), "jeriko-image-tool-"));
+    mkdirSync(join(cwd, "client", "public", "images"), { recursive: true });
+    delete process.env.OPENAI_API_KEY;
+    process.env.FAL_KEY = "test-fal-key";
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("fal.run")) {
+        return new Response(JSON.stringify({ images: [{ url: "https://fal.media/files/hero.png" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url === "https://fal.media/files/hero.png") {
+        return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), {
+          status: 200,
+          headers: { "Content-Type": "image/png" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      const tool = getTool("generate_image")!;
+      const result = JSON.parse(await tool.execute({
+        prompt: "realistic roofing hero photo",
+        provider: "fal",
+        cwd,
+        output_path: "client/public/images/hero.png",
+      }));
+
+      const expectedPath = join(cwd, "client", "public", "images", "hero.png");
+      expect(result.ok).toBe(true);
+      expect(result.path).toBe(expectedPath);
+      expect(result.savedPath).toBe(expectedPath);
+      expect(result.generatedPath).toContain("jeriko-image-");
+      expect(result.provider).toBe("fal");
+      expect(existsSync(expectedPath)).toBe(true);
+      expect([...readFileSync(expectedPath).subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey) process.env.OPENAI_API_KEY = originalKey;
+      else delete process.env.OPENAI_API_KEY;
+      if (originalFalKey) process.env.FAL_KEY = originalFalKey;
+      else delete process.env.FAL_KEY;
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 

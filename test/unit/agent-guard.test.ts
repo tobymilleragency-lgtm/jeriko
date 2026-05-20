@@ -58,6 +58,17 @@ describe("Repeated tool-call guard", () => {
     expect(blocked).toContain("Repeated no-progress tool round blocked");
     expect(blocked).toContain("Home.tsx");
   });
+
+  test("does not treat repeated verification commands as no-progress investigation rounds", () => {
+    const guard = createToolRoundRepeatGuard(3);
+    const round = [
+      { id: "a", name: "bash", arguments: JSON.stringify({ command: "pnpm run check && pnpm run build", cwd: "/app" }) },
+    ];
+
+    expect(guard(round)).toBeNull();
+    expect(guard(round.map((call) => ({ ...call, id: "b" })))).toBeNull();
+    expect(guard(round.map((call) => ({ ...call, id: "c" })))).toBeNull();
+  });
 });
 
 describe("Agent prompt quality rules", () => {
