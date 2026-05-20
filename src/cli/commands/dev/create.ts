@@ -24,6 +24,7 @@ const TEMPLATES: TemplateInfo[] = [
   // Webdev (pre-built full-stack)
   { name: "web-static", description: "Vite + React 19 + Tailwind 4 + shadcn/ui + Wouter + Framer Motion", category: "webdev", dir: "webdev/web-static" },
   { name: "web-db-user", description: "web-static + Express + Drizzle ORM + tRPC + JWT auth + database", category: "webdev", dir: "webdev/web-db-user" },
+  { name: "app", description: "Expo + React Native + NativeWind mobile app", category: "deploy", dir: "webdev/app" },
 
   // Deploy — Portfolios
   { name: "portfolio", description: "Clean portfolio website", category: "deploy", dir: "deploy/portfolio-template" },
@@ -160,6 +161,7 @@ function printTemplateList(): void {
 
   const categories: Array<{ label: string; key: string }> = [
     { label: "Full-Stack (pre-built, instant)", key: "webdev" },
+    { label: "Mobile Apps", key: "mobile" },
     { label: "Portfolios", key: "portfolio" },
     { label: "Dashboards", key: "dashboard" },
     { label: "Events", key: "event" },
@@ -172,6 +174,8 @@ function printTemplateList(): void {
     let filtered: TemplateInfo[];
     if (cat.key === "webdev") {
       filtered = TEMPLATES.filter((t) => t.category === "webdev");
+    } else if (cat.key === "mobile") {
+      filtered = TEMPLATES.filter((t) => t.name === "app");
     } else if (cat.key === "inline") {
       filtered = TEMPLATES.filter((t) => t.category === "inline");
     } else if (cat.key === "portfolio") {
@@ -221,8 +225,10 @@ export const command: CommandHandler = {
       process.exit(0);
     }
 
-    const template = parsed.positional[0];
-    const name = parsed.positional[1];
+    let template = parsed.positional[0];
+    let name = parsed.positional[1];
+    let inferredFromPrompt = false;
+    let promptText = "";
     if (!template) fail("Missing template. Run 'jeriko create --list' to see all templates.");
 
     if (template === "repair") {
@@ -233,8 +239,17 @@ export const command: CommandHandler = {
       return;
     }
 
+    if (template === "from-prompt") {
+      promptText = parsed.positional.slice(1).join(" ");
+      if (!promptText) fail('Missing prompt. Usage: jeriko create from-prompt "Build a roofing site..." --name <project>');
+      template = inferTemplateFromPrompt(promptText);
+      name = flagStr(parsed, "name", "") || inferProjectNameFromPrompt(promptText);
+      inferredFromPrompt = true;
+    }
+
     if (!name) fail("Missing project name. Usage: jeriko create <template> <name>");
 
+    const seoProfile = flagStr(parsed, "seo-profile", "") || (inferredFromPrompt ? inferSeoProfileFromPrompt(promptText) : "standard");
     const info = TEMPLATE_MAP.get(template);
     if (!info) {
       // Fuzzy suggest
@@ -263,7 +278,7 @@ export const command: CommandHandler = {
       const prepared = prepareOutputDirectory(dir, { reuse, force });
       if (prepared.reused) {
         const devServer = startDev ? installAndStartDevServer(dir) : null;
-        emitCreateSuccess({ name, template, category: info.category, directory: dir, files: countFiles(dir), reused: true, devServer });
+        emitCreateSuccess({ name, template, category: info.category, directory: dir, files: countFiles(dir), reused: true, devServer, seoProfile, inferredFromPrompt });
         return;
       }
 
@@ -287,13 +302,13 @@ export const command: CommandHandler = {
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
       replaceTemplatePlaceholders(dir, name);
-      const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name);
+      const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name, seoProfile);
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile }))
         : undefined;
 
       // Remove metadata files
-      const metaFiles = [".manus-template-version", ".DS_Store"];
+      const metaFiles = [".manus-template-version", ".DS_Store", "template.json"];
       for (const meta of metaFiles) {
         const metaPath = join(dir, meta);
         try { if (existsSync(metaPath)) { const { unlinkSync } = await import("node:fs"); unlinkSync(metaPath); } } catch { /* ignore */ }
@@ -307,7 +322,7 @@ export const command: CommandHandler = {
       }
 
       const devServer = startDev ? installAndStartDevServer(dir) : null;
-      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, crawlerPrerender, devServer });
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, crawlerPrerender, devServer, seoProfile, inferredFromPrompt });
       return;
     }
 
@@ -514,6 +529,31 @@ function runLoggedCommand(command: string, dir: string, logFile: string): { stat
   }
 }
 
+function inferTemplateFromPrompt(prompt: string): string {
+  const text = prompt.toLowerCase();
+  if (/mobile|native|expo|ios|android|field app/.test(text)) return "app";
+  if (/portal|login|auth|dashboard|account|database|db|user/.test(text)) return "web-db-user";
+  if (/service|contractor|roof|remodel|plumb|electric|hvac|local|seo|landing|business|company/.test(text)) return "web-static";
+  return "web-static";
+}
+
+function inferSeoProfileFromPrompt(prompt: string): string {
+  const text = prompt.toLowerCase();
+  if (/local|service area|city|near me|contractor|roof|remodel|plumb|electric|hvac|seo/.test(text)) return "local-service";
+  return "standard";
+}
+
+function inferProjectNameFromPrompt(prompt: string): string {
+  const quoted = prompt.match(/["“]([^"”]{2,80})["”]/)?.[1];
+  if (quoted) return quoted;
+  const cleaned = prompt
+    .replace(/\b(build|create|make|a|an|the|website|site|app|application|with|for|and|seo|pages|photos|images)\b/gi, " ")
+    .replace(/[^a-zA-Z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.split(" ").slice(0, 4).join(" ") || "Generated App";
+}
+
 function emitCreateSuccess(args: {
   name: string;
   template: string;
@@ -525,6 +565,8 @@ function emitCreateSuccess(args: {
   crawlerPrerender?: boolean;
   reused?: boolean;
   devServer: DetachedDevServer | null;
+  seoProfile?: string;
+  inferredFromPrompt?: boolean;
 }): never {
   const base = {
     name: args.name,
@@ -535,6 +577,8 @@ function emitCreateSuccess(args: {
     ...(args.projectState ? { projectState: args.projectState } : {}),
     ...(args.gitInitialized ? { gitInitialized: true } : {}),
     ...(args.crawlerPrerender ? { crawlerPrerender: true } : {}),
+    ...(args.seoProfile && args.seoProfile !== "standard" ? { seoProfile: args.seoProfile } : {}),
+    ...(args.inferredFromPrompt ? { inferredFromPrompt: true } : {}),
     ...(args.reused ? { reused: true } : {}),
   };
 
@@ -612,7 +656,7 @@ export function replaceTemplatePlaceholders(dir: string, projectName: string): v
   replaceTemplatePlaceholdersWithReport(dir, projectName);
 }
 
-export function applyCrawlerPrerenderSupport(dir: string, projectName: string): boolean {
+export function applyCrawlerPrerenderSupport(dir: string, projectName: string, seoProfile = "standard"): boolean {
   const pkgPath = join(dir, "package.json");
   const indexPath = join(dir, "client", "index.html");
   if (!existsSync(pkgPath) || !existsSync(indexPath)) return false;
@@ -628,11 +672,9 @@ export function applyCrawlerPrerenderSupport(dir: string, projectName: string): 
   if (!buildScript.includes("vite build")) return false;
 
   mkdirSync(join(dir, "scripts"), { recursive: true });
-  writeWebsiteLaunchKitFiles(dir, projectName);
+  writeWebsiteLaunchKitFiles(dir, projectName, seoProfile);
   const scriptPath = join(dir, "scripts", "jeriko-prerender-seo.mjs");
-  if (!existsSync(scriptPath)) {
-    writeFileSync(scriptPath, buildCrawlerPrerenderScript(projectName));
-  }
+  writeFileSync(scriptPath, buildCrawlerPrerenderScript(projectName, seoProfile));
 
   if (!buildScript.includes("scripts/jeriko-prerender-seo.mjs")) {
     pkg.scripts.build = buildScript.replace("vite build", "vite build && node scripts/jeriko-prerender-seo.mjs");
@@ -642,26 +684,51 @@ export function applyCrawlerPrerenderSupport(dir: string, projectName: string): 
   return true;
 }
 
-function writeWebsiteLaunchKitFiles(dir: string, projectName: string): void {
+function writeWebsiteLaunchKitFiles(dir: string, projectName: string, seoProfile = "standard"): void {
   const srcDir = join(dir, "client", "src");
   const libDir = join(srcDir, "lib");
+  const assetsDir = join(srcDir, "assets");
   if (!existsSync(srcDir)) return;
   mkdirSync(libDir, { recursive: true });
+  mkdirSync(assetsDir, { recursive: true });
   const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
   const siteConfigPath = join(srcDir, "site.config.ts");
   if (!existsSync(siteConfigPath)) {
     writeFileSync(siteConfigPath, `export const siteConfig = {
   name: ${JSON.stringify(projectTitle)},
   url: import.meta.env.VITE_SITE_URL || "",
+  seoProfile: ${JSON.stringify(seoProfile)},
   analyticsProvider: import.meta.env.VITE_ANALYTICS_PROVIDER || "none",
   ga4MeasurementId: import.meta.env.VITE_GA4_MEASUREMENT_ID || "",
   plausibleDomain: import.meta.env.VITE_PLAUSIBLE_DOMAIN || "",
   posthogKey: import.meta.env.VITE_POSTHOG_KEY || "",
   googleSiteVerification: import.meta.env.VITE_GOOGLE_SITE_VERIFICATION || "",
   bingSiteVerification: import.meta.env.VITE_BING_SITE_VERIFICATION || "",
+  imagePrompts: {
+    hero: ${JSON.stringify(`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition.`)},
+    service: ${JSON.stringify(`Generate a realistic service photo for ${projectTitle}: close-up of professional work, clean background, no logos, no text.`)},
+    og: ${JSON.stringify(`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text.`)},
+  },
 };
 
 export type SiteConfig = typeof siteConfig;
+`);
+  }
+
+  const imagePromptPath = join(assetsDir, "image-prompts.md");
+  if (!existsSync(imagePromptPath)) {
+    writeFileSync(imagePromptPath, `# Website image/photo generation prompts
+
+Use Jeriko's \`generate_image\` tool to create production assets for this site. Save generated files under \`client/public\` or \`client/src/assets\`, then reference them from the page and metadata.
+
+## Hero photo
+${`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition.`}
+
+## Service photo
+${`Generate a realistic service photo for ${projectTitle}: close-up of professional work, clean background, no logos, no text.`}
+
+## Open Graph image
+${`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text.`}
 `);
   }
 
@@ -720,8 +787,9 @@ export function trackEmailClick(location: string, payload: EventPayload = {}) {
   }
 }
 
-function buildCrawlerPrerenderScript(projectName: string): string {
+function buildCrawlerPrerenderScript(projectName: string, seoProfile = "standard"): string {
   const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
+  const schemaType = seoProfile === "local-service" ? "LocalBusiness" : "WebPage";
   return `import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -799,11 +867,17 @@ function renderRoute(route) {
   const nav = routes.map((item) => \`<a href="\${escapeAttr(item.path)}">\${escapeHtml(item.path === "/" ? "Home" : routeLabel(item.path))}</a>\`).join(" | ");
   const jsonLd = JSON.stringify({
     "@context": "https://schema.org",
-    "@type": "WebPage",
+    "@type": ${JSON.stringify(schemaType)},
     name: title,
     url: canonical,
     description,
     isPartOf: { "@type": "WebSite", name: projectTitle, url: baseUrl || "/" },
+    ...(siteConfig.seoProfile === "local-service" ? {
+      serviceArea: route.path === "/" ? "Primary local service area" : routeLabel(route.path),
+      areaServed: routeLabel(route.path),
+      makesOffer: { "@type": "Offer", itemOffered: { "@type": "Service", name: content.heading } },
+      mainEntity: { "@type": "FAQPage", mainEntity: [{ "@type": "Question", name: "How do I get started?", acceptedAnswer: { "@type": "Answer", text: description } }] },
+    } : {}),
   }).replaceAll("<", "\\\\u003c");
 
   const fallback = \`
@@ -858,6 +932,7 @@ function readSiteConfig() {
   const fromEnv = (name) => process.env[name] || "";
   return {
     analyticsProvider: fromEnv("VITE_ANALYTICS_PROVIDER") || literalConfigValue(source, "analyticsProvider") || "none",
+    seoProfile: literalConfigValue(source, "seoProfile") || "standard",
     ga4MeasurementId: fromEnv("VITE_GA4_MEASUREMENT_ID") || literalConfigValue(source, "ga4MeasurementId") || "",
     plausibleDomain: fromEnv("VITE_PLAUSIBLE_DOMAIN") || literalConfigValue(source, "plausibleDomain") || "",
     googleSiteVerification: fromEnv("VITE_GOOGLE_SITE_VERIFICATION") || literalConfigValue(source, "googleSiteVerification") || "",

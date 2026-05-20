@@ -11,6 +11,51 @@ import { setOutputFormat } from "../../src/shared/output.js";
 const repoRoot = process.cwd();
 
 describe("create command templates", () => {
+  it("scaffolds production starter pages instead of demo residue", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-production-starter-"));
+    const staticDir = path.join(dir, "static-site");
+    const dbDir = path.join(dir, "db-app");
+    try {
+      const staticResult = await runCreateCommand(["web-static", "Acme Service Site", "--dir", staticDir]);
+      const dbResult = await runCreateCommand(["web-db-user", "Acme Portal", "--dir", dbDir]);
+      const combined = [
+        fs.readFileSync(path.join(staticDir, "client", "src", "pages", "Home.tsx"), "utf8"),
+        fs.readFileSync(path.join(dbDir, "client", "src", "pages", "Home.tsx"), "utf8"),
+      ].join("\n");
+
+      expect(staticResult.ok).toBe(true);
+      expect(dbResult.ok).toBe(true);
+      expect(combined).toContain("Acme Service Site");
+      expect(combined).toContain("Acme Portal");
+      expect(combined).toContain("Launch-ready");
+      expect(combined).not.toContain("Example Page");
+      expect(combined).not.toContain("Any **markdown** content");
+      expect(combined).not.toContain("Example Button");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists and scaffolds the existing mobile app template", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-mobile-"));
+    const appDir = path.join(dir, "field-app");
+    try {
+      const list = spawnSync(process.execPath, ["src/index.ts", "create", "--list"], { cwd: repoRoot, encoding: "utf8" });
+      const result = await runCreateCommand(["app", "Field App", "--dir", appDir]);
+      const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"));
+
+      expect(list.status).toBe(0);
+      expect(list.stdout).toContain("Mobile Apps");
+      expect(list.stdout).toContain("app");
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("app");
+      expect(pkg.name).toBe("field-app");
+      expect(fs.existsSync(path.join(appDir, "app", "(tabs)", "index.tsx"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("replaces webdev placeholders with safe package/app values", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-template-"));
     const projectDir = path.join(dir, "generated app");
@@ -83,6 +128,8 @@ describe("create command templates", () => {
       expect(state.routes.health).toBe("/api/health");
       expect(state.routes.home).toBe("/");
       expect(state.verification.requiredGates).toContain("browser_smoke");
+      expect(state.verification.requiredGates).toContain("primary_persistence_scan");
+      expect(state.verification.requiredGates).toContain("production_artifact_scan");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -174,14 +221,56 @@ describe("create command templates", () => {
 
       const siteConfig = fs.readFileSync(path.join(projectDir, "client", "src", "site.config.ts"), "utf8");
       const analytics = fs.readFileSync(path.join(projectDir, "client", "src", "lib", "analytics.ts"), "utf8");
+      const imageGuide = fs.readFileSync(path.join(projectDir, "client", "src", "assets", "image-prompts.md"), "utf8");
       expect(siteConfig).toContain("googleSiteVerification");
       expect(siteConfig).toContain("bingSiteVerification");
       expect(siteConfig).toContain("ga4MeasurementId");
       expect(siteConfig).toContain("analyticsProvider");
+      expect(siteConfig).toContain("seoProfile");
+      expect(siteConfig).toContain("imagePrompts");
+      expect(siteConfig).toContain("hero photo");
+      expect(imageGuide).toContain("generate_image");
+      expect(imageGuide).toContain("Hero photo");
       expect(analytics).toContain("trackFormSubmit");
       expect(analytics).toContain("trackPhoneClick");
       expect(analytics).toContain("trackBookingClick");
       expect(analytics).toContain("trackEmailClick");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports local-service SEO profile and image guidance for generated business sites", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-local-seo-"));
+    const projectDir = path.join(dir, "roofing-site");
+    try {
+      const result = await runCreateCommand(["web-static", "Tulsa Roofing", "--dir", projectDir, "--seo-profile", "local-service"]);
+      const script = fs.readFileSync(path.join(projectDir, "scripts", "jeriko-prerender-seo.mjs"), "utf8");
+      const siteConfig = fs.readFileSync(path.join(projectDir, "client", "src", "site.config.ts"), "utf8");
+
+      expect(result.ok).toBe(true);
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(script).toContain("LocalBusiness");
+      expect(script).toContain("serviceArea");
+      expect(script).toContain("FAQPage");
+      expect(siteConfig).toContain("imagePrompts");
+      expect(siteConfig).toContain("Generate a realistic hero photo");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes natural-language website prompts to a verified starter template", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-from-prompt-"));
+    const projectDir = path.join(dir, "prompt-site");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build a roofing contractor website in Tulsa with SEO pages and quote photos", "--name", "Tulsa Roofing", "--dir", projectDir]);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(result.data.inferredFromPrompt).toBe(true);
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(fs.existsSync(path.join(projectDir, "scripts", "jeriko-prerender-seo.mjs"))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

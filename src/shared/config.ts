@@ -163,9 +163,11 @@ export interface TTSConfig {
 
 /** Image generation configuration. */
 export interface ImageGenConfig {
-  /** Provider: "openai" (DALL-E 3), "auto" (first available). Default: "auto". */
-  provider?: "openai" | "auto";
-  /** Default size: "1024x1024", "1024x1792", "1792x1024". */
+  /** Provider: "fal" (FAL.ai FLUX), "openai" (DALL-E 3), "auto" (first available). Default: "auto". */
+  provider?: "fal" | "openai" | "auto";
+  /** Default model for providers that support model selection (FAL default: fal-ai/flux/schnell). */
+  defaultModel?: string;
+  /** Default size: "1024x1024", "1024x1792", "1792x1024", "16:9", "9:16", "1:1". */
   defaultSize?: string;
   /** Default style: "vivid" or "natural" (DALL-E 3 only). */
   defaultStyle?: string;
@@ -234,6 +236,7 @@ const DEFAULTS: JerikoConfig = {
     sensitiveKeys: [
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
+      "FAL_KEY",
       "NODE_AUTH_SECRET",
       "STRIPE_SECRET_KEY",
       "STRIPE_WEBHOOK_SECRET",

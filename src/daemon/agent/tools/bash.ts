@@ -38,7 +38,7 @@ async function execute(args: Record<string, unknown>): Promise<string> {
   return new Promise<string>((resolve) => {
     const proc = spawn("bash", ["-c", command], {
       cwd,
-      timeout,
+      detached: true,
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -47,18 +47,31 @@ async function execute(args: Record<string, unknown>): Promise<string> {
     let stdout = "";
     let stderr = "";
     let truncated = false;
-    proc.stdout.on("data", (chunk: Buffer) => {
-      if (stdout.length + stderr.length < MAX_CAPTURE) {
-        stdout += chunk.toString().slice(0, MAX_CAPTURE - stdout.length - stderr.length);
-      } else { truncated = true; }
-    });
-    proc.stderr.on("data", (chunk: Buffer) => {
-      if (stdout.length + stderr.length < MAX_CAPTURE) {
-        stderr += chunk.toString().slice(0, MAX_CAPTURE - stdout.length - stderr.length);
-      } else { truncated = true; }
-    });
+    let settled = false;
+    let timedOut = false;
+    let forceFinishTimer: ReturnType<typeof setTimeout> | null = null;
 
-    proc.on("close", async (code) => {
+    const killProcessGroup = (signal: NodeJS.Signals) => {
+      if (!proc.pid) return;
+      try { process.kill(-proc.pid, signal); }
+      catch { try { proc.kill(signal); } catch { /* already gone */ } }
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      stderr += `\n[timeout]\nCommand exceeded timeout of ${timeout}ms and was terminated.`;
+      killProcessGroup("SIGTERM");
+      forceFinishTimer = setTimeout(() => {
+        killProcessGroup("SIGKILL");
+        void finish(null);
+      }, 2_000);
+    }, timeout);
+
+    async function finish(code: number | null): Promise<void> {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (forceFinishTimer) clearTimeout(forceFinishTimer);
       const output = stdout + (stderr ? `\n[stderr]\n${stderr}` : "")
         + (truncated ? "\n[output truncated]" : "");
       try {
@@ -82,10 +95,33 @@ async function execute(args: Record<string, unknown>): Promise<string> {
         resolve(JSON.stringify({ ok: false, guard: "code_integrity", error: msg, output: output.slice(0, 20_000) }));
         return;
       }
+      if (timedOut) {
+        resolve(JSON.stringify({ ok: false, error: `Command timed out after ${timeout}ms`, output: output.slice(0, 100_000) }));
+        return;
+      }
       resolve(output.slice(0, 100_000) || `(exit code ${code ?? 0})`);
+    }
+
+    proc.stdout.on("data", (chunk: Buffer) => {
+      if (stdout.length + stderr.length < MAX_CAPTURE) {
+        stdout += chunk.toString().slice(0, MAX_CAPTURE - stdout.length - stderr.length);
+      } else { truncated = true; }
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      if (stdout.length + stderr.length < MAX_CAPTURE) {
+        stderr += chunk.toString().slice(0, MAX_CAPTURE - stdout.length - stderr.length);
+      } else { truncated = true; }
+    });
+
+    proc.on("close", (code) => {
+      void finish(code);
     });
 
     proc.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (forceFinishTimer) clearTimeout(forceFinishTimer);
       resolve(JSON.stringify({ ok: false, error: err.message }));
     });
   });

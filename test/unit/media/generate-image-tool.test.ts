@@ -74,7 +74,9 @@ describe("generate_image tool", () => {
 
   it("returns error JSON when no API key is set", async () => {
     const originalKey = process.env.OPENAI_API_KEY;
+    const originalFalKey = process.env.FAL_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FAL_KEY;
 
     try {
       const tool = getTool("generate_image")!;
@@ -83,6 +85,7 @@ describe("generate_image tool", () => {
       expect(result.error).toContain("provider");
     } finally {
       if (originalKey) process.env.OPENAI_API_KEY = originalKey;
+      if (originalFalKey) process.env.FAL_KEY = originalFalKey;
     }
   });
 

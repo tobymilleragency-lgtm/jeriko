@@ -2,6 +2,7 @@
 //
 // Provider-agnostic interface for generating images from text prompts.
 // Currently supports:
+//   - "fal"     → FLUX via FAL.ai
 //   - "openai"  → DALL-E 3 (via OpenAI Images API)
 //   - "auto"    → first available provider with API key set
 //
@@ -30,17 +31,23 @@ export interface ImageGenResult {
   url?: string;
   /** DALL-E 3 may revise the prompt for better results. */
   revisedPrompt?: string;
+  /** Provider used for the request. */
+  provider?: string;
+  /** Model used for the request. */
+  model?: string;
 }
 
 export interface ImageGenOptions {
   /** Text prompt describing the desired image. */
   prompt: string;
-  /** Image dimensions: "1024x1024", "1024x1792", "1792x1024". */
+  /** Image dimensions: "1024x1024", "1024x1792", "1792x1024", "16:9", "9:16", "1:1". */
   size?: string;
   /** Style: "vivid" or "natural" (DALL-E 3 only). */
   style?: string;
   /** Explicit provider override (default: auto). */
   provider?: string;
+  /** Explicit model override for providers that support multiple models. */
+  model?: string;
 }
 
 /** Valid DALL-E 3 sizes. */
@@ -48,6 +55,9 @@ const VALID_SIZES = new Set(["1024x1024", "1024x1792", "1792x1024"]);
 
 /** Valid DALL-E 3 styles. */
 const VALID_STYLES = new Set(["vivid", "natural"]);
+
+/** FAL model used for realistic website-photo generation by default. */
+const DEFAULT_FAL_MODEL = "fal-ai/flux/schnell";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -71,12 +81,14 @@ export async function generateImage(
   const provider = resolveProvider(options.provider, config);
 
   switch (provider) {
+    case "fal":
+      return generateFal(options, config);
     case "openai":
       return generateOpenAI(options, config);
     default:
       throw new Error(
         `Image generation provider "${provider}" is not available. ` +
-        `Set OPENAI_API_KEY for DALL-E 3.`,
+        `Set FAL_KEY for FLUX or OPENAI_API_KEY for DALL-E 3.`,
       );
   }
 }
@@ -96,13 +108,69 @@ function resolveProvider(
   const configProvider = config?.provider ?? "auto";
   if (configProvider !== "auto") return configProvider;
 
-  // Auto-detect: check which API keys are available
+  // Auto-detect: prefer non-OpenAI image providers for realistic web assets.
+  if (process.env.FAL_KEY) return "fal";
   if (process.env.OPENAI_API_KEY) return "openai";
 
   throw new Error(
     "No image generation provider available. " +
-    "Set OPENAI_API_KEY for DALL-E 3.",
+    "Set FAL_KEY for FLUX or OPENAI_API_KEY for DALL-E 3.",
   );
+}
+
+// ---------------------------------------------------------------------------
+// FAL.ai FLUX
+// ---------------------------------------------------------------------------
+
+async function generateFal(
+  options: ImageGenOptions,
+  config?: ImageGenConfig,
+): Promise<ImageGenResult> {
+  const apiKey = process.env.FAL_KEY;
+  if (!apiKey) {
+    throw new Error("FAL_KEY not set — cannot generate images with FAL");
+  }
+
+  const model = options.model || config?.defaultModel || DEFAULT_FAL_MODEL;
+  const url = `https://fal.run/${model}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify({
+      prompt: options.prompt,
+      image_size: resolveFalImageSize(options.size, config?.defaultSize),
+      num_images: 1,
+      enable_safety_checker: true,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`FAL image generation error ${response.status}: ${errorText}`);
+  }
+
+  const result = (await response.json()) as {
+    images?: Array<{ url?: string; width?: number; height?: number; content_type?: string }>;
+  };
+
+  const imageData = result.images?.[0];
+  if (!imageData?.url) {
+    throw new Error("FAL returned no image URL");
+  }
+
+  const outputPath = await downloadImage(imageData.url, "FAL FLUX");
+
+  return {
+    path: outputPath,
+    url: imageData.url,
+    provider: "fal",
+    model,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,25 +225,14 @@ async function generateOpenAI(
     throw new Error("DALL-E 3 returned no image URL");
   }
 
-  // Download the generated image to a local file
-  const imageResponse = await fetch(imageData.url, {
-    signal: AbortSignal.timeout(60_000),
-  });
-
-  if (!imageResponse.ok) {
-    throw new Error(`Failed to download generated image: HTTP ${imageResponse.status}`);
-  }
-
-  const imageBytes = new Uint8Array(await imageResponse.arrayBuffer());
-  const outputPath = join(tmpdir(), `jeriko-image-${randomUUID()}.png`);
-  writeFileSync(outputPath, imageBytes);
-
-  log.info(`Image generated: ${outputPath} (${(imageBytes.length / 1024).toFixed(0)}KB, DALL-E 3)`);
+  const outputPath = await downloadImage(imageData.url, "DALL-E 3");
 
   return {
     path: outputPath,
     url: imageData.url,
     revisedPrompt: imageData.revised_prompt,
+    provider: "openai",
+    model: "dall-e-3",
   };
 }
 
@@ -193,4 +250,29 @@ function resolveStyle(explicit?: string, configDefault?: string): string {
   if (explicit && VALID_STYLES.has(explicit)) return explicit;
   if (configDefault && VALID_STYLES.has(configDefault)) return configDefault;
   return "vivid";
+}
+
+function resolveFalImageSize(explicit?: string, configDefault?: string): string {
+  const size = explicit || configDefault;
+  if (size === "1792x1024" || size === "16:9" || size === "landscape_16_9") return "landscape_16_9";
+  if (size === "1024x1792" || size === "9:16" || size === "portrait_16_9") return "portrait_16_9";
+  if (size === "1024x1024" || size === "1:1" || size === "square") return "square";
+  return "landscape_16_9";
+}
+
+async function downloadImage(url: string, label: string): Promise<string> {
+  const imageResponse = await fetch(url, {
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to download generated image: HTTP ${imageResponse.status}`);
+  }
+
+  const imageBytes = new Uint8Array(await imageResponse.arrayBuffer());
+  const outputPath = join(tmpdir(), `jeriko-image-${randomUUID()}.png`);
+  writeFileSync(outputPath, imageBytes);
+
+  log.info(`Image generated: ${outputPath} (${(imageBytes.length / 1024).toFixed(0)}KB, ${label})`);
+  return outputPath;
 }

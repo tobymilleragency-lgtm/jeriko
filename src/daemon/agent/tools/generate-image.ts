@@ -1,7 +1,7 @@
 // Tool — Image generation from text prompts.
 //
 // Provider-agnostic: delegates to the media/image-gen service which
-// supports DALL-E 3 (OpenAI) with auto-detection of available keys.
+// supports FAL.ai FLUX and DALL-E 3 with auto-detection of available keys.
 //
 // Generated images are saved to tmpdir. The channel router auto-detects
 // image file paths in tool results and sends them via sendPhoto().
@@ -29,6 +29,7 @@ async function execute(args: Record<string, unknown>): Promise<string> {
         size: (args.size as string) ?? undefined,
         style: (args.style as string) ?? undefined,
         provider: (args.provider as string) ?? undefined,
+        model: (args.model as string) ?? undefined,
       },
       imageGenConfig,
     );
@@ -38,6 +39,8 @@ async function execute(args: Record<string, unknown>): Promise<string> {
       path: result.path,
       url: result.url,
       revisedPrompt: result.revisedPrompt,
+      provider: result.provider,
+      model: result.model,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -49,7 +52,8 @@ export const generateImageTool: ToolDefinition = {
   id: "generate_image",
   name: "generate_image",
   description:
-    "Generate an image from a text prompt using DALL-E 3 or another configured provider. " +
+    "Generate an image or realistic website photo from a text prompt using FAL.ai FLUX, DALL-E 3, or another configured provider. " +
+    "Use this for website hero photos, service images, Open Graph cards, icons, mockups, and marketing assets. " +
     "Returns the local file path to the generated image. " +
     "The image will be automatically sent if the conversation is in a channel (Telegram/WhatsApp).",
   parameters: {
@@ -61,8 +65,8 @@ export const generateImageTool: ToolDefinition = {
       },
       size: {
         type: "string",
-        description: 'Image dimensions: "1024x1024" (square), "1024x1792" (portrait), "1792x1024" (landscape). Default: "1024x1024".',
-        enum: ["1024x1024", "1024x1792", "1792x1024"],
+        description: 'Image dimensions/aspect ratio: "1792x1024" or "16:9" (landscape), "1024x1792" or "9:16" (portrait), "1024x1024" or "1:1" (square). Default: provider-specific.',
+        enum: ["1024x1024", "1024x1792", "1792x1024", "16:9", "9:16", "1:1"],
       },
       style: {
         type: "string",
@@ -71,13 +75,18 @@ export const generateImageTool: ToolDefinition = {
       },
       provider: {
         type: "string",
-        description: 'Image generation provider: "openai" (DALL-E 3) or "auto" (first available). Default: "auto".',
+        description: 'Image generation provider: "fal" (FAL.ai FLUX), "openai" (DALL-E 3), or "auto" (first available). Default: "auto".',
+        enum: ["auto", "fal", "openai"],
+      },
+      model: {
+        type: "string",
+        description: 'Provider model override. For FAL default is "fal-ai/flux/schnell".',
       },
     },
     required: ["prompt"],
   },
   execute,
-  aliases: ["create_image", "image_gen", "dall_e", "image_generation", "make_image"],
+  aliases: ["create_image", "image_gen", "dall_e", "image_generation", "make_image", "website_photo", "generate_photo", "hero_image"],
 };
 
 registerTool(generateImageTool);

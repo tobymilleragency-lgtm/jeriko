@@ -4,8 +4,8 @@ import path from "node:path";
 import { defineConfig } from "vite";
 import jerikoDebug from "./vite-plugin-jeriko-debug";
 
-export default defineConfig({
-  plugins: [react(), tailwindcss(), jerikoDebug()],
+export default defineConfig(({ command }) => ({
+  plugins: [react(), tailwindcss(), command === "serve" ? jerikoDebug() : null].filter(Boolean),
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -25,4 +25,4 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
   },
-});
+}));

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
+import { createRequire } from "node:module";
 import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState } from "./project-state.js";
 
 export { readProjectState } from "./project-state.js";
@@ -23,7 +24,20 @@ export interface PlaceholderHit {
   token: string;
 }
 
+export interface ScaffoldResidueHit {
+  file: string;
+  line: number;
+  token: string;
+}
+
 export interface UnsafeEnvHit {
+  file: string;
+  line: number;
+  token: string;
+  reason: string;
+}
+
+export interface RealnessHit {
   file: string;
   line: number;
   token: string;
@@ -46,10 +60,22 @@ export interface CrawlerHtmlStatus {
   issues?: string[];
 }
 
+export interface ProductionArtifactStatus {
+  checked: boolean;
+  ok: boolean;
+  output: string;
+  hits: RealnessHit[];
+}
+
 const PLACEHOLDER_PATTERN = /\{\{[a-zA-Z0-9_]+\}\}|__PLACEHOLDER__|<%=?\s*[^%]+%>/g;
+const SCAFFOLD_RESIDUE_TOKENS = ["Example Page", "Any **markdown** content", "Example Button", "demo response", "Lorem ipsum", "BLOCK TO BE DELETED", "Google Fonts here, example"];
 const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
 const MAX_OUTPUT = 12_000;
+const BUSINESS_ENTITY_PATTERN = /\b(orders?|shipments?|inventory|listings?|customers?|buyers?|expenses?|stores?|scans?)\b/i;
+const PRIMARY_LOCAL_STORAGE_PATTERN = /(?:window\.)?localStorage\s*\.\s*(?:setItem|getItem|removeItem)/;
+const DEBUG_ARTIFACT_TOKENS = ["/__jeriko__/debug-collector.js", "__JERIKO_DEBUG_COLLECTOR__", "/__jeriko__/logs"];
+const PUBLIC_MOCK_COPY_TOKENS = ["MVP mock data", "mock data", "prototype only", "demo shell", "BLOCK TO BE DELETED", "Google Fonts here, example"];
 
 export const command: CommandHandler = {
   name: "verify-app",
@@ -96,6 +122,19 @@ export const command: CommandHandler = {
       });
     }
 
+    const scaffoldResidue = scanScaffoldResidue(dir);
+    gates.push({ name: "scaffold_residue_scan", ok: scaffoldResidue.length === 0 });
+    if (scaffoldResidue.length > 0) {
+      failWithDetails("Generated app still contains scaffold/demo residue.", {
+        errorCode: "E_SCAFFOLD_RESIDUE",
+        directory: dir,
+        profile,
+        projectState,
+        scaffoldResidue,
+        gates,
+      });
+    }
+
     const unsafeEnvRefs = scanUnsafeEnvRefs(dir);
     gates.push({ name: "unsafe_env_scan", ok: unsafeEnvRefs.length === 0 });
     if (unsafeEnvRefs.length > 0) {
@@ -105,6 +144,19 @@ export const command: CommandHandler = {
         profile,
         projectState,
         unsafeEnvRefs,
+        gates,
+      });
+    }
+
+    const localStoragePersistence = scanPrimaryLocalStoragePersistence(dir);
+    gates.push({ name: "primary_persistence_scan", ok: localStoragePersistence.length === 0 });
+    if (localStoragePersistence.length > 0) {
+      failWithDetails("Generated app persists business workflow data primarily in localStorage. Production apps need backend/database persistence for core entities and workflows.", {
+        errorCode: "E_LOCALSTORAGE_PRIMARY_DB",
+        directory: dir,
+        profile,
+        projectState,
+        localStoragePersistence,
         gates,
       });
     }
@@ -157,6 +209,18 @@ export const command: CommandHandler = {
       const gate = runGate("build", buildCommand, dir);
       gates.push(gate);
       if (!gate.ok) return failGate(dir, profile, gates, gate);
+
+      const artifactStatus = scanProductionArtifactResidue(dir);
+      if (artifactStatus.checked) {
+        const artifactGate: VerificationGate = {
+          name: "production_artifact_scan",
+          ok: artifactStatus.ok,
+          status: artifactStatus.ok ? 0 : 1,
+          output: artifactStatus.output,
+        };
+        gates.push(artifactGate);
+        if (!artifactGate.ok) return failGate(dir, profile, gates, artifactGate);
+      }
 
       const crawlerHtmlStatus = scanCrawlerHtml(dir);
       if (crawlerHtmlStatus.checked) {
@@ -274,6 +338,20 @@ export function scanPlaceholders(dir: string): PlaceholderHit[] {
   return hits;
 }
 
+export function scanScaffoldResidue(dir: string): ScaffoldResidueHit[] {
+  const hits: ScaffoldResidueHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      for (const token of SCAFFOLD_RESIDUE_TOKENS) {
+        if (line.includes(token)) hits.push({ file, line: i + 1, token });
+      }
+    }
+  });
+  return hits;
+}
+
 export function scanUnsafeEnvRefs(dir: string): UnsafeEnvHit[] {
   const hits: UnsafeEnvHit[] = [];
   walkTextFiles(dir, (file, content) => {
@@ -291,6 +369,78 @@ export function scanUnsafeEnvRefs(dir: string): UnsafeEnvHit[] {
     }
   });
   return hits;
+}
+
+export function scanPrimaryLocalStoragePersistence(dir: string): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    if (isAllowedLocalStorageFile(file)) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (!PRIMARY_LOCAL_STORAGE_PATTERN.test(line)) continue;
+      const context = `${lines[Math.max(0, i - 2)] ?? ""}\n${line}\n${lines[i + 1] ?? ""}\n${lines[i + 2] ?? ""}`;
+      if (!isBusinessLocalStorageContext(context)) continue;
+      hits.push({
+        file,
+        line: i + 1,
+        token: line.trim().slice(0, 180),
+        reason: "Business workflow data is stored in localStorage. Use backend/database persistence for orders, inventory, listings, shipments, customers, expenses, and similar core entities.",
+      });
+    }
+  });
+  return hits;
+}
+
+export function scanProductionArtifactResidue(dir: string): ProductionArtifactStatus {
+  const roots = [join(dir, "dist", "public"), join(dir, "dist"), join(dir, "build"), join(dir, ".vercel", "output", "static")]
+    .filter((root, index, values) => existsSync(root) && values.indexOf(root) === index);
+  if (roots.length === 0) {
+    return { checked: false, ok: true, hits: [], output: "No production artifact directory found; production artifact scan skipped." };
+  }
+
+  const hits: RealnessHit[] = [];
+  for (const root of roots) {
+    walkTextFilesIncludingBuild(root, (file, content) => {
+      const lines = content.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? "";
+        for (const token of DEBUG_ARTIFACT_TOKENS) {
+          if (line.includes(token)) {
+            hits.push({ file, line: i + 1, token, reason: "Jeriko debug collector/logging endpoint must not be present in production artifacts." });
+          }
+        }
+        for (const token of PUBLIC_MOCK_COPY_TOKENS) {
+          if (line.toLowerCase().includes(token.toLowerCase())) {
+            hits.push({ file, line: i + 1, token, reason: "Public production artifact still exposes mock/prototype copy." });
+          }
+        }
+      }
+    });
+  }
+
+  const ok = hits.length === 0;
+  return {
+    checked: true,
+    ok,
+    hits,
+    output: ok
+      ? "Production artifact scan passed: no Jeriko debug collector or public mock/prototype copy found."
+      : [
+        "Production artifact contains Jeriko/debug or mock/prototype residue.",
+        ...hits.slice(0, 20).map((hit) => `${hit.file}:${hit.line} ${hit.token} — ${hit.reason}`),
+      ].join("\n").slice(0, MAX_OUTPUT),
+  };
+}
+
+function isAllowedLocalStorageFile(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/");
+  return /ThemeContext|theme-customizer|useResponsiveSidebar|DashboardLayout|useAuth|auth\.(ts|tsx|js|jsx)$|_core\/auth/.test(normalized);
+}
+
+function isBusinessLocalStorageContext(context: string): boolean {
+  if (/\.mvp\.state|mvp\.state|appState|seedOrders|seedInventory/i.test(context)) return true;
+  return BUSINESS_ENTITY_PATTERN.test(context) && /JSON\.stringify|JSON\.parse|setItem|getItem|removeItem/i.test(context);
 }
 
 export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
@@ -554,6 +704,33 @@ function walkTextFiles(dir: string, visit: (file: string, content: string) => vo
   }
 }
 
+function walkTextFilesIncludingBuild(dir: string, visit: (file: string, content: string) => void): void {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      walkTextFilesIncludingBuild(join(dir, entry.name), visit);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const file = join(dir, entry.name);
+    if (!/\.(html|js|mjs|cjs|css|json|txt|xml)$/i.test(file)) continue;
+    try {
+      const buffer = readFileSync(file);
+      if (buffer.includes(0)) continue;
+      visit(file, buffer.toString("utf8"));
+    } catch {
+      // Ignore unreadable files during best-effort scan.
+    }
+  }
+}
+
 function detectFrozenInstallCommand(dir: string): string | null {
   if (!existsSync(join(dir, "package.json"))) return null;
   if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install --frozen-lockfile --ignore-scripts";
@@ -689,7 +866,7 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
       return { name: "browser_smoke", command, ok: false, status: status ?? 1, output: `${routeReady.output}\n${output}`.slice(0, MAX_OUTPUT) };
     }
 
-    const { chromium } = await import("playwright-core");
+    const { chromium } = await loadPlaywrightCore();
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
     const browser = await chromium.launch({ executablePath, headless: true });
@@ -707,10 +884,14 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
       const bodyText = (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "")).slice(0, 4_000);
       const html = (await page.content()).slice(0, 20_000);
       const overlayProblem = detectFrontendOverlay(html, bodyText);
+      const productionProblem = detectProductionRuntimeProblem(html, bodyText);
       const googleOAuthProblem = await verifyGoogleOAuthButton(page, url, dir);
+      const workflowProblem = await verifyWorkflowButtonMutation(page);
       const problems = [...pageErrors, ...consoleErrors];
       if (overlayProblem) problems.push(overlayProblem);
+      if (productionProblem) problems.push(productionProblem);
       if (googleOAuthProblem) problems.push(googleOAuthProblem);
+      if (workflowProblem) problems.push(workflowProblem);
       if (problems.length > 0) {
         return { name: "browser_smoke", command, ok: false, status: 1, output: problems.join("\n").slice(0, MAX_OUTPUT) };
       }
@@ -733,7 +914,7 @@ async function runBrowserSmokeAgainstUrl(command: string, url: string, dir: stri
   }
 
   try {
-    const { chromium } = await import("playwright-core");
+    const { chromium } = await loadPlaywrightCore();
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
     const browser = await chromium.launch({ executablePath, headless: true });
@@ -751,10 +932,14 @@ async function runBrowserSmokeAgainstUrl(command: string, url: string, dir: stri
       const bodyText = (await page.locator("body").innerText({ timeout: 5_000 }).catch(() => "")).slice(0, 4_000);
       const html = (await page.content()).slice(0, 20_000);
       const overlayProblem = detectFrontendOverlay(html, bodyText);
+      const productionProblem = detectProductionRuntimeProblem(html, bodyText);
       const googleOAuthProblem = await verifyGoogleOAuthButton(page, url, dir);
+      const workflowProblem = await verifyWorkflowButtonMutation(page);
       const problems = [...pageErrors, ...consoleErrors];
       if (overlayProblem) problems.push(overlayProblem);
+      if (productionProblem) problems.push(productionProblem);
       if (googleOAuthProblem) problems.push(googleOAuthProblem);
+      if (workflowProblem) problems.push(workflowProblem);
       if (problems.length > 0) {
         return { name: "browser_smoke", command, ok: false, status: 1, output: problems.join("\n").slice(0, MAX_OUTPUT) };
       }
@@ -835,6 +1020,45 @@ async function verifyGoogleOAuthButton(page: any, appUrl: string, dir: string): 
   }
 
   return null;
+}
+
+async function verifyWorkflowButtonMutation(page: any): Promise<string | null> {
+  const candidates = await page.locator("button, [role='button'], a[href]").evaluateAll((elements: any[]) => {
+    const workflowPattern = /\b(add|save|create|submit|send|order|checkout|book|schedule|upload|import|scan|approve|complete|mark|delete|remove|update|generate)\b/i;
+    const ignorePattern = /\b(theme|menu|nav|close|cancel|back|continue with google|sign in with google|login with google)\b/i;
+    return elements
+      .map((element, index) => ({
+        index,
+        text: (element.textContent || "").replace(/\s+/g, " ").trim(),
+        disabled: element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true",
+      }))
+      .filter((item) => item.text && !item.disabled && workflowPattern.test(item.text) && !ignorePattern.test(item.text))
+      .slice(0, 1);
+  }).catch(() => [] as Array<{ index: number; text: string }>);
+
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+  for (const candidate of candidates) {
+    const locator = page.locator("button, [role='button'], a[href]").nth(candidate.index);
+    const beforeUrl = page.url();
+    const beforeText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+    const beforeHtml = await page.content().catch(() => "");
+    await locator.click({ timeout: 1_500 }).catch(() => undefined);
+    await delay(250);
+    const afterUrl = page.url();
+    const afterText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+    const afterHtml = await page.content().catch(() => "");
+    const textChanged = normalizeMutationText(beforeText) !== normalizeMutationText(afterText);
+    const htmlChanged = beforeHtml !== afterHtml;
+    const urlChanged = beforeUrl !== afterUrl;
+    if (textChanged || htmlChanged || urlChanged) return null;
+  }
+
+  return `Workflow button mutation check failed: visible workflow control(s) did not change URL, DOM, or page text after click: ${candidates.map((candidate) => candidate.text).join(", ")}. Wire buttons to real state/server actions before claiming the app works.`;
+}
+
+function normalizeMutationText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function detectSupabaseAuthCallbackFromEnv(dir: string): string | null {
@@ -1000,6 +1224,31 @@ function detectFrontendOverlay(html: string, bodyText: string): string | null {
     if (combined.includes(marker)) return `frontend overlay/error marker detected: ${marker}`;
   }
   return null;
+}
+
+function detectProductionRuntimeProblem(html: string, bodyText: string): string | null {
+  const combined = `${html}\n${bodyText}`;
+  const problems: string[] = [];
+  for (const token of DEBUG_ARTIFACT_TOKENS) {
+    if (combined.includes(token)) problems.push(`Jeriko debug collector/runtime endpoint exposed: ${token}`);
+  }
+  for (const token of PUBLIC_MOCK_COPY_TOKENS) {
+    if (combined.toLowerCase().includes(token.toLowerCase())) problems.push(`Public page still exposes mock/prototype copy: ${token}`);
+  }
+  return problems.length > 0 ? problems.join("\n") : null;
+}
+
+async function loadPlaywrightCore(): Promise<typeof import("playwright-core")> {
+  try {
+    return await import("playwright-core");
+  } catch (error) {
+    try {
+      const require = createRequire(import.meta.url);
+      return require("playwright-core") as typeof import("playwright-core");
+    } catch {
+      throw error;
+    }
+  }
 }
 
 function findBrowserExecutable(): string | null {

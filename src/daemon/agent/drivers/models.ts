@@ -62,6 +62,9 @@ const aliasIndex = new Map<string, Map<string, string>>();
 /** Cached local model probes (Ollama /api/show results). */
 const localProbeCache = new Map<string, ModelCapabilities>();
 
+/** Provider IDs registered from user config, even if models.dev also knows the same ID. */
+const customProviderIds = new Set<string>();
+
 /** Cached default local model name — populated by fetchOllamaModels() or loadModelRegistry(). */
 let cachedDefaultLocalModel: string | null = null;
 
@@ -680,7 +683,7 @@ export function getCapabilities(provider: string, modelId: string): ModelCapabil
   // 1. Check models.dev capability index
   const key = `${provider}:${modelId}`;
   const indexed = capIndex.get(key);
-  if (indexed) return indexed;
+  if (indexed) return normalizeCustomProviderCosts(provider, { ...indexed, id: modelId, provider });
 
   // 2. Check local probe cache
   const probed = localProbeCache.get(modelId);
@@ -688,7 +691,7 @@ export function getCapabilities(provider: string, modelId: string): ModelCapabil
 
   // 3. Case-insensitive search
   for (const [k, v] of capIndex) {
-    if (k.toLowerCase() === key.toLowerCase()) return v;
+    if (k.toLowerCase() === key.toLowerCase()) return normalizeCustomProviderCosts(provider, { ...v, id: modelId, provider });
   }
 
   // 3.5. Cross-reference with family index for custom providers.
@@ -779,12 +782,22 @@ export function listModels(provider?: string): ModelCapabilities[] {
 export function registerProviderAliases(
   providerId: string,
   aliases: Record<string, string>,
+  options: { customProvider?: boolean } = {},
 ): void {
+  if (options.customProvider) customProviderIds.add(providerId.toLowerCase());
   const existing = aliasIndex.get(providerId) ?? new Map<string, string>();
   for (const [alias, modelId] of Object.entries(aliases)) {
     existing.set(alias.toLowerCase(), modelId);
   }
   aliasIndex.set(providerId, existing);
+}
+
+function normalizeCustomProviderCosts(provider: string, caps: ModelCapabilities): ModelCapabilities {
+  if (!customProviderIds.has(provider.toLowerCase())) return caps;
+  // models.dev may know the upstream provider ID (for example OpenRouter), but
+  // a user-configured provider can point at arbitrary pricing/proxy terms. Keep
+  // model-intrinsic capabilities while avoiding misleading catalog pricing.
+  return { ...caps, provider, costInput: 0, costOutput: 0 };
 }
 
 /**

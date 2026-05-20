@@ -60,9 +60,14 @@ const FINGERPRINT_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", 
 
 export const REQUIRED_APP_FACTORY_GATES = [
   "placeholder_scan",
+  "scaffold_residue_scan",
+  "unsafe_env_scan",
+  "primary_persistence_scan",
   "install",
   "check",
   "build",
+  "production_artifact_scan",
+  "crawler_html",
   "start_route",
   "browser_smoke",
 ];

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanUnsafeEnvRefs, scanCrawlerHtml, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -19,6 +19,25 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_PLACEHOLDERS");
       expect(result.placeholders[0].file).toBe(path.join(dir, "package.json"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when scaffold demo residue remains", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-residue-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"residue","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), 'export default function Home(){return <main>Example Page<Streamdown>Any **markdown** content</Streamdown><button>Example Button</button></main>}\n');
+
+      const hits = scanScaffoldResidue(dir);
+      const result = await runVerifyAppCommand([dir, "--skip-install"]);
+
+      expect(hits.map((hit) => hit.token)).toEqual(["Example Page", "Any **markdown** content", "Example Button"]);
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_SCAFFOLD_RESIDUE");
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -72,7 +91,77 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_UNSAFE_ENV");
       expect(result.unsafeEnvRefs.length).toBe(2);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when business data is persisted primarily in localStorage", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-localstorage-primary-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"localstorage-primary","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "store.ts"), 'const KEY = "flipscout.mvp.state.v3";\nexport function saveOrders(orders){ localStorage.setItem(KEY, JSON.stringify({ orders, inventory: [] })); }\n');
+
+      const hits = scanPrimaryLocalStoragePersistence(dir);
+      const result = await runVerifyAppCommand([dir, "--skip-install"]);
+
+      expect(hits.length).toBeGreaterThan(0);
+      expect(hits[0].reason).toContain("Business workflow data");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_LOCALSTORAGE_PRIMARY_DB");
+      expect(result.localStoragePersistence[0].file).toBe(path.join(dir, "client", "src", "store.ts"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("production artifact scan rejects Jeriko debug collector and public mock-data copy", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-artifact-realness-"));
+    try {
+      const publicDir = path.join(dir, "dist", "public", "assets");
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "dist", "public", "index.html"), '<!doctype html><html><head><script src="/__jeriko__/debug-collector.js"></script></head><body><div id="root">MVP mock data</div></body></html>');
+      fs.writeFileSync(path.join(publicDir, "app.js"), 'window.__JERIKO_DEBUG_COLLECTOR__ = true; fetch("/__jeriko__/logs");');
+
+      const result = scanProductionArtifactResidue(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.hits.map((hit) => hit.token)).toContain("/__jeriko__/debug-collector.js");
+      expect(result.hits.map((hit) => hit.token)).toContain("MVP mock data");
+      expect(result.output).toContain("Production artifact contains Jeriko/debug or mock/prototype residue");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("verify-app fails after build when production artifacts expose debug or mock residue", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-artifact-gate-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "artifact-gate",
+        scripts: {
+          build: "node build.mjs",
+        },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "build.mjs"), `
+        import fs from 'node:fs';
+        fs.mkdirSync('dist/public', { recursive: true });
+        fs.writeFileSync('dist/public/index.html', '<!doctype html><html><head><script src="/__jeriko__/debug-collector.js"></script><meta name="description" content="A long enough public marketing description for crawlers."></head><body><div id="root"><main data-jeriko-prerender="true">MVP mock data</main></div></body></html>');
+        fs.writeFileSync('dist/public/robots.txt', 'User-agent: *\\nAllow: /\\n');
+        fs.writeFileSync('dist/public/sitemap.xml', '<urlset></urlset>');
+      `);
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("production_artifact_scan");
+      expect(result.failedGate.output).toContain("debug");
+      expect(result.failedGate.output).toContain("MVP mock data");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -237,7 +326,7 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(true);
       expect(result.data.directory).toBe(dir);
       expect(result.data.profile).toBe("web-static");
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "check", "build"]);
       expect(result.data.gates.every((gate: any) => gate.ok)).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -265,7 +354,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { check: "pnpm run check", build: "pnpm run build" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -275,7 +364,7 @@ describe("verify-app command", () => {
       expect(state?.verification.lastSuccessfulVerification).toBeDefined();
       expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
       expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
-      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "check", "build"]);
+      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "check", "build"]);
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -311,14 +400,14 @@ describe("verify-app command", () => {
           build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
         },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "install", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "install", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
 
       expect(result.ok).toBe(true);
       expect(result.data.dependencyStatus.nodeModules).toBe(true);
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "install", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "install", "check", "build"]);
       expect(fs.readFileSync(orderFile, "utf8")).toBe("install\ncheck\nbuild\n");
       expect(result.data.gates.find((gate: any) => gate.name === "install").output).toContain("node_modules missing");
     } finally {
@@ -340,7 +429,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { install: "node -e \"console.log('INSTALL_WITHOUT_NODE_MODULES')\"", check: "node -e \"process.exit(99)\"" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "unsafe_env_scan", "install", "check"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "install", "check"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -350,7 +439,7 @@ describe("verify-app command", () => {
       expect(result.failedGate.name).toBe("dependency_preflight");
       expect(result.failedGate.output).toContain("node_modules is still missing");
       expect(result.dependencyStatus.missingNodeModules).toBe(true);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "unsafe_env_scan", "install", "dependency_preflight"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "install", "dependency_preflight"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -502,6 +591,78 @@ describe("verify-app command", () => {
       expect(result.errorCode).toBe("E_VERIFY_GATE");
       expect(result.failedGate.name).toBe("browser_smoke");
       expect(result.failedGate.output).toContain("BROKEN_BROWSER_SMOKE");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("browser smoke fails when public page exposes Jeriko debug collector", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-browser-debug-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-browser-debug",
+        scripts: {
+          start: "node server.mjs",
+        },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><head><script src="/__jeriko__/debug-collector.js"></script></head><body><div id="root">MVP mock data</div></body></html>';
+        const server = http.createServer((req, res) => {
+          res.writeHead(200, { 'content-type': req.url === '/api/health' ? 'application/json' : 'text/html' });
+          res.end(req.url === '/api/health' ? JSON.stringify({ ok: true }) : html);
+        });
+        server.listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--port", "4298"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("browser_smoke");
+      expect(result.failedGate.output).toContain("Jeriko debug collector");
+      expect(result.failedGate.output).toContain("mock/prototype copy");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("browser smoke fails when workflow buttons do not mutate page state", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-button-mutation-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-button-mutation",
+        scripts: { start: "node server.mjs" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><body><div id="root"><button>Add Order</button><button>Save Inventory</button></div></body></html>';
+        http.createServer((req, res) => {
+          if (req.url === '/api/health') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(html);
+        }).listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--browser-route", "/", "--port", "4299"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("browser_smoke");
+      expect(result.failedGate.output).toContain("Workflow button mutation check failed");
+      expect(result.failedGate.output).toContain("Add Order");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

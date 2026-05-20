@@ -77,9 +77,7 @@ export function registerCustomProviders(providers: ProviderConfig[]): void {
       aliases[config.id] = config.defaultModel;
     }
 
-    if (Object.keys(aliases).length > 0) {
-      registerProviderAliases(config.id, aliases);
-    }
+    registerProviderAliases(config.id, aliases, { customProvider: true });
 
     log.info(
       `Custom provider registered: ${config.name} (${config.id}) → ${config.baseUrl}` +

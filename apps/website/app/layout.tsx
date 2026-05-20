@@ -3,9 +3,32 @@ import Script from "next/script";
 import { Footer } from "./components/footer";
 import "./globals.css";
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://jeriko.app";
+
 export const metadata: Metadata = {
-  title: "Jeriko | The New Intelligent OS for macOS",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "Jeriko | The New Intelligent OS for macOS",
+    template: "%s | Jeriko",
+  },
   description: "Jeriko transforms your Mac into an AI-powered operating system. One daemon, one CLI, total control.",
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "Jeriko",
+    title: "Jeriko | The New Intelligent OS for macOS",
+    description: "Build web and mobile apps, automate your OS, generate images, and connect tools from one local AI agent.",
+    images: [{ url: "/jeriko-logo-white.png", width: 512, height: 512, alt: "Jeriko" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Jeriko | The New Intelligent OS for macOS",
+    description: "A local AI agent for app building, browser automation, connectors, image generation, and OS control.",
+    images: ["/jeriko-logo-white.png"],
+  },
   icons: {
     icon: "/jeriko-logo-white.png",
     apple: "/jeriko-logo-white.png",

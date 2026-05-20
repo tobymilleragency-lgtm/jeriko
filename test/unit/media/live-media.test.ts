@@ -160,10 +160,16 @@ describe("Live: generate_image tool structure", () => {
     expect(props.prompt).toBeDefined();
     expect(props.prompt.type).toBe("string");
     expect(props.size).toBeDefined();
-    expect(props.size.enum).toEqual(["1024x1024", "1024x1792", "1792x1024"]);
+    expect(props.size.enum).toContain("1024x1024");
+    expect(props.size.enum).toContain("1024x1792");
+    expect(props.size.enum).toContain("1792x1024");
+    expect(props.size.enum).toContain("16:9");
     expect(props.style).toBeDefined();
     expect(props.style.enum).toEqual(["vivid", "natural"]);
     expect(props.provider).toBeDefined();
+    expect(props.provider.enum).toContain("fal");
+    expect(props.provider.enum).toContain("openai");
+    expect(props.model).toBeDefined();
 
     clearTools();
   });

@@ -10,6 +10,7 @@ describe("Image Generation Service — detailed", () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENAI_API_KEY;
   const originalBaseUrl = process.env.OPENAI_BASE_URL;
+  const originalFalKey = process.env.FAL_KEY;
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -17,6 +18,8 @@ describe("Image Generation Service — detailed", () => {
     else delete process.env.OPENAI_API_KEY;
     if (originalBaseUrl) process.env.OPENAI_BASE_URL = originalBaseUrl;
     else delete process.env.OPENAI_BASE_URL;
+    if (originalFalKey) process.env.FAL_KEY = originalFalKey;
+    else delete process.env.FAL_KEY;
   });
 
   // Helper to set up a mock that returns a successful DALL-E response
@@ -216,9 +219,101 @@ describe("Image Generation Service — detailed", () => {
     try { unlinkSync(result.path); } catch {}
   });
 
+  function mockFalSuccess(opts?: {
+    captureBody?: (body: Record<string, unknown>) => void;
+    captureUrl?: (url: string) => void;
+    captureAuth?: (auth: string | null) => void;
+  }) {
+    const imageUrl = "https://fal.media/files/generated.png";
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url.includes("fal.run")) {
+        if (opts?.captureUrl) opts.captureUrl(url);
+        if (opts?.captureAuth) opts.captureAuth((init?.headers as Record<string, string>)?.Authorization ?? null);
+        if (opts?.captureBody && init?.body) {
+          opts.captureBody(JSON.parse(init.body as string));
+        }
+        return new Response(
+          JSON.stringify({
+            images: [{ url: imageUrl, width: 1344, height: 768, content_type: "image/png" }],
+            seed: 123,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      if (url === imageUrl) {
+        const pngBytes = new Uint8Array([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        ]);
+        return new Response(pngBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/png" },
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+  }
+
+  // ── FAL.ai ──────────────────────────────────────────────────────
+
+  it("generates an image through FAL when FAL_KEY is available", async () => {
+    delete process.env.OPENAI_API_KEY;
+    process.env.FAL_KEY = "test-fal-key";
+    let capturedUrl = "";
+    let capturedAuth: string | null = null;
+    let capturedBody: Record<string, unknown> = {};
+
+    mockFalSuccess({
+      captureUrl: (url) => { capturedUrl = url; },
+      captureAuth: (auth) => { capturedAuth = auth; },
+      captureBody: (body) => { capturedBody = body; },
+    });
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    const result = await generateImage({ prompt: "realistic roofing crew hero photo", size: "1792x1024" });
+
+    expect(capturedUrl).toBe("https://fal.run/fal-ai/flux/schnell");
+    expect(capturedAuth).toBe("Key test-fal-key");
+    expect(capturedBody.prompt).toBe("realistic roofing crew hero photo");
+    expect(capturedBody.image_size).toBe("landscape_16_9");
+    expect(result.path).toContain("jeriko-image-");
+    expect(result.url).toBe("https://fal.media/files/generated.png");
+    expect(result.provider).toBe("fal");
+    expect(result.model).toBe("fal-ai/flux/schnell");
+
+    try { unlinkSync(result.path); } catch {}
+  });
+
+  it("explicit fal provider fails clearly when FAL_KEY is missing", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.FAL_KEY;
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    await expect(generateImage({ prompt: "test", provider: "fal" })).rejects.toThrow("FAL_KEY not set");
+  });
+
   // ── Provider resolution ─────────────────────────────────────────
 
-  it("auto-detects openai when OPENAI_API_KEY is set", async () => {
+  it("auto-detects fal before openai when both keys are set", async () => {
+    process.env.OPENAI_API_KEY = "test-key-img";
+    process.env.FAL_KEY = "test-fal-key";
+    let capturedUrl = "";
+
+    mockFalSuccess({ captureUrl: (url) => { capturedUrl = url; } });
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    const result = await generateImage({ prompt: "test" });
+
+    expect(capturedUrl).toContain("fal.run");
+    expect(result.provider).toBe("fal");
+    try { unlinkSync(result.path); } catch {}
+  });
+
+  it("auto-detects openai when only OPENAI_API_KEY is set", async () => {
     process.env.OPENAI_API_KEY = "test-key-img";
     let capturedUrl = "";
 

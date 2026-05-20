@@ -290,6 +290,21 @@ describe("getCapabilities for custom providers", () => {
     expect(caps.family).toBe("unknown");
     expect(caps.context).toBe(24_000);
   });
+
+  it("zeros costs for custom providers even when they have no aliases", () => {
+    registerCustomProviders([{
+      id: "deepinfra",
+      name: "DeepInfra Proxy",
+      baseUrl: "https://proxy.example.com/v1",
+      apiKey: "test-key",
+    }]);
+
+    const caps = getCapabilities("deepinfra", "deepseek-ai/DeepSeek-V3.2");
+    expect(caps.provider).toBe("deepinfra");
+    expect(caps.id).toBe("deepseek-ai/DeepSeek-V3.2");
+    expect(caps.costInput).toBe(0);
+    expect(caps.costOutput).toBe(0);
+  });
 });
 
 // ─── AnthropicCompatibleDriver ───────────────────────────────────────────────

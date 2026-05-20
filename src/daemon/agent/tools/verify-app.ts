@@ -65,7 +65,7 @@ async function execute(args: Record<string, unknown>): Promise<string> {
 export const verifyAppTool: ToolDefinition = {
   id: "verify_app",
   name: "verify_app",
-  description: "Run Jeriko's required app-factory verification gate for generated apps. This proves scaffolded apps have no placeholders, install with frozen lockfile, typecheck, build, start, expose health/home route, and pass browser smoke. Use before any final 'done' report for generated app/scaffold work.",
+  description: "Run Jeriko's required app-factory verification gate for generated apps. This proves scaffolded apps have no placeholders or scaffold residue, avoid unsafe shared env names, do not use localStorage as the primary database for business workflow data, install with frozen lockfile, typecheck, build, ship production artifacts without Jeriko debug collector/mock copy, expose crawler-visible HTML, start, expose health/home route, and pass browser smoke including real workflow button mutation. Use before any final 'done' report for generated app/scaffold work.",
   parameters: {
     type: "object",
     properties: {
