@@ -10,6 +10,20 @@ export interface SourceFingerprint {
   bytes: number;
 }
 
+export interface AppSpecContract {
+  version: 1;
+  source: "prompt" | "template";
+  prompt: string;
+  appType: string;
+  pages: Array<{ path: string; title: string }>;
+  features: string[];
+  integrations: {
+    allowed: string[];
+    forbidden: string[];
+  };
+  successCriteria: string[];
+}
+
 export interface ProjectState {
   version: 1;
   name: string;
@@ -17,6 +31,7 @@ export interface ProjectState {
   profile: AppProfile;
   packageManager: string;
   generatedAt: string;
+  appSpec?: AppSpecContract;
   commands: {
     install?: string;
     check?: string;
@@ -59,6 +74,7 @@ export interface VerificationStatus {
 const FINGERPRINT_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage", ".jeriko"]);
 
 export const REQUIRED_APP_FACTORY_GATES = [
+  "app_spec_contract",
   "placeholder_scan",
   "scaffold_residue_scan",
   "unsafe_env_scan",
@@ -67,6 +83,8 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "mock_data_import_scan",
   "provider_config_scan",
   "image_uniqueness_scan",
+  "forbidden_integration_scan",
+  "app_spec_verifier",
   "install",
   "check",
   "build",
@@ -103,6 +121,8 @@ export function buildProjectState(args: {
   name: string;
   template: string;
   profile: AppProfile;
+  prompt?: string;
+  seoProfile?: string;
 }): ProjectState {
   const packageManager = "pnpm";
   const fullStack = args.profile === "web-db-user";
@@ -113,6 +133,7 @@ export function buildProjectState(args: {
     profile: args.profile,
     packageManager,
     generatedAt: new Date().toISOString(),
+    appSpec: buildAppSpecContract(args),
     commands: {
       install: "pnpm install --frozen-lockfile --ignore-scripts",
       check: "pnpm run check",
@@ -127,6 +148,35 @@ export function buildProjectState(args: {
     verification: {
       requiredGates: [...REQUIRED_APP_FACTORY_GATES],
     },
+  };
+}
+
+function buildAppSpecContract(args: {
+  name: string;
+  template: string;
+  profile: AppProfile;
+  prompt?: string;
+  seoProfile?: string;
+}): AppSpecContract {
+  const prompt = args.prompt?.trim() || `Create ${args.name} from the ${args.template} template.`;
+  const localService = args.seoProfile === "local-service" || /contractor|roof|remodel|plumb|electric|hvac|local|seo|service area|near me/i.test(prompt);
+  const fullStack = args.profile === "web-db-user";
+  return {
+    version: 1,
+    source: args.prompt ? "prompt" : "template",
+    prompt,
+    appType: fullStack ? "authenticated-web-app" : localService ? "local-service-site" : "marketing-site",
+    pages: [{ path: "/", title: "Home" }],
+    features: fullStack ? ["authenticated user workflow", "database-backed app state"] : ["production homepage", localService ? "local service SEO content" : "customer-ready marketing content"],
+    integrations: {
+      allowed: [],
+      forbidden: ["stripe"],
+    },
+    successCriteria: [
+      "Full required verify-app gate passes",
+      "Generated app matches this app spec contract",
+      "No forbidden integrations appear unless explicitly allowed in this spec",
+    ],
   };
 }
 

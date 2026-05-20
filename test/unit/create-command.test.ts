@@ -130,6 +130,14 @@ describe("create command templates", () => {
       expect(state.verification.requiredGates).toContain("browser_smoke");
       expect(state.verification.requiredGates).toContain("primary_persistence_scan");
       expect(state.verification.requiredGates).toContain("production_artifact_scan");
+      expect(state.verification.requiredGates).toContain("app_spec_contract");
+      expect(state.verification.requiredGates).toContain("forbidden_integration_scan");
+      expect(state.verification.requiredGates).toContain("app_spec_verifier");
+      expect(state.appSpec.prompt).toContain("State App");
+      expect(state.appSpec.pages).toEqual([{ path: "/", title: "Home" }]);
+      expect(state.appSpec.integrations.allowed).toEqual([]);
+      expect(state.appSpec.integrations.forbidden).toContain("stripe");
+      expect(state.appSpec.successCriteria).toContain("Full required verify-app gate passes");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -271,6 +279,10 @@ describe("create command templates", () => {
       expect(result.data.inferredFromPrompt).toBe(true);
       expect(result.data.seoProfile).toBe("local-service");
       expect(fs.existsSync(path.join(projectDir, "scripts", "jeriko-prerender-seo.mjs"))).toBe(true);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      expect(state.appSpec.prompt).toBe("Build a roofing contractor website in Tulsa with SEO pages and quote photos");
+      expect(state.appSpec.appType).toBe("local-service-site");
+      expect(state.appSpec.integrations.forbidden).toContain("stripe");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

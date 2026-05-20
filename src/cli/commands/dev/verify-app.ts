@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
-import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState } from "./project-state.js";
+import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState, type AppSpecContract } from "./project-state.js";
 
 export { readProjectState } from "./project-state.js";
 
@@ -45,6 +45,21 @@ export interface RealnessHit {
   reason: string;
 }
 
+export interface AppSpecIssue {
+  file: string;
+  line: number;
+  token: string;
+  reason: string;
+}
+
+export interface ForbiddenIntegrationHit {
+  file: string;
+  line: number;
+  token: string;
+  integration: string;
+  reason: string;
+}
+
 export interface DependencyStatus {
   packageJson: boolean;
   nodeModules: boolean;
@@ -77,6 +92,24 @@ const BUSINESS_ENTITY_PATTERN = /\b(orders?|shipments?|inventory|listings?|custo
 const PRIMARY_LOCAL_STORAGE_PATTERN = /(?:window\.)?localStorage\s*\.\s*(?:setItem|getItem|removeItem)/;
 const DEBUG_ARTIFACT_TOKENS = ["/__jeriko__/debug-collector.js", "__JERIKO_DEBUG_COLLECTOR__", "/__jeriko__/logs"];
 const PUBLIC_MOCK_COPY_TOKENS = ["MVP mock data", "mock data", "prototype only", "demo shell", "BLOCK TO BE DELETED", "Google Fonts here, example"];
+const FORBIDDEN_INTEGRATIONS = {
+  stripe: [
+    "billing.stripe.com",
+    "checkout.stripe.com",
+    "connect.stripe.com",
+    "dashboard.stripe.com",
+    "js.stripe.com",
+    "api.stripe.com",
+    "@stripe/stripe-js",
+    "@stripe/react-stripe-js",
+    "stripe:",
+    "\"stripe\"",
+    "'stripe'",
+    "Connect Stripe",
+    "Stripe Checkout",
+    "Stripe billing",
+  ],
+} as const;
 
 export const command: CommandHandler = {
   name: "verify-app",
@@ -212,6 +245,48 @@ export const command: CommandHandler = {
         duplicateSectionImages,
         gates,
       });
+    }
+
+    const appSpecGatesNeeded = Boolean(projectState?.appSpec) || Boolean(projectState?.verification?.requiredGates?.some((gate) => gate === "app_spec_contract" || gate === "forbidden_integration_scan" || gate === "app_spec_verifier"));
+    if (appSpecGatesNeeded) {
+      const appSpecContractIssues = validateAppSpecContract(projectState);
+      gates.push({ name: "app_spec_contract", ok: appSpecContractIssues.length === 0 });
+      if (appSpecContractIssues.length > 0) {
+        failWithDetails("Generated app is missing a valid Jeriko app spec contract.", {
+          errorCode: "E_APP_SPEC_CONTRACT",
+          directory: dir,
+          profile,
+          projectState,
+          appSpecIssues: appSpecContractIssues,
+          gates,
+        });
+      }
+
+      const forbiddenIntegrations = scanForbiddenIntegrations(dir, projectState);
+      gates.push({ name: "forbidden_integration_scan", ok: forbiddenIntegrations.length === 0 });
+      if (forbiddenIntegrations.length > 0) {
+        failWithDetails("Generated app contains a forbidden integration that was not explicitly allowed by its app spec contract.", {
+          errorCode: "E_FORBIDDEN_INTEGRATION",
+          directory: dir,
+          profile,
+          projectState,
+          forbiddenIntegrations,
+          gates,
+        });
+      }
+
+      const appSpecIssues = scanAppSpecCompliance(dir, projectState);
+      gates.push({ name: "app_spec_verifier", ok: appSpecIssues.length === 0 });
+      if (appSpecIssues.length > 0) {
+        failWithDetails("Generated app does not satisfy its app spec contract.", {
+          errorCode: "E_APP_SPEC_MISMATCH",
+          directory: dir,
+          profile,
+          projectState,
+          appSpecIssues,
+          gates,
+        });
+      }
     }
 
     const dependencyStatus = getDependencyStatus(dir);
@@ -413,6 +488,116 @@ export function getDependencyStatus(dir: string): DependencyStatus {
         : "node_modules missing; run frozen install before check/build so local package binaries (for example tsc/vite) exist."
       : "No package.json detected; dependency install is not required for this directory.",
   };
+}
+
+export function validateAppSpecContract(projectState: ProjectState | null): AppSpecIssue[] {
+  if (!projectState) return [];
+  const spec = projectState.appSpec;
+  const requiresSpec = projectState.verification?.requiredGates?.includes("app_spec_contract") ?? false;
+  if (!spec) {
+    return requiresSpec
+      ? [{ file: "project-state.json", line: 0, token: "appSpec", reason: "Missing app spec contract. Generated apps must record the intended pages, features, integrations, and success criteria before verification can pass." }]
+      : [];
+  }
+  const issues: AppSpecIssue[] = [];
+  if (spec.version !== 1) issues.push({ file: "project-state.json", line: 0, token: "appSpec.version", reason: "App spec contract version must be 1." });
+  if (!nonEmpty(spec.prompt)) issues.push({ file: "project-state.json", line: 0, token: "appSpec.prompt", reason: "App spec contract must include the source prompt or template intent." });
+  if (!nonEmpty(spec.appType)) issues.push({ file: "project-state.json", line: 0, token: "appSpec.appType", reason: "App spec contract must include an app type." });
+  if (!Array.isArray(spec.pages) || spec.pages.length === 0) issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: "App spec contract must list required pages/routes." });
+  if (!Array.isArray(spec.features)) issues.push({ file: "project-state.json", line: 0, token: "appSpec.features", reason: "App spec contract must list required features." });
+  if (!Array.isArray(spec.successCriteria) || spec.successCriteria.length === 0) issues.push({ file: "project-state.json", line: 0, token: "appSpec.successCriteria", reason: "App spec contract must list success criteria." });
+  if (!spec.integrations || !Array.isArray(spec.integrations.allowed) || !Array.isArray(spec.integrations.forbidden)) {
+    issues.push({ file: "project-state.json", line: 0, token: "appSpec.integrations", reason: "App spec contract must include allowed and forbidden integration lists." });
+  }
+  return issues;
+}
+
+export function scanForbiddenIntegrations(dir: string, projectState: ProjectState | null): ForbiddenIntegrationHit[] {
+  const allowed = new Set((projectState?.appSpec?.integrations?.allowed ?? []).map((item) => item.toLowerCase()));
+  const hits: ForbiddenIntegrationHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (normalized.includes("/.jeriko/")) return;
+    const lines = content.split(/\r?\n/);
+    for (const [integration, tokens] of Object.entries(FORBIDDEN_INTEGRATIONS)) {
+      if (allowed.has(integration.toLowerCase())) continue;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? "";
+        for (const token of tokens) {
+          if (!line.toLowerCase().includes(token.toLowerCase())) continue;
+          hits.push({
+            file,
+            line: i + 1,
+            token,
+            integration,
+            reason: `${integration} is forbidden unless the current app spec explicitly lists it under integrations.allowed.`,
+          });
+        }
+      }
+    }
+  });
+  return hits;
+}
+
+export function scanAppSpecCompliance(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
+  const contractIssues = validateAppSpecContract(projectState);
+  if (contractIssues.length > 0) return contractIssues;
+  if (!projectState?.appSpec) return [];
+  const spec = projectState.appSpec as AppSpecContract;
+  const sourceIndex = buildSourceIndex(dir);
+  const issues: AppSpecIssue[] = [];
+  for (const page of spec.pages) {
+    const route = normalizeSpecRoute(page.path);
+    if (routeImplemented(route, sourceIndex)) continue;
+    issues.push({
+      file: "project-state.json",
+      line: 0,
+      token: route,
+      reason: `Required page is not implemented: ${route}. Add a route/component/file for this app spec page before verification can pass.`,
+    });
+  }
+  return issues;
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeSpecRoute(route: string): string {
+  if (!route || route === "home") return "/";
+  return route.startsWith("/") ? route : `/${route}`;
+}
+
+function buildSourceIndex(dir: string): { files: Set<string>; text: string } {
+  const files = new Set<string>();
+  const chunks: string[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (normalized.includes("/.jeriko/")) return;
+    if (!/\/(client\/src|src|app|pages|server)\//.test(normalized) && !normalized.endsWith("package.json")) return;
+    files.add(normalized.toLowerCase());
+    chunks.push(content);
+  });
+  return { files, text: chunks.join("\n").toLowerCase() };
+}
+
+function routeImplemented(route: string, index: { files: Set<string>; text: string }): boolean {
+  if (route === "/") {
+    for (const file of index.files) {
+      if (/\/(home|index|app)\.(tsx|ts|jsx|js)$/.test(file)) return true;
+    }
+    return index.text.includes("path=\"/\"") || index.text.includes("path: \"/\"") || index.text.includes("path: '/'");
+  }
+  const slug = route.replace(/^\//, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+  for (const file of index.files) {
+    if (file.includes(`/${slug}.`) || file.includes(`/${slug}/`) || file.includes(`/${slug.replace(/-/g, "")}.`)) return true;
+  }
+  return index.text.includes(`path=\"${route}\"`) ||
+    index.text.includes(`path='${route}'`) ||
+    index.text.includes(`path: \"${route}\"`) ||
+    index.text.includes(`path: '${route}'`) ||
+    index.text.includes(`href=\"${route}\"`) ||
+    index.text.includes(`href='${route}'`);
 }
 
 export function scanPlaceholders(dir: string): PlaceholderHit[] {

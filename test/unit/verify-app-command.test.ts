@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanDuplicateSectionImages, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -937,6 +937,120 @@ describe("verify-app command", () => {
       expect(result.errorCode).toBe("E_VERIFY_GATE");
       expect(result.failedGate.name).toBe("test");
       expect(result.failedGate.status).toBe(7);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when a project-state app has no app spec contract", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-missing-spec-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "missing-spec" }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "missing-spec",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/" },
+        verification: { requiredGates: ["app_spec_contract"] },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_APP_SPEC_CONTRACT");
+      expect(result.appSpecIssues[0].reason).toContain("Missing app spec contract");
+      expect(result.gates.map((gate: any) => gate.name)).toContain("app_spec_contract");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects forbidden Stripe integrations unless the app spec explicitly allows them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-forbidden-stripe-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "stripe-drift", dependencies: { stripe: "^22.0.1" } }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "src", "Billing.tsx"), 'export function Billing(){ window.open("https://billing.stripe.com/p/login/4gM4gy6eafOm1Bo5FYe3e00"); return <button>Connect Stripe</button>; }\n');
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "stripe-drift",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a contractor website with a quote form",
+          appType: "marketing-site",
+          pages: [{ path: "/", title: "Home" }],
+          features: ["quote form"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["Home page renders"],
+        },
+        verification: { requiredGates: ["forbidden_integration_scan"] },
+      }, null, 2));
+
+      const hits = scanForbiddenIntegrations(dir, readProjectState(dir));
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(hits.map((hit) => hit.integration)).toContain("stripe");
+      expect(hits.map((hit) => hit.token)).toContain("billing.stripe.com");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_FORBIDDEN_INTEGRATION");
+      expect(result.forbiddenIntegrations.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the generated app does not satisfy required pages in its app spec", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-spec-match-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "spec-match" }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), 'export default function Home(){return <main>Home</main>}\n');
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "spec-match",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a contractor website with home and quote pages",
+          appType: "marketing-site",
+          pages: [{ path: "/", title: "Home" }, { path: "/quote", title: "Quote" }],
+          features: ["quote form"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["Home and quote pages render"],
+        },
+        verification: { requiredGates: ["app_spec_verifier"] },
+      }, null, 2));
+
+      const issues = scanAppSpecCompliance(dir, readProjectState(dir));
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(issues.map((issue) => issue.token)).toContain("/quote");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_APP_SPEC_MISMATCH");
+      expect(result.appSpecIssues[0].reason).toContain("Required page is not implemented");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

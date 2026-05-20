@@ -304,7 +304,7 @@ export const command: CommandHandler = {
       replaceTemplatePlaceholders(dir, name);
       const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name, seoProfile);
       const projectState = info.category === "webdev"
-        ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile }))
+        ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile, prompt: promptText || undefined, seoProfile }))
         : undefined;
 
       // Remove metadata files
