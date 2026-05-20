@@ -861,7 +861,7 @@ function uniqueRoutes(routes) {
 
 function renderRoute(route) {
   const content = extractPageContent(route);
-  const title = route.path === "/" ? projectTitle : \`\${content.heading} | \${projectTitle}\`;
+  const title = pageTitleFor(route, content);
   const description = content.paragraphs.slice(0, 2).join(" ").slice(0, 300) || \`\${projectTitle} page for \${route.path}\`;
   const canonical = baseUrl ? \`\${baseUrl}\${route.path === "/" ? "" : route.path}\` : route.path;
   const nav = routes.map((item) => \`<a href="\${escapeAttr(item.path)}">\${escapeHtml(item.path === "/" ? "Home" : routeLabel(item.path))}</a>\`).join(" | ");
@@ -980,6 +980,12 @@ function extractPageContent(route) {
   return { heading, paragraphs: paragraphs.length ? paragraphs : [\`\${projectTitle} content for \${route.path}\`] };
 }
 
+function pageTitleFor(route, content) {
+  const base = route.path === "/" ? projectTitle : \`\${content.heading} | \${projectTitle}\`;
+  const trimmed = String(base || "").trim();
+  return trimmed.length >= 8 ? trimmed : \`\${trimmed || "Home"} Website\`;
+}
+
 function pushClean(list, value) {
   const cleaned = String(value)
     .replace(/\\{[^}]*\\}/g, " ")
@@ -999,7 +1005,8 @@ function uniqueStrings(values) {
 }
 
 function looksLikeCode(value) {
-  return /^(className|function|return|import|export|const|let|var)\\b/.test(value)
+  return looksLikeCssClassList(value)
+    || /^(className|function|return|import|export|const|let|var)\\b/.test(value)
     || /\\b(import|export|const|let|var)\\s+[A-Za-z_$][\\w$]*\\b/.test(value)
     || /;\\s*import\\s+from\\b/.test(value)
     || /^\\/?(?:images|assets)\\//.test(value)
@@ -1009,6 +1016,13 @@ function looksLikeCode(value) {
     || /[{}<>]=?|=>|\\.tsx|@\\//.test(value)
     || value.includes("--")
     || value.length > 500;
+}
+
+function looksLikeCssClassList(value) {
+  const parts = String(value).trim().split(/\\s+/).filter(Boolean);
+  if (parts.length < 2) return false;
+  const classLike = parts.filter((part) => /^(?:[a-z]+:)*-?[a-z][a-z0-9]*(?:-[a-z0-9/[\\].()#%]+|\\[[^\\]]+\\]|\\/\\d+)+$/i.test(part)).length;
+  return classLike >= Math.max(2, Math.ceil(parts.length * 0.6));
 }
 
 function routeLabel(path) {

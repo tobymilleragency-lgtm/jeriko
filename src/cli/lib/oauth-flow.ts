@@ -77,6 +77,9 @@ export interface OAuthFlowResult {
   raw: Record<string, unknown>;
 }
 
+const AUTH_BROWSER_OPEN_DEDUPE_MS = 5 * 60 * 1000;
+const recentAuthBrowserOpens = new Map<string, number>();
+
 // ---------------------------------------------------------------------------
 // PKCE helpers
 // ---------------------------------------------------------------------------
@@ -553,6 +556,7 @@ async function exchangeCode(opts: ExchangeOptions): Promise<OAuthFlowResult> {
 
 /** Open a URL in the user's default browser. */
 async function openBrowser(url: string): Promise<void> {
+  if (!shouldAutoOpenAuthUrl(url)) return;
   const { execFile } = await import("node:child_process");
 
   const [cmd, args] = process.platform === "darwin"
@@ -567,6 +571,28 @@ async function openBrowser(url: string): Promise<void> {
       else resolve();
     });
   });
+}
+
+export function shouldAutoOpenAuthUrl(url: string, now = Date.now()): boolean {
+  if (process.env.JERIKO_DISABLE_AUTH_BROWSER_OPEN === "1") return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "marketplace.stripe.com" || host.endsWith(".stripe.com")) {
+    return process.env.JERIKO_ALLOW_STRIPE_BROWSER_OPEN === "1";
+  }
+
+  const key = `${parsed.origin}${parsed.pathname}`;
+  const lastOpened = recentAuthBrowserOpens.get(key) ?? 0;
+  if (now - lastOpened < AUTH_BROWSER_OPEN_DEDUPE_MS) return false;
+  recentAuthBrowserOpens.set(key, now);
+  return true;
 }
 
 // ---------------------------------------------------------------------------

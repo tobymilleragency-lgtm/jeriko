@@ -407,9 +407,12 @@ export async function* runAgent(
       }
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
+        const missingAiScannerProof = requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages);
         const gateMessage = missingContentStructure
           ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
-          : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
+          : missingAiScannerProof
+            ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. AI scanner work requires scanner-specific proof before claiming completion. Invoke the live scanner route/API with a real product text/photo payload (or report the exact provider/API blocker) and capture LIVE_AI_SCANNER_OK with app.aiScanner/scanner API evidence plus returned productName/decision/confidence/pricing fields. Generic check/build/browser-smoke evidence is not enough."
+            : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -966,15 +969,39 @@ export function requiresAppFactoryVerification(messages: DriverMessage[], finalT
   const mentionsGeneratedAppWork = /\b(scaffold|scaffolded|generated app|generate(d)?\s+(a\s+)?(full-stack|web|app)|jeriko\s+create|create\s+web-static|create\s+web-db-user|web-static|web-db-user)\b/.test(combined);
   const mentionsExistingWebAppImplementation = /\b(existing\s+(react|vite|tailwind|vercel|web)\s+(site|app)|react\s*\+\s*vite|vite\s*\+\s*tailwind|vercel\s+(site|app|preview)|programmatic\s+local\s+seo|local\s+seo\s+architecture|preview\s+deploy(?:ed|ment)?)\b/.test(combined)
     && /\b(add|build|implement|update|modify|fix|deploy(?:ed)?|created?|committed?|verified)\b/.test(combined);
+  const mentionsProductAppImplementation = /\b(wire|connect|hook up|integrate|add|build|implement|update|modify|fix|repair)\b[\s\S]{0,180}\b(ai|scanner|inventory|dashboard|orders?|sourcing|finance|calculator|workflow|app)\b/.test(combined)
+    && /\b(app|scanner|inventory|dashboard|orders?|sourcing|finance|calculator|workflow)\b/.test(combined);
   const explicitlyReadOnly = /\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(combined);
   const explicitlyNotAppBuilder = /\b(no scaffold|do not scaffold|not generated)\b/.test(combined);
-  return (mentionsGeneratedAppWork && !explicitlyNotAppBuilder) || (mentionsExistingWebAppImplementation && !explicitlyReadOnly);
+  return (mentionsGeneratedAppWork && !explicitlyNotAppBuilder) || ((mentionsExistingWebAppImplementation || mentionsProductAppImplementation) && !explicitlyReadOnly);
 }
 
 export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
   if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages) || !hasLocalhostPreviewEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
+  if (requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages)) return false;
   return true;
+}
+
+function requiresAiScannerVerification(messages: DriverMessage[]): boolean {
+  const text = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n").toLowerCase();
+  return /\b(wire|connect|hook up|integrate|add|build|implement|update|modify|fix|repair)\b[\s\S]{0,180}\b(ai|openai|llm|vision)\b[\s\S]{0,180}\bscanner\b/.test(text)
+    || /\bscanner\b[\s\S]{0,180}\b(ai|openai|llm|vision)\b/.test(text);
+}
+
+function hasAiScannerEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    if (/LIVE_AI_SCANNER_OK/i.test(text)
+      && /\b(app\.aiScanner|aiScanner|scanner route|scanner api|called)\b/i.test(text)
+      && /\b(productName|decision|confidence|estimatedSalePrice|netProfit|analysis result|response returned)\b/i.test(text)) return true;
+    const parsed = parseToolResultJson(text);
+    const haystack = JSON.stringify(parsed ?? {}).toLowerCase();
+    return /aiscanner|scanner/.test(haystack)
+      && /productname|decision|confidence|estimatedsaleprice|netprofit/.test(haystack)
+      && /ok"?\s*:?\s*true|success/.test(haystack);
+  });
 }
 
 export function requiresExplicitDeliverableVerification(messages: DriverMessage[], finalText: string): boolean {
@@ -1047,7 +1074,12 @@ function extractRequestedGrepPhrases(messages: DriverMessage[]): string[] {
 }
 
 export function requiresContentStructureVerification(messages: DriverMessage[]): boolean {
-  const combined = messages.map((msg) => messageText(msg)).join("\n").toLowerCase();
+  const combined = messages
+    .filter((msg) => msg.role === "user")
+    .map((msg) => messageText(msg))
+    .filter((text) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY/i.test(text))
+    .join("\n")
+    .toLowerCase();
   const contentWork = /\b(generate|write|rewrite|replace|populate|add|improve|update)\b[\s\S]{0,160}\b(content|copy|paragraph|page copy|seo copy|service pages?|city pages?|location pages?|local seo pages?)\b/.test(combined)
     || /\b(service pages?|city pages?|location pages?|local seo pages?)\b[\s\S]{0,160}\b(content|copy|paragraph|section|real content)\b/.test(combined);
   const existingWebApp = /\b(react|vite|tailwind|vercel|website|web app|site|local seo|programmatic seo)\b/.test(combined);

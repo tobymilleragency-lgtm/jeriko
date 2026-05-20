@@ -316,6 +316,31 @@ describe("create command templates", () => {
     }
   });
 
+  it("prerender script gives short project names crawlable titles and filters Tailwind class strings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-prerender-short-title-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "dist", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { build: "vite build && esbuild server/index.ts --outdir=dist" } }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html lang="en"><head><title>Smoke</title></head><body><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), 'export default function App(){return <div/>}\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), 'export default function Home(){return <main className="min-h-screen bg-background text-foreground"><h1>Launch-ready web app</h1><p className="mt-3 leading-7 text-muted-foreground">Useful launch content for homeowners and search crawlers.</p></main>}\n');
+      expect(applyCrawlerPrerenderSupport(dir, "Smoke")).toBe(true);
+      fs.writeFileSync(path.join(dir, "dist", "public", "index.html"), '<html lang="en"><head><title>Smoke</title></head><body><div id="root"></div></body></html>');
+
+      const result = spawnSync(process.execPath, [path.join(dir, "scripts", "jeriko-prerender-seo.mjs")], { cwd: dir, encoding: "utf8" });
+      const html = fs.readFileSync(path.join(dir, "dist", "public", "index.html"), "utf8");
+
+      expect(result.status).toBe(0);
+      expect(html).toContain("<title>Smoke Website</title>");
+      expect(html).toContain("Launch-ready web app");
+      expect(html).not.toContain("min-h-screen bg-background text-foreground");
+      expect(html).not.toContain("mt-3 leading-7 text-muted-foreground");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("can apply crawler prerender support idempotently", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-prerender-idempotent-"));
     try {

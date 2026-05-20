@@ -153,6 +153,19 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("jeriko ask --cwd /real");
   });
 
+  test("forced recap treats passing verify_app check/build gates as verified build evidence", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "check", ok: true, command: "pnpm run check", output: "tsc --noEmit" },
+      { name: "build", ok: true, command: "pnpm run build", output: "vite build ✓ built in 2.4s" },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true, output: "loaded http://127.0.0.1:4180/scanner" },
+    ] } });
+    const summary = buildNoProgressStopSummary([{ role: "tool", content: verifyTool }], "Agent loop exceeded maximum rounds (40).");
+    expect(summary).toContain("- pnpm check: passed");
+    expect(summary).toContain("- pnpm build: passed");
+    expect(summary).not.toContain("production build was not proven passing");
+  });
+
   test("builds a no-progress recovery prompt that does not claim stale verification after a later edit", () => {
     const prompt = buildNoProgressRecoveryPrompt([
       { role: "tool", content: "> relax-remodel-consulting check\n> tsc --noEmit\n" },
@@ -313,6 +326,75 @@ describe("App-factory final done gate", () => {
   test("content-heavy service and city page work requires structure verification", () => {
     expect(requiresContentStructureVerification([
       { role: "user", content: "Generate real content for the service pages and city pages on the existing Vite site" },
+    ])).toBe(true);
+  });
+
+  test("app-factory gate message does not poison non-content app work into content-structure loops", () => {
+    expect(requiresContentStructureVerification([
+      { role: "user", content: "Wire up the AI scanner and fix all issues in the generated web-db-user app" },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion." },
+    ])).toBe(false);
+  });
+
+  test("AI scanner implementation does not require service-city content structure evidence", () => {
+    const finalReport = "## Verification results\nDone. pnpm run check passed. pnpm run build passed. Scanner AI wired and browser smoke passed.";
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Wire up the AI to the scanner and fix all issue in the app" },
+    ], finalReport)).toBe(true);
+    expect(requiresContentStructureVerification([
+      { role: "user", content: "Wire up the AI to the scanner and fix all issue in the app" },
+    ])).toBe(false);
+  });
+
+  test("AI scanner work is not done from generic app gates without scanner-specific proof", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true, output: "loaded http://127.0.0.1:4180/scanner" },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Wire scanner AI" } });
+    const previewTool = "preview running at http://127.0.0.1:4180/scanner";
+
+    expect(hasAppFactoryDoneEvidence([
+      { role: "user", content: "Wire up the AI to the scanner and fix all issue in the app" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+    ])).toBe(false);
+  });
+
+  test("AI scanner work is done after a live scanner route/API proof", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true, output: "loaded http://127.0.0.1:4180/scanner" },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Wire scanner AI" } });
+    const previewTool = "preview running at http://127.0.0.1:4180/scanner";
+    const scannerProof = "LIVE_AI_SCANNER_OK: called app.aiScanner with product/photo payload; response returned productName, decision, confidence, estimatedSalePrice, and netProfit.";
+
+    expect(hasAppFactoryDoneEvidence([
+      { role: "user", content: "Wire up the AI to the scanner and fix all issue in the app" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+      { role: "tool", content: scannerProof },
     ])).toBe(true);
   });
 
