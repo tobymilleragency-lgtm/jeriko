@@ -257,6 +257,13 @@ export const command: CommandHandler = {
       if (!gate.ok) return failGate(dir, profile, gates, gate);
     }
 
+    const testCommand = detectScriptCommand(dir, "test");
+    if (testCommand) {
+      const gate = runGate("test", testCommand, dir);
+      gates.push(gate);
+      if (!gate.ok) return failGate(dir, profile, gates, gate);
+    }
+
     const buildCommand = projectState?.commands?.build || detectScriptCommand(dir, "build");
     if (buildCommand) {
       const gate = runGate("build", buildCommand, dir);
@@ -301,8 +308,11 @@ export const command: CommandHandler = {
     }
 
     const finalDependencyStatus = getDependencyStatus(dir);
-    const finalProjectState = projectState ? recordSuccessfulVerification(dir, projectState, profile, gates) : projectState;
-    ok({ directory: dir, profile, projectState: finalProjectState, dependencyStatus: finalDependencyStatus, gates });
+    const skippedRequiredGates = skippedRequiredVerificationGates(projectState, { skipStart, skipBrowser });
+    const finalProjectState = projectState && skippedRequiredGates.length === 0
+      ? recordSuccessfulVerification(dir, projectState, profile, gates, buildVerifyCommand(dir, parsed.positional.slice(1), parsed.flags))
+      : projectState;
+    ok({ directory: dir, profile, projectState: finalProjectState, dependencyStatus: finalDependencyStatus, gates, skippedRequiredGates });
   },
 };
 
@@ -337,7 +347,35 @@ export function inferAppProfile(dir: string): AppProfile {
   return "web-static";
 }
 
-function recordSuccessfulVerification(dir: string, projectState: ProjectState, profile: AppProfile, gates: VerificationGate[]): ProjectState {
+function skippedRequiredVerificationGates(projectState: ProjectState | null, options: { skipStart: boolean; skipBrowser: boolean }): string[] {
+  const required = projectState?.verification?.requiredGates ?? [];
+  const skipped = new Set<string>();
+  if (options.skipStart) {
+    skipped.add("start_route");
+    skipped.add("browser_smoke");
+  } else if (options.skipBrowser) {
+    skipped.add("browser_smoke");
+  }
+  return required.filter((gate) => skipped.has(gate));
+}
+
+function buildVerifyCommand(dir: string, extraPositionals: string[], flags: Record<string, unknown>): string {
+  const parts = ["jeriko", "verify-app", shellQuote(dir)];
+  for (const positional of extraPositionals) parts.push(shellQuote(String(positional)));
+  for (const [key, value] of Object.entries(flags)) {
+    if (value === false || value === undefined || value === null) continue;
+    parts.push(`--${key}`);
+    if (value !== true) parts.push(shellQuote(String(value)));
+  }
+  return parts.join(" ");
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function recordSuccessfulVerification(dir: string, projectState: ProjectState, profile: AppProfile, gates: VerificationGate[], command: string): ProjectState {
   const slimGates = gates.map((gate) => ({
     name: gate.name,
     ok: gate.ok,
@@ -352,7 +390,7 @@ function recordSuccessfulVerification(dir: string, projectState: ProjectState, p
         ok: true,
         profile,
         completedAt: new Date().toISOString(),
-        command: `jeriko verify-app ${dir}`,
+        command,
         gates: slimGates,
         sourceFingerprint: computeSourceFingerprint(dir),
       },

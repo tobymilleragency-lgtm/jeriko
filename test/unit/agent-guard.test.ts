@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -85,8 +85,20 @@ describe("Final report detection", () => {
     expect(isFinalAssistantReport(`## Verified fixed now\n- Done.\n\n## Exact evidence\n- pnpm check passed\n- pnpm build passed`)).toBe(true);
   });
 
+  test("detects broad completion claims without requiring a report heading", () => {
+    expect(isCompletionClaim("Done — I built the app and it is ready for review.")).toBe(true);
+    expect(isCompletionClaim("All done. The generated app is complete and ready.")).toBe(true);
+  });
+
   test("does not treat ordinary progress text as final", () => {
     expect(isFinalAssistantReport("I will run pnpm build next after checking the file.")).toBe(false);
+    expect(isCompletionClaim("I will run pnpm build next after checking the file.")).toBe(false);
+  });
+
+  test("treats structured ok:false tool output as an agent error", () => {
+    expect(inferToolResultIsError(JSON.stringify({ ok: false, error: "boom" }))).toBe(true);
+    expect(inferToolResultIsError(JSON.stringify({ ok: true, data: { value: 1 } }))).toBe(false);
+    expect(inferToolResultIsError("Command timed out after 500ms")).toBe(true);
   });
 });
 
@@ -173,6 +185,27 @@ describe("App-factory final done gate", () => {
     expect(requiresAppFactoryVerification([
       { role: "user", content: "create web-db-user app" },
     ], finalReport)).toBe(true);
+  });
+
+  test("requires verify_app evidence for natural completion claims on generated apps", () => {
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Create a generated web app from scratch" },
+    ], "Done — I built the app and it is ready for review.")).toBe(true);
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Build a web-static app for a roofing company" },
+    ], "All done. The generated app is complete and ready.")).toBe(true);
+  });
+
+  test("does not require app-factory evidence for non-final progress text", () => {
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Create a generated web app from scratch" },
+    ], "I will run pnpm build next after checking the file.")).toBe(false);
+  });
+
+  test("requires app-factory evidence for natural completion claims on existing web app updates", () => {
+    expect(requiresAppFactoryVerification([
+      { role: "user", content: "Update the existing React + Vite site" },
+    ], "Done — the site updates are complete and ready for review.")).toBe(true);
   });
 
   test("recognizes passing verify_app evidence with all factory gates", () => {

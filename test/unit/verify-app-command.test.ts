@@ -893,6 +893,54 @@ describe("verify-app command", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("does not record skipped required browser gates as last successful verification", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-skip-browser-state-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "skip-browser-state" }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "skip-browser-state",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/" },
+        verification: { requiredGates: ["start_route", "browser_smoke"] },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-start", "--skip-browser"]);
+      const state = JSON.parse(fs.readFileSync(path.join(dir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(result.ok).toBe(true);
+      expect(result.data.skippedRequiredGates).toEqual(["start_route", "browser_smoke"]);
+      expect(state.verification.lastSuccessfulVerification).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs package test scripts as a first-class verification gate", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-test-gate-"));
+    try {
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "test-gate",
+        scripts: { test: "node -e \"process.exit(7)\"" },
+      }, null, 2));
+
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
+
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERIFY_GATE");
+      expect(result.failedGate.name).toBe("test");
+      expect(result.failedGate.status).toBe(7);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function writeCrawlerRoute(dir: string, route: string, options: { body: string; robots?: string; canonical?: string; title?: string; description?: string }): void {

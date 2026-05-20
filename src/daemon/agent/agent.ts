@@ -482,6 +482,7 @@ export async function* runAgent(
               args.__jeriko_generated_copy_edit_confirmation = GENERATED_COPY_EDIT_CONFIRMATION;
             }
             result = await tool.execute(args);
+            if (inferToolResultIsError(result)) isError = true;
           } catch (err) {
             result = err instanceof Error ? err.message : String(err);
             isError = true;
@@ -960,7 +961,7 @@ function buildNotDoneList(
 }
 
 export function requiresAppFactoryVerification(messages: DriverMessage[], finalText: string): boolean {
-  if (!isFinalAssistantReport(finalText)) return false;
+  if (!isFinalAssistantReport(finalText) && !isCompletionClaim(finalText)) return false;
   const combined = [...messages.map((msg) => messageText(msg)), finalText].join("\n").toLowerCase();
   const mentionsGeneratedAppWork = /\b(scaffold|scaffolded|generated app|generate(d)?\s+(a\s+)?(full-stack|web|app)|jeriko\s+create|create\s+web-static|create\s+web-db-user|web-static|web-db-user)\b/.test(combined);
   const mentionsExistingWebAppImplementation = /\b(existing\s+(react|vite|tailwind|vercel|web)\s+(site|app)|react\s*\+\s*vite|vite\s*\+\s*tailwind|vercel\s+(site|app|preview)|programmatic\s+local\s+seo|local\s+seo\s+architecture|preview\s+deploy(?:ed|ment)?)\b/.test(combined)
@@ -977,7 +978,7 @@ export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
 }
 
 export function requiresExplicitDeliverableVerification(messages: DriverMessage[], finalText: string): boolean {
-  if (!isFinalAssistantReport(finalText)) return false;
+  if (!isFinalAssistantReport(finalText) && !isCompletionClaim(finalText)) return false;
   const combined = [...messages.map((msg) => messageText(msg)), finalText].join("\n");
   const lower = combined.toLowerCase();
   const explicitlyReadOnly = /\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(lower);
@@ -1117,6 +1118,29 @@ export function isFinalAssistantReport(text: string): boolean {
   const hasDoneSignal = /\b(done|completed|verified|passes|passed)\b/i.test(text);
   const hasVerification = /\b(pnpm|bun|npm)\s+(run\s+)?(check|build|test)\b|\btsc\s+--noemit\b|\bbuild\s+passed\b/i.test(text);
   return hasReportHeading && hasDoneSignal && hasVerification;
+}
+
+export function isCompletionClaim(text: string): boolean {
+  const normalized = text.toLowerCase().trim();
+  if (!normalized) return false;
+  if (/\b(i will|i'll|next i|going to|need to|still need|not done|not complete|working on|in progress)\b/i.test(normalized)) return false;
+  return /\b(done|all done|complete|completed|finished|ready|ready for review|built the app|implemented|fixed|verified|shipped|deployed|all set)\b/i.test(normalized);
+}
+
+export function inferToolResultIsError(result: string): boolean {
+  const trimmed = result.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") {
+      if ((parsed as any).ok === false) return true;
+      if ((parsed as any).error && (parsed as any).ok !== true) return true;
+      if ((parsed as any).status === "error" || (parsed as any).status === "failed") return true;
+    }
+  } catch {
+    // Non-JSON tool output is common; fall through to conservative textual markers.
+  }
+  return /\b(command timed out|failed gate|errorcode|exited with code [1-9]|agent loop exceeded maximum rounds)\b/i.test(trimmed);
 }
 
 /**

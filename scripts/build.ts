@@ -114,7 +114,6 @@ const STATIC_EXTERNALS = [
   "link-preview-js",
   "jimp",
   "sharp",
-  "playwright-core",
   "electron",
 ];
 
