@@ -295,6 +295,25 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails crawler HTML scan when prerendered fallback leaks source code", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-crawler-code-leak-"));
+    try {
+      writeCrawlerRoute(dir, "/", {
+        body: '<h1>Launch Site</h1><p>Visible customer-facing content.</p><p>react\"; import from</p><p>const phone = \"918-555-0198\";</p><p>/images/example-roof.jpg</p>',
+      });
+      writeCrawlerSitemap(dir, ["/"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("leak source code or asset constants");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails crawler HTML scan for empty SPA shells", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-empty-shell-"));
     try {

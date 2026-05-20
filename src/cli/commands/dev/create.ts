@@ -971,7 +971,7 @@ function extractPageContent(route) {
   const candidates = [];
 
   for (const match of text.matchAll(/>([^<>{}][^<>{}]*)</g)) pushClean(candidates, match[1]);
-  for (const match of text.matchAll(/["'\`](.{24,260}?)["'\`]/gs)) pushClean(candidates, match[1]);
+  for (const match of text.matchAll(/["']([^"'\n]{24,260})["']/g)) pushClean(candidates, match[1]);
 
   const paragraphs = uniqueStrings(candidates)
     .filter((value) => !looksLikeCode(value))
@@ -1000,6 +1000,12 @@ function uniqueStrings(values) {
 
 function looksLikeCode(value) {
   return /^(className|function|return|import|export|const|let|var)\\b/.test(value)
+    || /\\b(import|export|const|let|var)\\s+[A-Za-z_$][\\w$]*\\b/.test(value)
+    || /;\\s*import\\s+from\\b/.test(value)
+    || /^\\/?(?:images|assets)\\//.test(value)
+    || /\\.(?:png|jpe?g|webp|svg|gif)\\b/i.test(value)
+    || /^(tel:|mailto:|https?:)/i.test(value)
+    || /(^[,;:]|["'],|:\\s*$)/.test(value)
     || /[{}<>]=?|=>|\\.tsx|@\\//.test(value)
     || value.includes("--")
     || value.length > 500;

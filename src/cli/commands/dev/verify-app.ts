@@ -1026,7 +1026,25 @@ function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string):
   if (!hasCrawlerBody(html)) {
     issues.push(`Sitemap route lacks crawler-visible body content: ${routePath}`);
   }
+  issues.push(...auditCrawlerCodeLeaks(routePath, html));
   return issues;
+}
+
+function auditCrawlerCodeLeaks(routePath: string, html: string): string[] {
+  const bodyText = stripHtml(html);
+  const leaks = [
+    /\breact["']?;\s*import\s+from\b/i,
+    /\bimport\s+from\b/i,
+    /\bconst\s+[A-Za-z_$][\w$]*\s*=/,
+    /\b(?:import|export)\s+[A-Za-z_$*{]/,
+    /\b(?:client\/src|\.tsx|\.jsx)\b/i,
+    /[,;]\s*[A-Za-z_$][\w$]*\s*:/,
+    /["'`],\s*["'`]/,
+    /\/(?:images|assets)\/[^\s<]+\.(?:png|jpe?g|webp|svg|gif)\b/i,
+  ];
+  const hit = leaks.find((pattern) => pattern.test(bodyText));
+  if (!hit) return [];
+  return [`Sitemap route crawler-visible body appears to leak source code or asset constants: ${routePath}`];
 }
 
 function auditLaunchTracking(routePath: string, html: string): { checked: number; issues: string[] } {
