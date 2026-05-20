@@ -1067,12 +1067,12 @@ export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
       const parsed = JSON.parse(text);
       const gates = parsed?.data?.gates;
       if (parsed?.ok === true && Array.isArray(gates)) {
-        const required = ["placeholder_scan", "unsafe_env_scan", "install", "check", "build", "start_route", "browser_smoke"];
+        const required = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "install", "check", "build", "start_route", "browser_smoke"];
         if (required.every((name) => gates.some((gate: any) => gate?.name === name && gate?.ok === true))) return true;
       }
     } catch {
       // Fall back to text detection for older captured tool outputs.
-      const hasAllGateNames = ["placeholder_scan", "install", "check", "build", "start_route", "browser_smoke"].every((name) => text.includes(`"${name}"`));
+      const hasAllGateNames = ["placeholder_scan", "unsafe_env_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "install", "check", "build", "start_route", "browser_smoke"].every((name) => text.includes(`"${name}"`));
       if (hasAllGateNames && /"ok"\s*:\s*true/.test(text) && !/"ok"\s*:\s*false/.test(text)) return true;
     }
   }

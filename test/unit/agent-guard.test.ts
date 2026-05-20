@@ -168,6 +168,9 @@ describe("App-factory final done gate", () => {
     const tool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },
@@ -192,6 +195,9 @@ describe("App-factory final done gate", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },
@@ -208,6 +214,9 @@ describe("App-factory final done gate", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },
@@ -239,6 +248,9 @@ describe("App-factory final done gate", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },
@@ -257,6 +269,9 @@ describe("App-factory final done gate", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
       { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
       { name: "install", ok: true },
       { name: "check", ok: true },
       { name: "build", ok: true },

@@ -161,6 +161,45 @@ export const command: CommandHandler = {
       });
     }
 
+    const dbAuthWorkflowWiring = scanDbAuthWorkflowWiring(dir, profile);
+    gates.push({ name: "db_auth_workflow_wiring", ok: dbAuthWorkflowWiring.length === 0 });
+    if (dbAuthWorkflowWiring.length > 0) {
+      failWithDetails("Generated database app has contradictory auth/database workflow wiring. Do not show live-database copy or expose throwing mutation flows unless a visible sign-in/setup path and real persistence are wired.", {
+        errorCode: "E_DB_AUTH_WORKFLOW_WIRING",
+        directory: dir,
+        profile,
+        projectState,
+        dbAuthWorkflowWiring,
+        gates,
+      });
+    }
+
+    const mockDataImports = scanMockDataImports(dir);
+    gates.push({ name: "mock_data_import_scan", ok: mockDataImports.length === 0 });
+    if (mockDataImports.length > 0) {
+      failWithDetails("Generated production app pages import mock/static business data. Wire pages to generated backend/database state or clearly keep the app in a demo-only profile.", {
+        errorCode: "E_MOCK_DATA_IMPORTS",
+        directory: dir,
+        profile,
+        projectState,
+        mockDataImports,
+        gates,
+      });
+    }
+
+    const providerConfigDrift = scanMisleadingProviderConfig(dir);
+    gates.push({ name: "provider_config_scan", ok: providerConfigDrift.length === 0 });
+    if (providerConfigDrift.length > 0) {
+      failWithDetails("Generated app has misleading AI-provider setup errors or env names. Error messages must name the actual configured env key so users can fix provider setup.", {
+        errorCode: "E_PROVIDER_CONFIG_DRIFT",
+        directory: dir,
+        profile,
+        projectState,
+        providerConfigDrift,
+        gates,
+      });
+    }
+
     const dependencyStatus = getDependencyStatus(dir);
     const mustInstallBeforeVerification = dependencyStatus.packageJson && !dependencyStatus.nodeModules;
     const shouldRunInstall = !skipInstall || mustInstallBeforeVerification;
@@ -386,6 +425,122 @@ export function scanPrimaryLocalStoragePersistence(dir: string): RealnessHit[] {
         line: i + 1,
         token: line.trim().slice(0, 180),
         reason: "Business workflow data is stored in localStorage. Use backend/database persistence for orders, inventory, listings, shipments, customers, expenses, and similar core entities.",
+      });
+    }
+  });
+  return hits;
+}
+
+export function scanDbAuthWorkflowWiring(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const hits: RealnessHit[] = [];
+  let hasSetupRequiredState = false;
+  let hasThrowingDbMutations = false;
+  let hasVisibleSetupSurface = false;
+  let hasVisibleAuthSurface = false;
+
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!normalized.includes("/client/src/")) return;
+    if (normalized.includes("/client/src/_core/") || normalized.includes("/client/src/components/ui/")) return;
+
+    if (/dataMode\s*:\s*[^\n]*setup_required|setup_required|setupMessage/.test(content)) {
+      hasSetupRequiredState = true;
+    }
+    if (/failUntilDatabase|requires sign-in and a configured DATABASE_URL/.test(content)) {
+      hasThrowingDbMutations = true;
+    }
+    if (/state\.setupMessage|setupMessage|state\.dataMode|dataMode/.test(content) && /Alert|banner|Sign in|DATABASE_URL|setup_required|setup required/i.test(content)) {
+      hasVisibleSetupSurface = true;
+    }
+    if (/getLoginUrl|useAuth|Sign in|Login|logout|isAuthenticated/.test(content)) {
+      hasVisibleAuthSurface = true;
+    }
+
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (/Live database/.test(line) && /AppShell|layout|header|badge|span|div/i.test(normalized + line) && (hasSetupRequiredState || file.includes("AppShell"))) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: "Live database",
+          reason: "Do not hard-code live-database status in a database app that can also be unauthenticated/setup-required. Render the real data mode and setup/sign-in state instead.",
+        });
+      }
+      if (/saveScan\s*:\s*\([^=]*\)\s*=>\s*\(\{/.test(line)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: "saveScan",
+          reason: "Scan decisions are returned from a function but not persisted. Save scan workflows must update durable app state/database or be clearly disabled until setup is complete.",
+        });
+      }
+    }
+  });
+
+  if ((hasSetupRequiredState || hasThrowingDbMutations) && !hasVisibleSetupSurface) {
+    hits.push({
+      file: dir,
+      line: 0,
+      token: "setup_required",
+      reason: "The app tracks setup-required/database-unavailable state but does not surface it in user-facing UI before mutation buttons are usable.",
+    });
+  }
+  if (hasThrowingDbMutations && !hasVisibleAuthSurface) {
+    hits.push({
+      file: dir,
+      line: 0,
+      token: "auth_setup",
+      reason: "Database mutations can throw for unauthenticated users, but no visible login/setup flow is wired into the active client app.",
+    });
+  }
+  return hits;
+}
+
+export function scanMockDataImports(dir: string): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!normalized.includes("/client/src/")) return;
+    if (normalized.includes("/components/ui/") || normalized.includes("/test") || normalized.includes(".test.")) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (!/from\s+["'][^"']*(mockData|mock-data|seedData|demoData)[^"']*["']/.test(line)) continue;
+      hits.push({
+        file,
+        line: i + 1,
+        token: line.trim().slice(0, 180),
+        reason: "Production app page imports mock/static business data instead of using generated backend/database state.",
+      });
+    }
+  });
+  return hits;
+}
+
+export function scanMisleadingProviderConfig(dir: string): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  let usesBuiltInForgeKey = false;
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!/\/(server|src)\//.test(normalized) && !normalized.endsWith("/env.ts") && !normalized.endsWith("/llm.ts")) return;
+    if (/BUILT_IN_FORGE_API_KEY|forgeApiKey|forgeApiUrl/.test(content)) usesBuiltInForgeKey = true;
+  });
+
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!/\/(server|src)\//.test(normalized) && !normalized.endsWith("/llm.ts")) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (!/OPENAI_API_KEY is not configured/.test(line)) continue;
+      if (!usesBuiltInForgeKey) continue;
+      hits.push({
+        file,
+        line: i + 1,
+        token: "OPENAI_API_KEY is not configured",
+        reason: "Template reads BUILT_IN_FORGE_API_KEY/forgeApiKey but tells users OPENAI_API_KEY is missing. Error text must name the real env key.",
       });
     }
   });
