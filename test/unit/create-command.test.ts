@@ -130,6 +130,7 @@ describe("create command templates", () => {
       expect(state.verification.requiredGates).toContain("browser_smoke");
       expect(state.verification.requiredGates).toContain("primary_persistence_scan");
       expect(state.verification.requiredGates).toContain("production_artifact_scan");
+      expect(state.verification.requiredGates).toContain("vercel_api_packaging_scan");
       expect(state.verification.requiredGates).toContain("app_spec_contract");
       expect(state.verification.requiredGates).toContain("forbidden_integration_scan");
       expect(state.verification.requiredGates).toContain("app_spec_verifier");
@@ -220,6 +221,8 @@ describe("create command templates", () => {
       expect(fs.existsSync(scriptPath)).toBe(true);
 
       const script = fs.readFileSync(scriptPath, "utf8");
+      const syntaxCheck = spawnSync(process.execPath, ["--check", scriptPath], { cwd: projectDir, encoding: "utf8" });
+      expect(syntaxCheck.status).toBe(0);
       expect(script).toContain("data-jeriko-prerender");
       expect(script).toContain("robots.txt");
       expect(script).toContain("sitemap.xml");

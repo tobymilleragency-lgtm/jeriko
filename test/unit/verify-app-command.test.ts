@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -254,6 +254,59 @@ describe("verify-app command", () => {
       fs.writeFileSync(path.join(dir, "client", "src", "pages", "Dashboard.tsx"), 'export default function Dashboard({ health }){ const statusLabel = health?.aiConfigured ? "AI connected" : "AI setup required"; return <main><p>{statusLabel}</p></main>}\n');
 
       const hits = scanMisleadingReadinessClaims(dir, "web-db-user");
+
+      expect(hits).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when Vercel API handlers import production app/static serving", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-vercel-api-app-"));
+    try {
+      fs.mkdirSync(path.join(dir, "api"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"vercel-api-app","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "api", "index.ts"), 'import { createProductionApp } from "../server/_core/app.ts"; export default createProductionApp();\n');
+      fs.writeFileSync(path.join(dir, "api", "[...path].ts"), 'import { createProductionApp } from "../server/_core/app.ts"; export default createProductionApp();\n');
+
+      const hits = scanVercelApiPackaging(dir, "web-db-user");
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install"]);
+
+      expect(hits.map((hit) => hit.token)).toContain("createProductionApp");
+      expect(hits.map((hit) => hit.token)).toContain("../server/_core/app.ts");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERCEL_API_PACKAGING");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when bundled Vercel API handlers include Vite or Rollup runtime dependencies", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-vercel-api-vite-"));
+    try {
+      fs.mkdirSync(path.join(dir, "api"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"vercel-api-vite","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "api", "index.js"), 'import { createServer as createViteServer } from "vite"; import rollup from "rollup"; export default {};\n');
+
+      const hits = scanVercelApiPackaging(dir, "web-db-user");
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install"]);
+
+      expect(hits.map((hit) => hit.token)).toContain("vite");
+      expect(hits.map((hit) => hit.token)).toContain("rollup");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_VERCEL_API_PACKAGING");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Vercel API handlers that expose API/TRPC only and leave static serving to Vercel", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-vercel-api-safe-"));
+    try {
+      fs.mkdirSync(path.join(dir, "api"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "api", "index.js"), 'import express from "express"; import { appRouter } from "../server/routers"; const app = express(); app.get("/api/health", (_req, res) => res.json({ ok: true })); app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext })); export default app;\n');
+
+      const hits = scanVercelApiPackaging(dir, "web-db-user");
 
       expect(hits).toEqual([]);
     } finally {

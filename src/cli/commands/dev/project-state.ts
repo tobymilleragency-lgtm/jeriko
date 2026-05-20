@@ -146,7 +146,9 @@ export function buildProjectState(args: {
       ...(fullStack ? { health: "/api/health" } : {}),
     },
     verification: {
-      requiredGates: [...REQUIRED_APP_FACTORY_GATES],
+      requiredGates: fullStack
+        ? [...REQUIRED_APP_FACTORY_GATES, "vercel_api_packaging_scan"]
+        : [...REQUIRED_APP_FACTORY_GATES],
     },
   };
 }

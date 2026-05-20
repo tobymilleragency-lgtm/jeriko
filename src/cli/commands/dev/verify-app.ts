@@ -247,6 +247,21 @@ export const command: CommandHandler = {
       });
     }
 
+    if (profile === "web-db-user") {
+      const vercelApiPackaging = scanVercelApiPackaging(dir, profile);
+      gates.push({ name: "vercel_api_packaging_scan", ok: vercelApiPackaging.length === 0 });
+      if (vercelApiPackaging.length > 0) {
+        failWithDetails("Generated database app has Vercel API handlers that are not production-safe. API functions must be bundled JS, expose API/TRPC/OAuth only, and must not import Vite/static serving.", {
+          errorCode: "E_VERCEL_API_PACKAGING",
+          directory: dir,
+          profile,
+          projectState,
+          vercelApiPackaging,
+          gates,
+        });
+      }
+    }
+
     const duplicateSectionImages = scanDuplicateSectionImages(dir);
     gates.push({ name: "image_uniqueness_scan", ok: duplicateSectionImages.length === 0 });
     if (duplicateSectionImages.length > 0) {
@@ -823,6 +838,71 @@ export function scanMisleadingReadinessClaims(dir: string, profile: AppProfile =
       }
     }
   });
+  return hits;
+}
+
+export function scanVercelApiPackaging(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const apiDir = join(dir, "api");
+  if (!existsSync(apiDir)) return [];
+
+  const hits: RealnessHit[] = [];
+  let hasHealthRoute = false;
+  const forbiddenPatterns: Array<{ pattern: RegExp; token: string; reason: string }> = [
+    {
+      pattern: /\.\.\/server\/_core\/app(?:\.ts)?|server\/_core\/app(?:\.ts)?/,
+      token: "../server/_core/app.ts",
+      reason: "Vercel API handlers must not import the production app/static wrapper; bundle an API-only Express/TRPC handler instead.",
+    },
+    {
+      pattern: /\bcreateProductionApp\b/,
+      token: "createProductionApp",
+      reason: "createProductionApp pulls static serving into the serverless API bundle. API functions must expose only API/TRPC/OAuth routes.",
+    },
+    {
+      pattern: /server\/_core\/vite|\.\/vite|\.\.\/server\/_core\/vite/,
+      token: "server/_core/vite",
+      reason: "Vite/static serving code must not be imported by Vercel API functions.",
+    },
+    {
+      pattern: /from\s+["']vite["']|require\(["']vite["']\)|createViteServer/,
+      token: "vite",
+      reason: "Vite/Rollup runtime dependencies do not belong in serverless API handlers.",
+    },
+    {
+      pattern: /from\s+["']rollup["']|require\(["']rollup["']\)|@rollup\/rollup-/,
+      token: "rollup",
+      reason: "Rollup optional native packages can be absent in Vercel functions. Keep Rollup out of API handlers.",
+    },
+    {
+      pattern: /@vitejs\/plugin-react|@tailwindcss\/vite/,
+      token: "vite plugin",
+      reason: "Build-time Vite plugins must not be bundled into API serverless functions.",
+    },
+  ];
+
+  walkTextFiles(apiDir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!/\.(?:ts|tsx|js|mjs|cjs)$/.test(normalized)) return;
+    if (/\/api\//.test(normalized) && content.includes("/api/health")) hasHealthRoute = true;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      for (const check of forbiddenPatterns) {
+        if (!check.pattern.test(line)) continue;
+        hits.push({ file, line: i + 1, token: check.token, reason: check.reason });
+      }
+    }
+  });
+
+  if (!hasHealthRoute) {
+    hits.push({
+      file: apiDir,
+      line: 0,
+      token: "/api/health",
+      reason: "Vercel API packaging must include a production-safe /api/health route so deploy smoke tests can prove the serverless API is wired.",
+    });
+  }
   return hits;
 }
 

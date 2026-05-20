@@ -971,7 +971,7 @@ function extractPageContent(route) {
   const candidates = [];
 
   for (const match of text.matchAll(/>([^<>{}][^<>{}]*)</g)) pushClean(candidates, match[1]);
-  for (const match of text.matchAll(/["']([^"'\n]{24,260})["']/g)) pushClean(candidates, match[1]);
+  for (const match of text.matchAll(/["']([^"'\\n]{24,260})["']/g)) pushClean(candidates, match[1]);
 
   const paragraphs = uniqueStrings(candidates)
     .filter((value) => !looksLikeCode(value))
