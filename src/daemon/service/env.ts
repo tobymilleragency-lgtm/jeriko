@@ -19,6 +19,7 @@ const CAPTURED_KEYS: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
 
   // Jeriko
   "NODE_AUTH_SECRET",

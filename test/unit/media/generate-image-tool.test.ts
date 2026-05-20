@@ -78,8 +78,12 @@ describe("generate_image tool", () => {
   it("returns error JSON when no API key is set", async () => {
     const originalKey = process.env.OPENAI_API_KEY;
     const originalFalKey = process.env.FAL_KEY;
+    const originalGeminiKey = process.env.GEMINI_API_KEY;
+    const originalGoogleKey = process.env.GOOGLE_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.FAL_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
 
     try {
       const tool = getTool("generate_image")!;
@@ -89,6 +93,8 @@ describe("generate_image tool", () => {
     } finally {
       if (originalKey) process.env.OPENAI_API_KEY = originalKey;
       if (originalFalKey) process.env.FAL_KEY = originalFalKey;
+      if (originalGeminiKey) process.env.GEMINI_API_KEY = originalGeminiKey;
+      if (originalGoogleKey) process.env.GOOGLE_API_KEY = originalGoogleKey;
     }
   });
 

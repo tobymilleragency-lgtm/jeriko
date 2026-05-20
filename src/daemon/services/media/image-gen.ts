@@ -2,6 +2,7 @@
 //
 // Provider-agnostic interface for generating images from text prompts.
 // Currently supports:
+//   - "google"  → Imagen 4 / Gemini image via Google Gemini API
 //   - "fal"     → FLUX via FAL.ai
 //   - "openai"  → DALL-E 3 (via OpenAI Images API)
 //   - "auto"    → first available provider with API key set
@@ -56,6 +57,9 @@ const VALID_SIZES = new Set(["1024x1024", "1024x1792", "1792x1024"]);
 /** Valid DALL-E 3 styles. */
 const VALID_STYLES = new Set(["vivid", "natural"]);
 
+/** Google Imagen model used for premium production website-photo generation by default. */
+const DEFAULT_GOOGLE_MODEL = "imagen-4.0-ultra-generate-001";
+
 /** FAL model used for realistic website-photo generation by default. */
 const DEFAULT_FAL_MODEL = "fal-ai/flux/schnell";
 
@@ -81,6 +85,8 @@ export async function generateImage(
   const provider = resolveProvider(options.provider, config);
 
   switch (provider) {
+    case "google":
+      return generateGoogle(options, config);
     case "fal":
       return generateFal(options, config);
     case "openai":
@@ -88,7 +94,7 @@ export async function generateImage(
     default:
       throw new Error(
         `Image generation provider "${provider}" is not available. ` +
-        `Set FAL_KEY for FLUX or OPENAI_API_KEY for DALL-E 3.`,
+        `Set GEMINI_API_KEY or GOOGLE_API_KEY for Google Imagen, FAL_KEY for FLUX, or OPENAI_API_KEY for DALL-E 3.`,
       );
   }
 }
@@ -108,14 +114,65 @@ function resolveProvider(
   const configProvider = config?.provider ?? "auto";
   if (configProvider !== "auto") return configProvider;
 
-  // Auto-detect: prefer non-OpenAI image providers for realistic web assets.
+  // Auto-detect: prefer Google Imagen for realistic production website assets.
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return "google";
   if (process.env.FAL_KEY) return "fal";
   if (process.env.OPENAI_API_KEY) return "openai";
 
   throw new Error(
     "No image generation provider available. " +
-    "Set FAL_KEY for FLUX or OPENAI_API_KEY for DALL-E 3.",
+    "Set GEMINI_API_KEY or GOOGLE_API_KEY for Google Imagen, FAL_KEY for FLUX, or OPENAI_API_KEY for DALL-E 3.",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Google Imagen
+// ---------------------------------------------------------------------------
+
+async function generateGoogle(
+  options: ImageGenOptions,
+  config?: ImageGenConfig,
+): Promise<ImageGenResult> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY or GOOGLE_API_KEY not set — cannot generate images with Google Imagen");
+  }
+
+  const model = options.model || config?.defaultModel || DEFAULT_GOOGLE_MODEL;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:predict?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      instances: [{ prompt: options.prompt }],
+      parameters: {
+        sampleCount: 1,
+        aspectRatio: resolveGoogleAspectRatio(options.size, config?.defaultSize),
+      },
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Google Imagen error ${response.status}: ${errorText}`);
+  }
+
+  const result = (await response.json()) as {
+    predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }>;
+  };
+  const imageData = result.predictions?.[0];
+  if (!imageData?.bytesBase64Encoded) {
+    throw new Error("Google Imagen returned no image bytes");
+  }
+
+  const outputPath = join(tmpdir(), `jeriko-image-${randomUUID()}.png`);
+  const imageBytes = Buffer.from(imageData.bytesBase64Encoded, "base64");
+  writeFileSync(outputPath, imageBytes);
+  log.info(`Image generated: ${outputPath} (${(imageBytes.length / 1024).toFixed(0)}KB, Google Imagen ${model})`);
+
+  return { path: outputPath, provider: "google", model };
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +307,14 @@ function resolveStyle(explicit?: string, configDefault?: string): string {
   if (explicit && VALID_STYLES.has(explicit)) return explicit;
   if (configDefault && VALID_STYLES.has(configDefault)) return configDefault;
   return "vivid";
+}
+
+function resolveGoogleAspectRatio(explicit?: string, configDefault?: string): string {
+  const size = explicit || configDefault;
+  if (size === "1792x1024" || size === "16:9" || size === "landscape_16_9") return "16:9";
+  if (size === "1024x1792" || size === "9:16" || size === "portrait_16_9") return "9:16";
+  if (size === "1024x1024" || size === "1:1" || size === "square") return "1:1";
+  return "16:9";
 }
 
 function resolveFalImageSize(explicit?: string, configDefault?: string): string {

@@ -1,7 +1,7 @@
 // Tool — Image generation from text prompts.
 //
 // Provider-agnostic: delegates to the media/image-gen service which
-// supports FAL.ai FLUX and DALL-E 3 with auto-detection of available keys.
+// supports Google Imagen, FAL.ai FLUX, and DALL-E 3 with auto-detection of available keys.
 //
 // Generated images are saved to tmpdir. The channel router auto-detects
 // image file paths in tool results and sends them via sendPhoto().
@@ -74,7 +74,7 @@ export const generateImageTool: ToolDefinition = {
   id: "generate_image",
   name: "generate_image",
   description:
-    "Generate an image or realistic website photo from a text prompt using FAL.ai FLUX, DALL-E 3, or another configured provider. " +
+    "Generate an image or realistic website photo from a text prompt using Google Imagen, FAL.ai FLUX, DALL-E 3, or another configured provider. " +
     "Use this for website hero photos, service images, Open Graph cards, icons, mockups, and marketing assets. " +
     "For generated sites, pass output_path such as client/public/images/hero.png so the real file is saved inside the app and can be referenced by components. " +
     "Returns the local file path to the generated image. " +
@@ -98,12 +98,12 @@ export const generateImageTool: ToolDefinition = {
       },
       provider: {
         type: "string",
-        description: 'Image generation provider: "fal" (FAL.ai FLUX), "openai" (DALL-E 3), or "auto" (first available). Default: "auto".',
-        enum: ["auto", "fal", "openai"],
+        description: 'Image generation provider: "google" (Google Imagen), "fal" (FAL.ai FLUX), "openai" (DALL-E 3), or "auto" (first available). Default: "auto".',
+        enum: ["auto", "google", "fal", "openai"],
       },
       model: {
         type: "string",
-        description: 'Provider model override. For FAL default is "fal-ai/flux/schnell".',
+        description: 'Provider model override. Google default is "imagen-4.0-ultra-generate-001"; FAL default is "fal-ai/flux/schnell".',
       },
       output_path: {
         type: "string",

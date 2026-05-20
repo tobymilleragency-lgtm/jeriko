@@ -3,7 +3,7 @@
 // Tests generateImage(), resolveSize(), resolveStyle(), provider resolution,
 // DALL-E 3 API payload construction, image download, and file output.
 
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, unlinkSync } from "node:fs";
 
 describe("Image Generation Service — detailed", () => {
@@ -11,6 +11,16 @@ describe("Image Generation Service — detailed", () => {
   const originalKey = process.env.OPENAI_API_KEY;
   const originalBaseUrl = process.env.OPENAI_BASE_URL;
   const originalFalKey = process.env.FAL_KEY;
+  const originalGeminiKey = process.env.GEMINI_API_KEY;
+  const originalGoogleKey = process.env.GOOGLE_API_KEY;
+
+  beforeEach(() => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.FAL_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+  });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -20,6 +30,10 @@ describe("Image Generation Service — detailed", () => {
     else delete process.env.OPENAI_BASE_URL;
     if (originalFalKey) process.env.FAL_KEY = originalFalKey;
     else delete process.env.FAL_KEY;
+    if (originalGeminiKey) process.env.GEMINI_API_KEY = originalGeminiKey;
+    else delete process.env.GEMINI_API_KEY;
+    if (originalGoogleKey) process.env.GOOGLE_API_KEY = originalGoogleKey;
+    else delete process.env.GOOGLE_API_KEY;
   });
 
   // Helper to set up a mock that returns a successful DALL-E response
@@ -258,6 +272,83 @@ describe("Image Generation Service — detailed", () => {
     }) as typeof fetch;
   }
 
+  // ── Google Imagen ───────────────────────────────────────────────
+
+  function mockGoogleSuccess(opts?: {
+    captureBody?: (body: Record<string, unknown>) => void;
+    captureUrl?: (url: string) => void;
+  }) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("generativelanguage.googleapis.com")) {
+        if (opts?.captureUrl) opts.captureUrl(url);
+        if (opts?.captureBody && init?.body) {
+          opts.captureBody(JSON.parse(init.body as string));
+        }
+        return new Response(
+          JSON.stringify({
+            predictions: [{
+              bytesBase64Encoded: Buffer.from(new Uint8Array([0x89, 0x50, 0x4e, 0x47])).toString("base64"),
+              mimeType: "image/png",
+            }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+  }
+
+  it("generates an image through Google Imagen when GEMINI_API_KEY is available", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.FAL_KEY;
+    process.env.GEMINI_API_KEY = "test-google-key";
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> = {};
+
+    mockGoogleSuccess({
+      captureUrl: (url) => { capturedUrl = url; },
+      captureBody: (body) => { capturedBody = body; },
+    });
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    const result = await generateImage({ prompt: "premium contractor website hero photo", size: "1792x1024" });
+
+    expect(capturedUrl).toContain("generativelanguage.googleapis.com/v1beta/models/imagen-4.0-ultra-generate-001:predict");
+    expect(capturedUrl).toContain("key=test-google-key");
+    expect((capturedBody.instances as any[])[0].prompt).toBe("premium contractor website hero photo");
+    expect((capturedBody.parameters as Record<string, unknown>).aspectRatio).toBe("16:9");
+    expect(result.provider).toBe("google");
+    expect(result.model).toBe("imagen-4.0-ultra-generate-001");
+    expect(existsSync(result.path)).toBe(true);
+
+    try { unlinkSync(result.path); } catch {}
+  });
+
+  it("auto-detects google before fal and openai when all image keys are set", async () => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.FAL_KEY = "test-fal-key";
+    process.env.GOOGLE_API_KEY = "test-google-key";
+    let capturedUrl = "";
+
+    mockGoogleSuccess({ captureUrl: (url) => { capturedUrl = url; } });
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    const result = await generateImage({ prompt: "test" });
+
+    expect(capturedUrl).toContain("generativelanguage.googleapis.com");
+    expect(result.provider).toBe("google");
+    try { unlinkSync(result.path); } catch {}
+  });
+
+  it("explicit google provider fails clearly when no Google image key is set", async () => {
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+
+    const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
+    await expect(generateImage({ prompt: "test", provider: "google" })).rejects.toThrow("GEMINI_API_KEY or GOOGLE_API_KEY not set");
+  });
+
   // ── FAL.ai ──────────────────────────────────────────────────────
 
   it("generates an image through FAL when FAL_KEY is available", async () => {
@@ -328,6 +419,9 @@ describe("Image Generation Service — detailed", () => {
 
   it("throws when no provider is available (no API key)", async () => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FAL_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
 
     const { generateImage } = await import("../../../src/daemon/services/media/image-gen.js");
     await expect(generateImage({ prompt: "test" })).rejects.toThrow("No image generation provider");

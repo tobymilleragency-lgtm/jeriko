@@ -163,8 +163,8 @@ export interface TTSConfig {
 
 /** Image generation configuration. */
 export interface ImageGenConfig {
-  /** Provider: "fal" (FAL.ai FLUX), "openai" (DALL-E 3), "auto" (first available). Default: "auto". */
-  provider?: "fal" | "openai" | "auto";
+  /** Provider: "google" (Imagen 4), "fal" (FAL.ai FLUX), "openai" (DALL-E 3), "auto" (first available). Default: "auto". */
+  provider?: "google" | "fal" | "openai" | "auto";
   /** Default model for providers that support model selection (FAL default: fal-ai/flux/schnell). */
   defaultModel?: string;
   /** Default size: "1024x1024", "1024x1792", "1792x1024", "16:9", "9:16", "1:1". */
@@ -237,6 +237,8 @@ const DEFAULTS: JerikoConfig = {
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
       "FAL_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
       "NODE_AUTH_SECRET",
       "STRIPE_SECRET_KEY",
       "STRIPE_WEBHOOK_SECRET",
@@ -249,7 +251,6 @@ const DEFAULTS: JerikoConfig = {
       "AWS_SESSION_TOKEN",
       "DATABASE_URL",
       "REDIS_URL",
-      "GOOGLE_API_KEY",
       "WHATSAPP_TOKEN",
       "CLOUDFLARE_API_TOKEN",
       "VERCEL_TOKEN",
