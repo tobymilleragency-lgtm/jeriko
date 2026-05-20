@@ -796,6 +796,41 @@ describe("verify-app command", () => {
     }
   });
 
+  it("browser smoke ignores active current-page nav links before checking real workflow buttons", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-active-nav-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-active-nav",
+        scripts: { start: "node server.mjs" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.env.PORT || 0);
+        const html = '<!doctype html><html><body><div id="root"><a href="/scanner">Scan</a><button onclick="document.getElementById(\\'status\\').textContent=\\'order added\\'">Add Order</button><p id="status">idle</p></div></body></html>';
+        http.createServer((req, res) => {
+          if (req.url === '/api/health') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'text/html' });
+          res.end(html);
+        }).listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--browser-route", "/scanner", "--port", "4300"]);
+
+      expect(result.ok).toBe(true);
+      const browserGate = result.data.gates.find((gate: any) => gate.name === "browser_smoke");
+      expect(browserGate.ok).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("browser smoke fails when a visible Google OAuth button lands on redirect_uri_mismatch", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-google-oauth-"));
     try {

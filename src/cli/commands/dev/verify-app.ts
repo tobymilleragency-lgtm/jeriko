@@ -1496,18 +1496,24 @@ async function verifyGoogleOAuthButton(page: any, appUrl: string, dir: string): 
 }
 
 async function verifyWorkflowButtonMutation(page: any): Promise<string | null> {
-  const candidates = await page.locator("button, [role='button'], a[href]").evaluateAll((elements: any[]) => {
+  const currentUrl = page.url();
+  const candidates = await page.locator("button, [role='button'], a[href]").evaluateAll((elements: any[], currentUrl: string) => {
     const workflowPattern = /\b(add|save|create|submit|send|order|checkout|book|schedule|upload|import|scan|approve|complete|mark|delete|remove|update|generate)\b/i;
     const ignorePattern = /\b(theme|menu|nav|close|cancel|back|continue with google|sign in with google|login with google)\b/i;
     return elements
-      .map((element, index) => ({
-        index,
-        text: (element.textContent || "").replace(/\s+/g, " ").trim(),
-        disabled: element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true",
-      }))
+      .map((element, index) => {
+        const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+        const href = String((element as { href?: string }).href || "");
+        const currentPageLink = Boolean(href && href === currentUrl);
+        return {
+          index,
+          text,
+          disabled: element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true" || currentPageLink,
+        };
+      })
       .filter((item) => item.text && !item.disabled && workflowPattern.test(item.text) && !ignorePattern.test(item.text))
       .slice(0, 1);
-  }).catch(() => [] as Array<{ index: number; text: string }>);
+  }, currentUrl).catch(() => [] as Array<{ index: number; text: string }>);
 
   if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
