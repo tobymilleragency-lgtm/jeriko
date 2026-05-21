@@ -6,6 +6,21 @@ import type { ToolDefinition } from "./registry.js";
 import { readdir, stat } from "node:fs/promises";
 import { resolve, join, relative } from "node:path";
 
+const SKIPPED_DIR_NAMES = new Set([
+  ".cache",
+  ".config",
+  ".git",
+  ".local",
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".vercel",
+  ".vite",
+]);
+
 /**
  * Recursive directory listing with glob-like pattern matching.
  * Uses a simple minimatch-style approach for common patterns.
@@ -31,9 +46,11 @@ async function listRecursive(
     const entries = await readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      // Skip hidden dirs and node_modules.
+      // Never let a broad home-directory list walk heavyweight hidden caches
+      // such as ~/.config/anythingllm-desktop model blobs. Generated/project
+      // workspaces are still inspectable when addressed directly.
+      if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
       if (entry.name.startsWith(".") && depth > 0) continue;
-      if (entry.name === "node_modules") continue;
 
       const fullPath = join(dir, entry.name);
 

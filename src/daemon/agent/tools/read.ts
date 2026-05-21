@@ -1,11 +1,20 @@
 // Tool — Read file contents.
 
 import { registerTool } from "./registry.js";
-import { isPathAllowed, isPathBlocked } from "../../security/index.js";
+import { isPathBlocked } from "../../security/index.js";
 import type { ToolDefinition } from "./registry.js";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { formatCachedReadResult, getReadCacheLookup, storeReadCache } from "./read-cache.js";
+
+const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const mib = bytes / (1024 * 1024);
+  if (mib >= 1) return `${mib.toFixed(1)} MiB`;
+  return `${(bytes / 1024).toFixed(1)} KiB`;
+}
 
 async function execute(args: Record<string, unknown>): Promise<string> {
   const filePath = args.file_path as string;
@@ -25,6 +34,16 @@ async function execute(args: Record<string, unknown>): Promise<string> {
     const info = await stat(absPath);
     if (!info.isFile()) {
       return JSON.stringify({ ok: false, error: `Not a file: ${absPath}` });
+    }
+
+    if (info.size > MAX_TEXT_FILE_BYTES) {
+      return JSON.stringify({
+        ok: false,
+        error: `Refusing to read oversized file into memory: ${absPath} (${formatBytes(info.size)} > ${formatBytes(MAX_TEXT_FILE_BYTES)})`,
+        size_bytes: info.size,
+        max_bytes: MAX_TEXT_FILE_BYTES,
+        hint: "Use a targeted shell command such as stat, file, sha256sum, or a streaming reader instead of read_file for large/binary artifacts.",
+      });
     }
 
     const cached = await getReadCacheLookup(absPath, offset, limit);

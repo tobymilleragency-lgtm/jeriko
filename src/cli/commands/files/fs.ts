@@ -4,6 +4,15 @@ import { ok, fail } from "../../../shared/output.js";
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 
+const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const mib = bytes / (1024 * 1024);
+  if (mib >= 1) return `${mib.toFixed(1)} MiB`;
+  return `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
 export const command: CommandHandler = {
   name: "fs",
   description: "Filesystem operations (ls, cat, write, find, grep)",
@@ -47,8 +56,14 @@ export const command: CommandHandler = {
         const file = parsed.positional[1];
         if (!file) fail("Missing file path. Usage: jeriko fs cat <file>");
         try {
-          const content = readFileSync(resolve(file), "utf-8");
-          ok({ path: resolve(file), content, size: content.length });
+          const absFile = resolve(file);
+          const stats = statSync(absFile);
+          if (!stats.isFile()) fail(`Cannot read "${file}": not a file`);
+          if (stats.size > MAX_TEXT_FILE_BYTES) {
+            fail(`Cannot read "${file}": refusing to read oversized file into memory (${formatBytes(stats.size)} > ${formatBytes(MAX_TEXT_FILE_BYTES)}). Use fs stat, sha256sum, or a streaming shell command for large/binary artifacts.`);
+          }
+          const content = readFileSync(absFile, "utf-8");
+          ok({ path: absFile, content, size: content.length });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           fail(`Cannot read "${file}": ${msg}`);
