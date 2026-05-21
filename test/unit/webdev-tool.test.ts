@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as net from "node:net";
 
 import { clearTools, registerTool, getTool } from "../../src/daemon/agent/tools/registry.js";
@@ -804,6 +804,59 @@ describe("webdev tool — restart action", () => {
       expect(__webdevTest.pidsOnPort(localPort)).toEqual([]);
     } finally {
       client.destroy();
+      server.close();
+    }
+  });
+
+  it("finds existing listening dev servers under the project before choosing a new restart port", async () => {
+    const dir = createTestProject("existing-listener", { scripts: { dev: "vite --host" } });
+    const child = spawn(process.execPath, ["-e", "require('node:http').createServer((_, res) => res.end('ok')).listen(0, '127.0.0.1')"], {
+      cwd: dir,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    const childPid = child.pid;
+    if (!childPid) throw new Error("child pid unavailable");
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
+      expect(__webdevTest.projectListeningPids(dir)).toContain(childPid);
+    } finally {
+      try { process.kill(-childPid, "SIGTERM"); } catch { try { process.kill(childPid, "SIGTERM"); } catch { /* ignore */ } }
+    }
+  });
+
+  it("treats a responding foreign HTTP server as an occupied restart port", async () => {
+    const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
+    const server = net.createServer((socket) => {
+      socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    try {
+      expect(await __webdevTest.isPortFree(address.port)).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("falls back when a configured Vite port is occupied by a foreign server", async () => {
+    const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
+    const dir = createTestProject("configured-occupied", { scripts: { dev: "vite --host" } });
+    const server = net.createServer((socket) => {
+      socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server address unavailable");
+    fs.writeFileSync(path.join(dir, "vite.config.ts"), `export default { server: { port: ${address.port} } };\n`);
+    try {
+      const selected = await __webdevTest.chooseRestartPort(dir, undefined);
+      expect(selected.port).not.toBe(address.port);
+      expect(selected.explicit).toBe(false);
+    } finally {
       server.close();
     }
   });

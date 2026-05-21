@@ -1225,6 +1225,8 @@ export function hasCheckpointEvidence(messages: DriverMessage[]): boolean {
     const parsed = parseToolResultJson(text);
     const hash = parsed?.data?.hash ?? parsed?.hash ?? parsed?.commit ?? parsed?.data?.commit;
     if (typeof hash === "string" && /^[a-f0-9]{7,40}$/i.test(hash)) return true;
+    const message = parsed?.data?.message ?? parsed?.message;
+    if (parsed?.ok === true && typeof message === "string" && /no changes to commit/i.test(message)) return true;
     return /\b\[[\w/-]+\s+[a-f0-9]{7,40}\]\s+.+/.test(text) || /\bcommit(?:ted)?\b[\s\S]{0,120}\b[a-f0-9]{7,40}\b/i.test(text);
   });
 }

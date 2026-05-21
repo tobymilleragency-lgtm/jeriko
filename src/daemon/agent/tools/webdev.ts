@@ -210,6 +210,16 @@ function pidsOnPort(port: number): number[] {
   return pidsFromLsofOutput(lsof.stdout?.toString() ?? "");
 }
 
+function projectListeningPids(dir: string): number[] {
+  const lsof = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fp"], { timeout: 5000 });
+  const pids = pidsFromLsofOutput((lsof.stdout?.toString() ?? "").replace(/^p/gm, ""));
+  const projectRoot = resolve(dir);
+  return [...new Set(pids)].filter((pid) => {
+    const cwd = pidCwd(pid);
+    return Boolean(cwd && (cwd === projectRoot || cwd.startsWith(`${projectRoot}/`)));
+  });
+}
+
 function shouldAutoOpenUrl(): boolean {
   return !/^(0|false|no)$/i.test(String(process.env.JERIKO_WEBDEV_AUTO_OPEN ?? "1"));
 }
@@ -232,7 +242,7 @@ function openUrlBestEffort(url: string): boolean {
   }
 }
 
-export const __webdevTest = { pidsFromLsofOutput, pidsOnPort, openUrlBestEffort, shouldAutoOpenUrl };
+export const __webdevTest = { pidsFromLsofOutput, pidsOnPort, projectListeningPids, isPortFree, chooseRestartPort, openUrlBestEffort, shouldAutoOpenUrl };
 
 function pidCwd(pid: number): string | null {
   const resolved = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2000 });
@@ -241,18 +251,27 @@ function pidCwd(pid: number): string | null {
 }
 
 async function isPortFree(port: number): Promise<boolean> {
-  return pidsOnPort(port).length === 0;
+  if (pidsOnPort(port).length > 0) return false;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(500) });
+    if (res.ok || res.status < 500) return false;
+  } catch {
+    return true;
+  }
+  return true;
 }
 
 async function chooseRestartPort(dir: string, argsPort?: unknown): Promise<{ port: number; explicit: boolean }> {
-  const explicitPort = detectConfiguredPort(dir, argsPort);
-  if (explicitPort) return { port: explicitPort, explicit: argsPort !== undefined && argsPort !== null && Number(argsPort) > 0 };
+  const explicit = argsPort !== undefined && argsPort !== null && Number(argsPort) > 0;
+  const configuredPort = detectConfiguredPort(dir, argsPort);
+  if (configuredPort && (explicit || await isPortFree(configuredPort))) return { port: configuredPort, explicit };
 
   for (const candidate of COMMON_PORTS) {
+    if (candidate === configuredPort) continue;
     if (await isPortFree(candidate)) return { port: candidate, explicit: false };
   }
 
-  return { port: 3000, explicit: false };
+  return { port: configuredPort ?? 3000, explicit: false };
 }
 
 function stopProcessGroup(pid: number | undefined): void {
@@ -695,10 +714,21 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
   const { dir } = resolved;
 
   try {
+    const existingProjectPids = projectListeningPids(dir);
+    for (const pid of existingProjectPids) stopProcessGroup(pid);
+    if (existingProjectPids.length > 0) await new Promise((r) => setTimeout(r, 500));
+
     // Select a restart port without probing unrelated running services. If the
     // model does not specify a port, pick the first free common dev port.
     const selected = await chooseRestartPort(dir, args.port);
     const port = selected.port;
+    if (selected.explicit && !(await isPortFree(port))) {
+      return JSON.stringify({
+        ok: false,
+        error: `Port ${port} is already serving another process; refusing to claim it as this project preview`,
+        data: { port, directory: dir },
+      });
+    }
 
     // Detect the dev command
     const detected = detectDevCommand(dir, port);

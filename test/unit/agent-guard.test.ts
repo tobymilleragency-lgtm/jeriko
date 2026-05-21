@@ -294,6 +294,30 @@ describe("App-factory final done gate", () => {
     ])).toBe(true);
   });
 
+  test("accepts no-op checkpoint evidence when app verification and localhost preview passed", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { message: "No changes to commit", hash: null, fileCount: 0 } });
+    const previewTool = JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:4206/", opened: true, command: "vite --host --port 4206 --strictPort" } });
+
+    expect(hasAppFactoryDoneEvidence([
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+    ])).toBe(true);
+  });
+
   test("rejects app-factory final report without a captured localhost preview URL", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "placeholder_scan", ok: true },
