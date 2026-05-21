@@ -60,6 +60,8 @@ export interface AgentRunConfig {
   cwd?: string;
   /** Hard wall-clock cap for the whole agent run. Defaults to 10 minutes. */
   maxDurationMs?: number;
+  /** Hard RSS memory cap for this agent run in bytes. Defaults to 2 GiB; set <=0 to disable. */
+  maxRssBytes?: number;
   /** Max time to wait for a new model stream event before diagnosing a stuck/no-progress loop. Defaults to 3 minutes. */
   noProgressTimeoutMs?: number;
   /** Nesting depth for sub-agent orchestration (0 = top-level). */
@@ -82,6 +84,8 @@ export type AgentEvent =
 
 export const DEFAULT_AGENT_MAX_DURATION_MS = 10 * 60_000;
 export const DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS = 3 * 60_000;
+export const DEFAULT_AGENT_MAX_RSS_BYTES = 2048 * 1024 * 1024;
+const AGENT_RESOURCE_MONITOR_INTERVAL_MS = 1000;
 const STREAM_NO_PROGRESS_RECOVERY_LIMIT = 1;
 const STREAM_NO_PROGRESS_RECOVERY_CONTEXT_LIMIT = 80_000;
 
@@ -90,6 +94,54 @@ export class AgentNoProgressError extends Error {
     super(message);
     this.name = "AgentNoProgressError";
   }
+}
+
+export class AgentResourceLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentResourceLimitError";
+  }
+}
+
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes)) return "unknown";
+  const mib = bytes / (1024 * 1024);
+  if (mib < 1024) return `${mib.toFixed(0)} MiB`;
+  return `${(mib / 1024).toFixed(2)} GiB`;
+}
+
+export function buildAgentResourceLimitMessage(args: {
+  rssBytes: number;
+  maxRssBytes: number;
+  elapsedMs: number;
+  backend: string;
+  model: string;
+}): string {
+  return [
+    "Agent resource guard stopped the run.",
+    `Reason: Jeriko process RSS reached ${formatBytes(args.rssBytes)}, above the configured cap of ${formatBytes(args.maxRssBytes)}.`,
+    `Context: backend=${args.backend} model=${args.model} elapsed=${Math.round(args.elapsedMs / 1000)}s.`,
+    "Action taken: aborted the active model/tool turn before Linux could OOM-kill the desktop session.",
+    "Exit status: resource-limit/non-zero for foreground ask clients.",
+  ].join("\n");
+}
+
+export function checkAgentResourceLimit(maxRssBytes: number | undefined, args: {
+  startedAt: number;
+  backend: string;
+  model: string;
+}): string | null {
+  const limit = maxRssBytes ?? DEFAULT_AGENT_MAX_RSS_BYTES;
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  const rssBytes = process.memoryUsage().rss;
+  if (rssBytes <= limit) return null;
+  return buildAgentResourceLimitMessage({
+    rssBytes,
+    maxRssBytes: limit,
+    elapsedMs: Date.now() - args.startedAt,
+    backend: args.backend,
+    model: args.model,
+  });
 }
 
 export function createModelRequestAbortController(runSignal: AbortSignal): AbortController {
@@ -128,6 +180,7 @@ export async function* runAgent(
   const startedAt = Date.now();
   const maxDurationMs = config.maxDurationMs ?? DEFAULT_AGENT_MAX_DURATION_MS;
   const noProgressTimeoutMs = config.noProgressTimeoutMs ?? DEFAULT_AGENT_NO_PROGRESS_TIMEOUT_MS;
+  const maxRssBytes = config.maxRssBytes ?? DEFAULT_AGENT_MAX_RSS_BYTES;
   const runAbort = new AbortController();
   let activeRequestAbort: AbortController | null = null;
   const forwardAbort = () => {
@@ -143,6 +196,20 @@ export async function* runAgent(
   const driver = getDriver(config.backend);
   const provider = driver.name;
   const resolvedModelId = resolveModel(provider, config.model);
+  let resourceLimitMessage: string | null = null;
+  const checkResourceLimit = () => {
+    resourceLimitMessage = checkAgentResourceLimit(maxRssBytes, {
+      startedAt,
+      backend: provider,
+      model: resolvedModelId,
+    });
+    if (resourceLimitMessage) {
+      activeRequestAbort?.abort("agent-resource-limit");
+      runAbort.abort("agent-resource-limit");
+    }
+    return resourceLimitMessage;
+  };
+  let resourceTimer: ReturnType<typeof setInterval> | undefined;
 
   // For local models, probe Ollama for capabilities before proceeding.
   // Cloud models (anthropic/openai) are already cached from models.dev boot fetch.
@@ -237,6 +304,9 @@ export async function* runAgent(
   });
 
   try {
+    if (maxRssBytes > 0) {
+      resourceTimer = setInterval(() => { checkResourceLimit(); }, AGENT_RESOURCE_MONITOR_INTERVAL_MS);
+    }
 
   for (let round = 0; round < maxRounds; round++) {
     // ── Guard: pre-round check (duration limit) ───────────────────────
@@ -247,6 +317,17 @@ export async function* runAgent(
       addPart(durationMsg.id, "text", durationSummary);
       touchSession(config.sessionId);
       yield { type: "text_delta", content: durationSummary };
+      yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
+      return;
+    }
+
+    if (checkResourceLimit()) {
+      const resourceSummary = `${resourceLimitMessage}\n\n${buildNoProgressStopSummary(messages, "Jeriko stopped because the process crossed the configured memory ceiling.")}`;
+      const resourceMsg = addMessage(config.sessionId, "assistant", resourceSummary, { input: totalTokensIn, output: estimateTokens(resourceSummary) });
+      addPart(resourceMsg.id, "text", resourceSummary);
+      touchSession(config.sessionId);
+      yield { type: "text_delta", content: resourceSummary };
+      yield { type: "error", message: resourceLimitMessage ?? "Agent resource limit exceeded" };
       yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
       return;
     }
@@ -281,6 +362,7 @@ export async function* runAgent(
           maxDurationMs,
           noProgressTimeoutMs,
           abort: () => activeRequestAbort?.abort("agent-no-progress"),
+          checkResourceLimit,
           describe: () => buildStuckDiagnosis({
             reason: "No new model/tool/DB progress was observed while waiting for the model stream.",
             round,
@@ -292,6 +374,9 @@ export async function* runAgent(
         });
         if (chunkResult.done) break;
         const chunk = chunkResult.value;
+        if (resourceLimitMessage ?? checkResourceLimit()) {
+          throw new AgentResourceLimitError(resourceLimitMessage ?? "Agent resource limit exceeded");
+        }
         switch (chunk.type) {
           case "text":
             fullText += chunk.content;
@@ -320,6 +405,17 @@ export async function* runAgent(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      if (err instanceof AgentResourceLimitError || resourceLimitMessage) {
+        const diagnosis = resourceLimitMessage ?? errMsg;
+        const finalDiagnosis = `${diagnosis}\n\n${buildNoProgressStopSummary(messages, "Jeriko stopped because the process crossed the configured memory ceiling.")}`;
+        const guardMsg = addMessage(config.sessionId, "assistant", finalDiagnosis, { input: totalTokensIn, output: estimateTokens(finalDiagnosis) });
+        addPart(guardMsg.id, "text", finalDiagnosis);
+        touchSession(config.sessionId);
+        yield { type: "text_delta", content: finalDiagnosis };
+        yield { type: "error", message: diagnosis };
+        yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
+        return;
+      }
       if (err instanceof AgentNoProgressError) {
         const diagnosis = errMsg;
         const remainingMs = maxDurationMs - (Date.now() - startedAt);
@@ -448,6 +544,16 @@ export async function* runAgent(
     }
 
     for (const tc of toolCalls) {
+      if (checkResourceLimit()) {
+        const resourceSummary = `${resourceLimitMessage}\n\n${buildNoProgressStopSummary(messages, "Jeriko stopped before executing more tools because the process crossed the configured memory ceiling.")}`;
+        const resourceMsg = addMessage(config.sessionId, "assistant", resourceSummary, { input: totalTokensIn, output: estimateTokens(resourceSummary) });
+        addPart(resourceMsg.id, "text", resourceSummary);
+        touchSession(config.sessionId);
+        yield { type: "text_delta", content: resourceSummary };
+        yield { type: "error", message: resourceLimitMessage ?? "Agent resource limit exceeded" };
+        yield { type: "turn_complete", tokensIn: totalTokensIn, tokensOut: totalTokensOut };
+        return;
+      }
       // Resolve tool — supports dotted names from OSS models (e.g. "browser.click")
       const { tool, inferredAction } = resolveDottedTool(tc.name);
 
@@ -530,6 +636,7 @@ export async function* runAgent(
     // regardless of whether it completed normally or threw.
     clearActiveContext();
     config.signal?.removeEventListener("abort", forwardAbort);
+    if (resourceTimer) clearInterval(resourceTimer);
   }
 }
 
@@ -542,6 +649,7 @@ export interface NoProgressTimeoutOptions {
   maxDurationMs: number;
   noProgressTimeoutMs: number;
   abort?: () => void;
+  checkResourceLimit?: () => string | null;
   describe: () => string;
 }
 
@@ -560,8 +668,9 @@ export async function nextStreamChunkWithNoProgressTimeout<T>(
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let resourceTimer: ReturnType<typeof setInterval> | undefined;
   const nextPromise = stream.next();
-  // If the timeout wins and aborts the driver, the already-started next()
+  // If the timeout/resource guard wins and aborts the driver, the already-started next()
   // may later reject. Observe it here so it cannot become an unhandled rejection.
   nextPromise.catch(() => undefined);
   try {
@@ -573,14 +682,24 @@ export async function nextStreamChunkWithNoProgressTimeout<T>(
           reject(new AgentNoProgressError(options.describe()));
         }, timeoutMs);
       }),
+      new Promise<IteratorResult<T>>((_, reject) => {
+        if (!options.checkResourceLimit) return;
+        resourceTimer = setInterval(() => {
+          const msg = options.checkResourceLimit?.();
+          if (!msg) return;
+          options.abort?.();
+          reject(new AgentResourceLimitError(msg));
+        }, 250);
+      }),
     ]);
   } catch (err) {
-    if (err instanceof AgentNoProgressError) {
+    if (err instanceof AgentNoProgressError || err instanceof AgentResourceLimitError) {
       await stream.return?.().catch(() => undefined);
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    if (resourceTimer) clearInterval(resourceTimer);
   }
 }
 

@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   AgentNoProgressError,
+  AgentResourceLimitError,
+  buildAgentResourceLimitMessage,
   buildStuckDiagnosis,
+  checkAgentResourceLimit,
   createModelRequestAbortController,
   nextStreamChunkWithNoProgressTimeout,
   runAgent,
@@ -48,6 +51,58 @@ describe("agent no-progress guard", () => {
 
     expect(aborted).toBe(true);
     expect(returned).toBe(true);
+  });
+
+  it("hard-stops a silent model stream when the resource guard trips", async () => {
+    let aborted = false;
+    let returned = false;
+    const stream: AsyncIterator<{ type: "done"; content: string }> = {
+      next: () => new Promise(() => undefined),
+      return: async () => {
+        returned = true;
+        return { done: true, value: undefined as never };
+      },
+    };
+
+    await expect(nextStreamChunkWithNoProgressTimeout(stream, {
+      startedAt: Date.now(),
+      maxDurationMs: 10_000,
+      noProgressTimeoutMs: 10_000,
+      abort: () => { aborted = true; },
+      checkResourceLimit: () => "Agent resource guard stopped the run.",
+      describe: () => "Agent stuck/no-progress guard stopped the run.",
+    })).rejects.toThrow(AgentResourceLimitError);
+
+    expect(aborted).toBe(true);
+    expect(returned).toBe(true);
+  });
+
+  it("formats and detects agent RSS resource cap violations", () => {
+    const currentRss = process.memoryUsage().rss;
+    const msg = checkAgentResourceLimit(currentRss - 1, {
+      startedAt: Date.now() - 2_000,
+      backend: "test-backend",
+      model: "test-model",
+    });
+
+    expect(msg).toContain("Agent resource guard stopped the run.");
+    expect(msg).toContain("above the configured cap");
+    expect(msg).toContain("before Linux could OOM-kill the desktop session");
+    expect(checkAgentResourceLimit(0, {
+      startedAt: Date.now(),
+      backend: "test-backend",
+      model: "test-model",
+    })).toBeNull();
+
+    const formatted = buildAgentResourceLimitMessage({
+      rssBytes: 3 * 1024 * 1024 * 1024,
+      maxRssBytes: 2 * 1024 * 1024 * 1024,
+      elapsedMs: 42_000,
+      backend: "test-backend",
+      model: "test-model",
+    });
+    expect(formatted).toContain("3.00 GiB");
+    expect(formatted).toContain("2.00 GiB");
   });
 
   it("uses wall-clock remaining time when it is shorter than idle timeout", async () => {

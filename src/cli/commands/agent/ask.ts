@@ -171,6 +171,7 @@ export const command: CommandHandler = {
           maxTokens: maxTokens ? parseInt(maxTokens, 10) : config.agent.maxTokens,
           temperature: config.agent.temperature,
           extendedThinking: config.agent.extendedThinking,
+          maxRssBytes: config.agent.maxRssMb ? config.agent.maxRssMb * 1024 * 1024 : undefined,
           toolIds: noTools ? [] : null,
           cwd: askCwd,
         };

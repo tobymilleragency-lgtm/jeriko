@@ -920,6 +920,7 @@ export class TriggerEngine {
       extendedThinking: config.agent.extendedThinking,
       maxHistoryMessages: config.agent.maxHistoryMessages,
       maxHistoryTokens: config.agent.maxHistoryTokens,
+      maxRssBytes: config.agent.maxRssMb ? config.agent.maxRssMb * 1024 * 1024 : undefined,
     };
 
     let response = "";

@@ -105,6 +105,7 @@ export function agentRoutes(): Hono {
       maxTokens: body.max_tokens ?? config.agent.maxTokens,
       maxHistoryMessages: config.agent.maxHistoryMessages,
       maxHistoryTokens: config.agent.maxHistoryTokens,
+      maxRssBytes: config.agent.maxRssMb ? config.agent.maxRssMb * 1024 * 1024 : undefined,
       toolIds: body.tools ?? null,
     };
 
@@ -225,6 +226,7 @@ export function agentRoutes(): Hono {
       maxTokens: body.max_tokens ?? config.agent.maxTokens,
       maxHistoryMessages: config.agent.maxHistoryMessages,
       maxHistoryTokens: config.agent.maxHistoryTokens,
+      maxRssBytes: config.agent.maxRssMb ? config.agent.maxRssMb * 1024 * 1024 : undefined,
       toolIds: body.tools ?? null,
     };
 

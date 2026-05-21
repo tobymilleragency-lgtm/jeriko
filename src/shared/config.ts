@@ -61,6 +61,12 @@ export interface AgentConfig {
   /** Max estimated tokens of conversation history to send per request. */
   maxHistoryTokens?: number;
   /**
+   * Hard RSS memory ceiling for a single foreground agent run, in MiB.
+   * When exceeded, Jeriko aborts the active model/tool turn and returns an
+   * operator recap instead of letting the OS OOM-kill the desktop session.
+   */
+  maxRssMb?: number;
+  /**
    * User-curated model list. When set, the model picker shows these models
    * first (before the full models.dev catalog). Each entry is either a
    * "provider:model" spec string, or an object with optional overrides.
@@ -219,6 +225,7 @@ const DEFAULTS: JerikoConfig = {
     maxTokens: 4096,
     temperature: 0.3,
     extendedThinking: false,
+    maxRssMb: 2048,
   },
   channels: {
     telegram: { token: "", adminIds: [] },
@@ -475,6 +482,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
  * Mapping (JERIKO_ prefixed vars take priority, standard names are fallbacks):
  *   JERIKO_MODEL / (none)                → agent.model
  *   JERIKO_MAX_TOKENS / (none)           → agent.maxTokens
+ *   JERIKO_AGENT_MAX_RSS_MB / (none)     → agent.maxRssMb
  *   JERIKO_LOG_LEVEL / (none)            → logging.level
  *   JERIKO_TELEGRAM_TOKEN / TELEGRAM_BOT_TOKEN → channels.telegram.token
  *   JERIKO_ADMIN_IDS / ADMIN_TELEGRAM_IDS      → channels.telegram.adminIds
@@ -494,6 +502,7 @@ function applyEnvOverrides(config: JerikoConfig): void {
   if (env.JERIKO_MAX_TOKENS)     config.agent.maxTokens = parseInt(env.JERIKO_MAX_TOKENS, 10);
   if (env.JERIKO_MAX_HISTORY_MESSAGES) config.agent.maxHistoryMessages = parseInt(env.JERIKO_MAX_HISTORY_MESSAGES, 10);
   if (env.JERIKO_MAX_HISTORY_TOKENS)   config.agent.maxHistoryTokens = parseInt(env.JERIKO_MAX_HISTORY_TOKENS, 10);
+  if (env.JERIKO_AGENT_MAX_RSS_MB)     config.agent.maxRssMb = parseInt(env.JERIKO_AGENT_MAX_RSS_MB, 10);
   if (env.JERIKO_LOG_LEVEL)      config.logging.level = env.JERIKO_LOG_LEVEL as JerikoConfig["logging"]["level"];
   if (env.JERIKO_DB_PATH)        config.storage.dbPath = env.JERIKO_DB_PATH;
 

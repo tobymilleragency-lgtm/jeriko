@@ -79,6 +79,8 @@ export interface ChannelRouterOptions {
   maxHistoryMessages?: number;
   /** Max estimated tokens of conversation history to send per request. */
   maxHistoryTokens?: number;
+  /** Hard RSS memory cap for agent runs in MiB. */
+  maxRssMb?: number;
   /** System prompt from AGENT.md — Jeriko identity and commands. */
   systemPrompt?: string;
   /** Lazy accessor for trigger engine (created after router in kernel boot). */
@@ -336,6 +338,7 @@ export function startChannelRouter(opts: ChannelRouterOptions): void {
         extendedThinking: caps.reasoning ? opts.extendedThinking : false,
         maxHistoryMessages: opts.maxHistoryMessages,
         maxHistoryTokens: opts.maxHistoryTokens,
+        maxRssBytes: opts.maxRssMb ? opts.maxRssMb * 1024 * 1024 : undefined,
         toolIds: null,
         signal: controller.signal,
       };
