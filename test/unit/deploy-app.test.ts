@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { ensureVercelIgnored, resolveGeneratedAppRoot, runGeneratedAppDeploy } from "../../src/cli/commands/dev/deploy-app.js";
+import {
+  deploymentAliasesFromOutput,
+  ensureVercelIgnored,
+  isSetupRequiredSmokeBody,
+  resolveGeneratedAppRoot,
+  runGeneratedAppDeploy,
+} from "../../src/cli/commands/dev/deploy-app.js";
 import { clearTools, getTool, registerTool } from "../../src/daemon/agent/tools/registry.js";
 
 let testHome: string;
@@ -78,6 +84,24 @@ describe("deploy-app dry run", () => {
     expect(report.steps.map((step) => step.name)).toContain("verify_app");
     expect(report.steps.map((step) => step.name)).toContain("git_push");
     expect(report.steps.map((step) => step.name)).toContain("vercel_deploy");
+  });
+});
+
+describe("deploy-app production verification helpers", () => {
+  it("extracts Vercel production aliases from deploy output", () => {
+    const output = `\n✓ Ready in 1m\nAliased: https://flipscout-orpin.vercel.app\nhttps://flipscout-abc123.vercel.app\n`;
+
+    expect(deploymentAliasesFromOutput(output)).toEqual(["https://flipscout-orpin.vercel.app"]);
+  });
+
+  it("treats setup_required JSON as a failed production smoke body", () => {
+    const body = JSON.stringify({
+      ok: false,
+      mode: "setup_required",
+      missingKeys: ["FLIPSCOUT_APP_ID", "FLIPSCOUT_OAUTH_PORTAL_URL"],
+    });
+
+    expect(isSetupRequiredSmokeBody(body)).toBe(true);
   });
 });
 

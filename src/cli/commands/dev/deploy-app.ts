@@ -57,6 +57,8 @@ export interface DeployAppReport {
   deploymentUrl?: string;
   productionUrl?: string;
   smoke?: SmokeResult;
+  deploymentSmoke?: SmokeResult;
+  oauthSmoke?: SmokeResult;
   steps: Array<{ name: string; ok: boolean; command?: string; output?: string; skipped?: boolean }>;
   blockers: string[];
 }
@@ -321,6 +323,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     return report;
   }
   report.deploymentUrl = extractLastUrl(deploy.output);
+  const aliases = deploymentAliasesFromOutput(deploy.output);
 
   if (report.deploymentUrl) {
     const inspect = runCommand(["vercel", "inspect", report.deploymentUrl, "--wait"], dir, 900_000);
@@ -331,11 +334,34 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     }
   }
 
-  report.productionUrl = normalizeOptional(options.productionUrl) || `https://${vercelProject}.vercel.app/`;
+  report.productionUrl = normalizeOptional(options.productionUrl) || aliases[0] || report.deploymentUrl || `https://${vercelProject}.vercel.app/`;
+  if (normalizeOptional(options.productionUrl) && aliases.length > 0) {
+    const requested = normalizeUrlForCompare(report.productionUrl);
+    const aliasMatches = aliases.some((alias) => normalizeUrlForCompare(alias) === requested);
+    if (!aliasMatches) {
+      report.blockers.push(`requested production URL ${report.productionUrl} was not assigned by Vercel; deployment aliases were: ${aliases.join(", ")}.`);
+    }
+  }
+
+  if (report.deploymentUrl && normalizeUrlForCompare(report.deploymentUrl) !== normalizeUrlForCompare(report.productionUrl)) {
+    const deploymentSmoke = await smokeUrl(report.deploymentUrl);
+    report.deploymentSmoke = deploymentSmoke;
+    report.steps.push({ name: "deployment_smoke", ok: deploymentSmoke.ok, output: JSON.stringify(deploymentSmoke) });
+    if (!deploymentSmoke.ok) report.blockers.push(`deployment smoke failed for ${report.deploymentUrl}.`);
+  }
+
   const smoke = await smokeUrl(report.productionUrl);
   report.smoke = smoke;
   report.steps.push({ name: "production_smoke", ok: smoke.ok, output: JSON.stringify(smoke) });
   if (!smoke.ok) report.blockers.push(`production smoke failed for ${report.productionUrl}.`);
+
+  if (options.profile === "web-db-user") {
+    const oauthUrl = joinUrl(report.productionUrl, "/api/oauth/google/start");
+    const oauthSmoke = await smokeUrl(oauthUrl);
+    report.oauthSmoke = oauthSmoke;
+    report.steps.push({ name: "production_google_oauth_smoke", ok: oauthSmoke.ok, output: JSON.stringify(oauthSmoke) });
+    if (!oauthSmoke.ok) report.blockers.push(`production Google OAuth smoke failed for ${oauthUrl}.`);
+  }
 
   return report;
 }
@@ -404,10 +430,40 @@ async function smokeUrl(url: string): Promise<SmokeResult> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     const body = await res.text();
-    return { url, ok: res.ok, status: res.status, bytes: body.length };
+    const setupRequired = isSetupRequiredSmokeBody(body);
+    const ok = res.ok && !setupRequired;
+    const result: SmokeResult = { url, ok, status: res.status, bytes: body.length };
+    if (setupRequired) result.error = "setup_required response from production route";
+    return result;
   } catch (err) {
     return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export function deploymentAliasesFromOutput(text: string): string[] {
+  const aliases: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/\bAliased:\s*(https:\/\/[^\s)]+)/i);
+    if (match?.[1]) aliases.push(match[1]);
+  }
+  return aliases;
+}
+
+export function isSetupRequiredSmokeBody(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { ok?: unknown; mode?: unknown; missingKeys?: unknown };
+    return parsed.ok === false && parsed.mode === "setup_required";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeUrlForCompare(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function joinUrl(base: string, route: string): string {
+  return `${base.replace(/\/+$/, "")}/${route.replace(/^\/+/, "")}`;
 }
 
 function shellDisplay(arg: string): string {
