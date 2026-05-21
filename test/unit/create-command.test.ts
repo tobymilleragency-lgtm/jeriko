@@ -98,6 +98,35 @@ describe("create command templates", () => {
     }
   });
 
+  it("includes dormant Supabase Google auth scaffolding in every web deployment template", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-supabase-auth-"));
+    const staticDir = path.join(dir, "static-site");
+    const dbDir = path.join(dir, "db-app");
+    try {
+      const staticResult = await runCreateCommand(["web-static", "Acme Service Site", "--dir", staticDir]);
+      const dbResult = await runCreateCommand(["web-db-user", "Acme Portal", "--dir", dbDir]);
+
+      expect(staticResult.ok).toBe(true);
+      expect(dbResult.ok).toBe(true);
+
+      for (const projectDir of [staticDir, dbDir]) {
+        const envExample = fs.readFileSync(path.join(projectDir, ".env.example"), "utf8");
+        const supabaseAuth = fs.readFileSync(path.join(projectDir, "client", "src", "lib", "supabaseAuth.ts"), "utf8");
+        const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, "package.json"), "utf8"));
+
+        expect(envExample).toContain("VITE_APP_SUPABASE_URL");
+        expect(envExample).toContain("VITE_APP_SUPABASE_ANON_KEY");
+        expect(envExample).toContain("/auth/v1/callback");
+        expect(supabaseAuth).toContain("createClient");
+        expect(supabaseAuth).toContain("signInWithOAuth");
+        expect(supabaseAuth).toContain("provider: \"google\"");
+        expect(pkg.dependencies["@supabase/supabase-js"]).toBeDefined();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lists and scaffolds the existing mobile app template", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-mobile-"));
     const appDir = path.join(dir, "field-app");
@@ -192,6 +221,7 @@ describe("create command templates", () => {
       expect(state.verification.requiredGates).toContain("browser_smoke");
       expect(state.verification.requiredGates).toContain("primary_persistence_scan");
       expect(state.verification.requiredGates).toContain("production_artifact_scan");
+      expect(state.verification.requiredGates).toContain("auth_runtime_config_scan");
       expect(state.verification.requiredGates).toContain("vercel_api_packaging_scan");
       expect(state.verification.requiredGates).toContain("app_spec_contract");
       expect(state.verification.requiredGates).toContain("forbidden_integration_scan");

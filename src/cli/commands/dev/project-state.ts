@@ -90,6 +90,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "unsafe_env_scan",
   "primary_persistence_scan",
   "db_auth_workflow_wiring",
+  "auth_runtime_config_scan",
   "mock_data_import_scan",
   "provider_config_scan",
   "image_uniqueness_scan",

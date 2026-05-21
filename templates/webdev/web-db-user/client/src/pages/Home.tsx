@@ -4,6 +4,7 @@ import { getLoginUrl } from "@/const";
 
 export default function Home() {
   const { user, loading, error, isAuthenticated, logout } = useAuth();
+  const setupMessage = "Setup required before Google sign-in goes live: set VITE_APP_SUPABASE_URL and VITE_APP_SUPABASE_ANON_KEY, then authorize the Supabase /auth/v1/callback URI in Google Cloud.";
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -27,6 +28,11 @@ export default function Home() {
             )}
           </div>
           {error ? <p className="text-sm text-destructive">{String(error)}</p> : null}
+          {!isAuthenticated ? (
+            <p className="text-sm text-muted-foreground">
+              {setupMessage}
+            </p>
+          ) : null}
           {user?.email ? <p className="text-sm text-muted-foreground">Signed in as {user.email}</p> : null}
         </div>
 
