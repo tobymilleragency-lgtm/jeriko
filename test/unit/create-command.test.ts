@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { applyCrawlerPrerenderSupport, command as createCommand, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
+import { applyCrawlerPrerenderSupport, command as createCommand, repairGeneratedProject, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
 import { buildProjectState } from "../../src/cli/commands/dev/project-state.js";
 import { setOutputFormat } from "../../src/shared/output.js";
@@ -30,6 +30,47 @@ describe("create command templates", () => {
       outputs: expect.arrayContaining(["price", "profit", "decision"]),
       persistence: expect.arrayContaining(["items", "scans", "inventory"]),
     });
+  });
+
+  it("sanitizes stale static auth/runtime residue during repair", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-static-sanitize-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "components"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "const.ts"), 'export const getLoginUrl = () => new URL(`${import.meta.env.VITE_OAUTH_PORTAL_URL}/app-auth`).toString();\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "components", "ManusDialog.tsx"), 'export function ManusDialog(){ return <p>Please login with Manus to continue</p>; }\n');
+      fs.writeFileSync(path.join(dir, "vite.config.ts"), 'import { jsxLocPlugin } from "@builder.io/vite-plugin-jsx-loc";\nimport { vitePluginManusRuntime } from "vite-plugin-jeriko-runtime";\nconst plugins = [jsxLocPlugin(), vitePluginManusRuntime()];\n');
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "stale-static",
+        type: "module",
+        scripts: { build: "vite build", check: "tsc --noEmit" },
+        devDependencies: {
+          "@builder.io/vite-plugin-jsx-loc": "^0.1.1",
+          "vite-plugin-jeriko-runtime": "file:/tmp/runtime",
+          vite: "^7.1.7",
+        },
+      }, null, 2));
+
+      const repair = repairGeneratedProject(dir, { projectName: "Stale Static", runPackageManager: false });
+      const allText = collectTextFiles(dir).join("\n");
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+
+      expect(repair.actions).toEqual(expect.arrayContaining([
+        "removed_static_oauth_const_residue",
+        "removed_manus_dialog_residue",
+        "rewrote_static_vite_config_without_manus_runtime",
+        "package_json_removed_static_auth_runtime_deps",
+      ]));
+      expect(repair.lockfileNeedsRefresh).toBe(true);
+      expect(allText).not.toContain("VITE_OAUTH_PORTAL_URL");
+      expect(allText).not.toContain("vitePluginManusRuntime");
+      expect(allText).not.toContain("Please login with Manus");
+      expect(fs.existsSync(path.join(dir, "client", "src", "components", "ManusDialog.tsx"))).toBe(false);
+      expect(pkg.devDependencies["@builder.io/vite-plugin-jsx-loc"]).toBeUndefined();
+      expect(pkg.devDependencies["vite-plugin-jeriko-runtime"]).toBeUndefined();
+      expect(fs.readFileSync(path.join(dir, "vite.config.ts"), "utf8")).toContain("jerikoDebug");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("scaffolds production starter pages instead of demo residue", async () => {

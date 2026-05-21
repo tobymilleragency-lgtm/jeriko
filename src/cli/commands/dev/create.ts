@@ -76,6 +76,35 @@ const TEMPLATES: TemplateInfo[] = [
 
 const TEMPLATE_MAP = new Map(TEMPLATES.map((t) => [t.name, t]));
 const PROJECTS_DIR = join(homedir(), ".jeriko", "projects");
+const STATIC_WEB_VITE_CONFIG = `import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { defineConfig } from "vite";
+import jerikoDebug from "./vite-plugin-jeriko-debug";
+
+export default defineConfig(({ command }) => ({
+  plugins: [react(), tailwindcss(), command === "serve" ? jerikoDebug() : null].filter(Boolean),
+  resolve: {
+    alias: {
+      "@": path.resolve(import.meta.dirname, "client", "src"),
+      "@shared": path.resolve(import.meta.dirname, "shared"),
+      "@assets": path.resolve(import.meta.dirname, "attached_assets"),
+    },
+  },
+  envDir: path.resolve(import.meta.dirname),
+  root: path.resolve(import.meta.dirname, "client"),
+  build: {
+    outDir: path.resolve(import.meta.dirname, "dist/public"),
+    emptyOutDir: true,
+  },
+  server: {
+    port: 3000,
+    strictPort: false,
+    host: true,
+    allowedHosts: true,
+  },
+}));
+`;
 
 // ---------------------------------------------------------------------------
 // Template resolution
@@ -302,6 +331,7 @@ export const command: CommandHandler = {
       mkdirSync(dir, { recursive: true });
       cpSync(sourceDir, dir, { recursive: true });
       replaceTemplatePlaceholders(dir, name);
+      const scaffoldSanitizerActions = template === "web-static" ? sanitizeStaticWebProject(dir) : [];
       const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name, seoProfile);
       if (info.category === "webdev" && template === "web-db-user" && promptText) {
         applyFullStackProductPromptSupport(dir, promptText);
@@ -325,7 +355,7 @@ export const command: CommandHandler = {
       }
 
       const devServer = startDev ? installAndStartDevServer(dir) : null;
-      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, crawlerPrerender, devServer, seoProfile, inferredFromPrompt });
+      emitCreateSuccess({ name, template, category: info.category, directory: dir, files, projectState, gitInitialized, crawlerPrerender, scaffoldSanitizerActions, devServer, seoProfile, inferredFromPrompt });
       return;
     }
 
@@ -687,6 +717,7 @@ function emitCreateSuccess(args: {
   projectState?: string;
   gitInitialized?: boolean;
   crawlerPrerender?: boolean;
+  scaffoldSanitizerActions?: string[];
   reused?: boolean;
   devServer: DetachedDevServer | null;
   seoProfile?: string;
@@ -701,6 +732,7 @@ function emitCreateSuccess(args: {
     ...(args.projectState ? { projectState: args.projectState } : {}),
     ...(args.gitInitialized ? { gitInitialized: true } : {}),
     ...(args.crawlerPrerender ? { crawlerPrerender: true } : {}),
+    ...(args.scaffoldSanitizerActions?.length ? { scaffoldSanitizerActions: args.scaffoldSanitizerActions } : {}),
     ...(args.seoProfile && args.seoProfile !== "standard" ? { seoProfile: args.seoProfile } : {}),
     ...(args.inferredFromPrompt ? { inferredFromPrompt: true } : {}),
     ...(args.reused ? { reused: true } : {}),
@@ -755,9 +787,13 @@ export function repairGeneratedProject(dir: string, options: RepairGeneratedProj
 
   const projectName = options.projectName || inferProjectName(dir);
   const changedFiles = replaceTemplatePlaceholdersWithReport(dir, projectName);
-  const lockfileNeedsRefresh = hasPnpmPatchedDependencyDrift(dir);
+  const sanitizerActions = sanitizeStaticWebProject(dir);
+  const lockfileNeedsRefresh = hasPnpmPatchedDependencyDrift(dir) || sanitizerActions.includes("package_json_removed_static_auth_runtime_deps");
   let lockfileRefreshed = false;
-  const actions = changedFiles.length > 0 ? ["placeholders_replaced"] : [];
+  const actions = [
+    ...(changedFiles.length > 0 ? ["placeholders_replaced"] : []),
+    ...sanitizerActions,
+  ];
 
   if (lockfileNeedsRefresh) {
     actions.push("pnpm_lockfile_needs_refresh");
@@ -774,6 +810,70 @@ export function repairGeneratedProject(dir: string, options: RepairGeneratedProj
   }
 
   return { directory: dir, projectName, changedFiles, lockfileNeedsRefresh, lockfileRefreshed, actions };
+}
+
+export function sanitizeStaticWebProject(dir: string): string[] {
+  const actions: string[] = [];
+
+  const constPath = join(dir, "client", "src", "const.ts");
+  if (existsSync(constPath)) {
+    const current = readFileSync(constPath, "utf8");
+    if (/VITE_OAUTH_PORTAL_URL|VITE_APP_ID|app-auth|getLoginUrl/.test(current)) {
+      writeFileSync(constPath, 'export { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";\n');
+      actions.push("removed_static_oauth_const_residue");
+    }
+  }
+
+  const manusDialogPath = join(dir, "client", "src", "components", "ManusDialog.tsx");
+  if (existsSync(manusDialogPath)) {
+    rmSync(manusDialogPath, { force: true });
+    actions.push("removed_manus_dialog_residue");
+  }
+
+  const viteConfigPath = join(dir, "vite.config.ts");
+  if (existsSync(viteConfigPath)) {
+    const current = readFileSync(viteConfigPath, "utf8");
+    if (/vitePluginManusRuntime|vite-plugin-jeriko-runtime|jsxLocPlugin|@builder\.io\/vite-plugin-jsx-loc|manuspre\.computer|manus\.computer|manusvm\.computer/.test(current)) {
+      writeFileSync(viteConfigPath, STATIC_WEB_VITE_CONFIG);
+      actions.push("rewrote_static_vite_config_without_manus_runtime");
+    }
+  }
+
+  const debugPluginPath = join(dir, "vite-plugin-jeriko-debug.ts");
+  if (existsSync(viteConfigPath) && !existsSync(debugPluginPath)) {
+    const templateDebugPlugin = findTemplateDir("webdev/web-static");
+    const sourceDebugPlugin = templateDebugPlugin ? join(templateDebugPlugin, "vite-plugin-jeriko-debug.ts") : "";
+    if (sourceDebugPlugin && existsSync(sourceDebugPlugin)) {
+      writeFileSync(debugPluginPath, readFileSync(sourceDebugPlugin, "utf8"));
+      actions.push("restored_static_debug_plugin");
+    }
+  }
+
+  const packageJsonPath = join(dir, "package.json");
+  if (existsSync(packageJsonPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as Record<string, any>;
+      let changed = false;
+      for (const section of ["dependencies", "devDependencies"] as const) {
+        const deps = pkg[section];
+        if (!deps || typeof deps !== "object") continue;
+        for (const dep of ["vite-plugin-jeriko-runtime", "@builder.io/vite-plugin-jsx-loc"]) {
+          if (dep in deps) {
+            delete deps[dep];
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
+        actions.push("package_json_removed_static_auth_runtime_deps");
+      }
+    } catch {
+      // Leave malformed package files to the existing package/check gates.
+    }
+  }
+
+  return actions;
 }
 
 export function replaceTemplatePlaceholders(dir: string, projectName: string): void {
