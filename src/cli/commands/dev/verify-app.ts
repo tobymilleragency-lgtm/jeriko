@@ -208,6 +208,19 @@ export const command: CommandHandler = {
       });
     }
 
+    const authRuntimeConfig = scanAuthRuntimeConfig(dir, profile);
+    gates.push({ name: "auth_runtime_config_scan", ok: authRuntimeConfig.length === 0 });
+    if (authRuntimeConfig.length > 0) {
+      failWithDetails("Generated database app has broken or unsafe auth runtime wiring. OAuth start buttons must resolve to a real server route, SameSite=None cookies must be Secure, JWT secrets must fail closed, and setup logs must name the actual env keys.", {
+        errorCode: "E_AUTH_RUNTIME_CONFIG",
+        directory: dir,
+        profile,
+        projectState,
+        authRuntimeConfig,
+        gates,
+      });
+    }
+
     const mockDataImports = scanMockDataImports(dir);
     gates.push({ name: "mock_data_import_scan", ok: mockDataImports.length === 0 });
     if (mockDataImports.length > 0) {
@@ -917,6 +930,78 @@ export function scanDbAuthWorkflowWiring(dir: string, profile: AppProfile = infe
       reason: "Database mutations can throw for unauthenticated users, but no visible login/setup flow is wired into the active client app.",
     });
   }
+  return hits;
+}
+
+
+export function scanAuthRuntimeConfig(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const hits: RealnessHit[] = [];
+  let clientReferencesGoogleStart = false;
+  let serverRegistersGoogleStart = false;
+
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (normalized.includes("/node_modules/") || normalized.includes("/dist/") || normalized.includes("/.jeriko/logs/")) return;
+    const lines = content.split(/\r?\n/);
+
+    if (/\/api\/oauth\/google\/start|getGoogleLoginUrl|GOOGLE_LOGIN_PATH/.test(content) && /\/client\/src\//.test(normalized)) {
+      clientReferencesGoogleStart = true;
+    }
+    if (/app\.get\(["'`]\/api\/oauth\/google\/start["'`]/.test(content) && /\/server\//.test(normalized)) {
+      serverRegistersGoogleStart = true;
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const nearby = lines.slice(Math.max(0, i - 4), Math.min(lines.length, i + 5)).join("\n");
+      if (/sameSite\s*:\s*["'`]none["'`]/.test(line) && /secure\s*:\s*isSecureRequest\s*\(/.test(nearby)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: line.trim().slice(0, 180),
+          reason: "SameSite=None cookies are rejected by modern browsers unless Secure is always true. Use SameSite='lax' on HTTP and SameSite='none' only for secure requests.",
+        });
+      }
+      if (/cookieSecret\s*:\s*process\.env\.JWT_SECRET\s*\?\?\s*["'`]["'`]/.test(line)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: "JWT_SECRET ?? empty string",
+          reason: "Session signing falls back to an empty JWT secret. Production auth must fail closed when JWT_SECRET is missing.",
+        });
+      }
+      if (/OAUTH_SERVER_URL is not configured|Set OAUTH_SERVER_URL environment variable/.test(line)) {
+        const appScopedEnvNearby = /[A-Z0-9]+_OAUTH_SERVER_URL|FLIPSCOUT_OAUTH_SERVER_URL|ENV\.oAuthServerUrl/.test(content);
+        hits.push({
+          file,
+          line: i + 1,
+          token: line.trim().slice(0, 180),
+          reason: appScopedEnvNearby
+            ? "OAuth setup log names generic OAUTH_SERVER_URL even though the app uses an app-scoped OAuth server env key. Logs must name the real configured key."
+            : "OAuth setup log names generic OAUTH_SERVER_URL. Generated apps should keep OAuth setup messages aligned with the env names they read.",
+        });
+      }
+      if (/Set VITE_OAUTH_PORTAL_URL and VITE_APP_ID/.test(line)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: line.trim().slice(0, 180),
+          reason: "Login UI setup copy names old client-side VITE OAuth env vars instead of the server-side OAuth setup keys used by generated full-stack apps.",
+        });
+      }
+    }
+  });
+
+  if (clientReferencesGoogleStart && !serverRegistersGoogleStart) {
+    hits.push({
+      file: dir,
+      line: 0,
+      token: "/api/oauth/google/start",
+      reason: "Client Google login points at /api/oauth/google/start, but the Express server does not register that route. The button will hit SPA fallback or 404 instead of starting OAuth.",
+    });
+  }
+
   return hits;
 }
 

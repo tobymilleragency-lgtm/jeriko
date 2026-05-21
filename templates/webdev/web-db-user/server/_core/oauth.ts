@@ -2,6 +2,7 @@ import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
+import { ENV, googleOAuthSetup } from "./env";
 import { sdk } from "./sdk";
 
 function getQueryParam(req: Request, key: string): string | undefined {
@@ -9,7 +10,35 @@ function getQueryParam(req: Request, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function externalOrigin(req: Request) {
+  const forwardedHost = req.headers["x-forwarded-host"];
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost || req.get("host") || req.hostname;
+  const protoRaw = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto || req.protocol || "http";
+  const proto = protoRaw.split(",")[0]?.trim() || "http";
+  return `${proto}://${host}`;
+}
+
 export function registerOAuthRoutes(app: Express) {
+  app.get("/api/oauth/google/start", (req: Request, res: Response) => {
+    if (!googleOAuthSetup.ready) {
+      res.status(503).json({
+        error: "Google sign-in is not configured",
+        missingKeys: googleOAuthSetup.missingKeys,
+      });
+      return;
+    }
+
+    const redirectUri = `${externalOrigin(req)}/api/oauth/callback`;
+    const state = Buffer.from(redirectUri, "utf8").toString("base64");
+    const url = new URL("/app-auth", ENV.oAuthPortalUrl);
+    url.searchParams.set("appId", ENV.appId);
+    url.searchParams.set("redirectUri", redirectUri);
+    url.searchParams.set("state", state);
+    url.searchParams.set("type", "signIn");
+    res.redirect(302, url.toString());
+  });
+
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");

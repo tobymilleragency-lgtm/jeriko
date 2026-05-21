@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -153,6 +153,34 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_LOCALSTORAGE_PRIMARY_DB");
       expect(result.localStoragePersistence[0].file).toBe(path.join(dir, "client", "src", "store.ts"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before running commands when database auth runtime wiring is broken", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-auth-runtime-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "server", "_core"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {};\n");
+      fs.writeFileSync(path.join(dir, "package.json"), '{"name":"auth-runtime","scripts":{"check":"echo should-not-run"}}\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "const.ts"), 'export const GOOGLE_LOGIN_PATH = "/api/oauth/google/start"; export const getGoogleLoginUrl = () => GOOGLE_LOGIN_PATH;\n');
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Login.tsx"), 'export function Login(){ return <p>Set VITE_OAUTH_PORTAL_URL and VITE_APP_ID</p>; }\n');
+      fs.writeFileSync(path.join(dir, "server", "_core", "env.ts"), 'export const ENV = { cookieSecret: process.env.JWT_SECRET ?? "", oAuthServerUrl: process.env.FLIPSCOUT_OAUTH_SERVER_URL ?? "" };\n');
+      fs.writeFileSync(path.join(dir, "server", "_core", "cookies.ts"), 'export function getSessionCookieOptions(req){ return { sameSite: "none", secure: isSecureRequest(req), httpOnly: true, path: "/" }; }\n');
+      fs.writeFileSync(path.join(dir, "server", "_core", "sdk.ts"), 'console.error("[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable.");\n');
+      fs.writeFileSync(path.join(dir, "server", "_core", "oauth.ts"), 'export function registerOAuthRoutes(app){ app.get("/api/oauth/callback", () => {}); }\n');
+
+      const hits = scanAuthRuntimeConfig(dir, "web-db-user");
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install"]);
+
+      expect(hits.map((hit) => hit.token)).toContain("/api/oauth/google/start");
+      expect(hits.some((hit) => hit.reason.includes("empty JWT secret"))).toBe(true);
+      expect(hits.some((hit) => hit.reason.includes("SameSite=None"))).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_AUTH_RUNTIME_CONFIG");
+      expect(result.gates.map((gate: any) => gate.name)).toContain("auth_runtime_config_scan");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -542,7 +570,7 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(true);
       expect(result.data.directory).toBe(dir);
       expect(result.data.profile).toBe("web-static");
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
       expect(result.data.gates.every((gate: any) => gate.ok)).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -570,7 +598,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { check: "pnpm run check", build: "pnpm run build" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -580,7 +608,7 @@ describe("verify-app command", () => {
       expect(state?.verification.lastSuccessfulVerification).toBeDefined();
       expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
       expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
-      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
+      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -616,14 +644,14 @@ describe("verify-app command", () => {
           build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
         },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
 
       expect(result.ok).toBe(true);
       expect(result.data.dependencyStatus.nodeModules).toBe(true);
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"]);
       expect(fs.readFileSync(orderFile, "utf8")).toBe("install\ncheck\nbuild\n");
       expect(result.data.gates.find((gate: any) => gate.name === "install").output).toContain("node_modules missing");
     } finally {
@@ -655,7 +683,7 @@ describe("verify-app command", () => {
       expect(result.failedGate.name).toBe("dependency_preflight");
       expect(result.failedGate.output).toContain("node_modules is still missing");
       expect(result.dependencyStatus.missingNodeModules).toBe(true);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "dependency_preflight"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "dependency_preflight"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
