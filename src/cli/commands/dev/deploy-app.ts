@@ -358,6 +358,11 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   if (!smoke.ok) report.blockers.push(`production smoke failed for ${report.productionUrl}.`);
 
   if (options.profile === "web-db-user") {
+    const healthUrl = joinUrl(report.productionUrl, "/api/health");
+    const databaseHealth = await smokeDatabaseHealthUrl(healthUrl);
+    report.steps.push({ name: "production_database_health", ok: databaseHealth.ok, output: JSON.stringify(databaseHealth) });
+    if (!databaseHealth.ok) report.blockers.push(`production database health failed for ${healthUrl}: ${databaseHealth.error || "database is not ready"}.`);
+
     const oauthUrl = joinUrl(report.productionUrl, "/api/oauth/google/start");
     const oauthSmoke = await smokeGoogleOAuthStartUrl(oauthUrl, report.productionUrl);
     report.oauthSmoke = oauthSmoke;
@@ -444,6 +449,19 @@ async function smokeUrl(url: string): Promise<SmokeResult> {
   }
 }
 
+async function smokeDatabaseHealthUrl(url: string): Promise<SmokeResult> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    const body = await res.text();
+    const ok = res.ok && isDatabaseReadySmokeBody(body);
+    const result: SmokeResult = { url, ok, status: res.status, bytes: body.length };
+    if (!ok) result.error = "health route did not report databaseConfigured:true and databaseReady:true";
+    return result;
+  } catch (err) {
+    return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function smokeGoogleOAuthStartUrl(url: string, productionUrl: string): Promise<SmokeResult> {
   try {
     const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
@@ -507,6 +525,15 @@ export function isSetupRequiredSmokeBody(body: string): boolean {
   try {
     const parsed = JSON.parse(body) as { ok?: unknown; mode?: unknown; missingKeys?: unknown };
     return parsed.ok === false && parsed.mode === "setup_required";
+  } catch {
+    return false;
+  }
+}
+
+export function isDatabaseReadySmokeBody(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { ok?: unknown; databaseConfigured?: unknown; databaseReady?: unknown };
+    return parsed.ok === true && parsed.databaseConfigured === true && parsed.databaseReady === true;
   } catch {
     return false;
   }

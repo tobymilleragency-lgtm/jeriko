@@ -7,6 +7,7 @@ import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
   googleOAuthRedirectUriFromLocation,
+  isDatabaseReadySmokeBody,
   isGoogleRedirectUriMismatch,
   isSetupRequiredSmokeBody,
   isVercelProtectionBody,
@@ -105,6 +106,12 @@ describe("deploy-app production verification helpers", () => {
     });
 
     expect(isSetupRequiredSmokeBody(body)).toBe(true);
+  });
+
+  it("requires web-db-user production health to prove database readiness", () => {
+    expect(isDatabaseReadySmokeBody(JSON.stringify({ ok: true, databaseConfigured: true, databaseReady: true }))).toBe(true);
+    expect(isDatabaseReadySmokeBody(JSON.stringify({ ok: true, databaseConfigured: false }))).toBe(false);
+    expect(isDatabaseReadySmokeBody(JSON.stringify({ ok: true, aiConfigured: true }))).toBe(false);
   });
 
   it("detects Vercel deployment protection bodies", () => {
