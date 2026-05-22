@@ -502,6 +502,26 @@ describe("create command templates", () => {
     }
   });
 
+  it("scaffolds realtor prompts with real estate routes instead of contractor pages", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-realtor-site-"));
+    const projectDir = path.join(dir, "cody-realtor");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build a production-ready realtor website for Cody Chesnutt in Oswego KS with buy, sell, listings, about, area guide, and contact pages", "--name", "Cody Realtor", "--dir", projectDir]);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      const paths = state.appSpec.pages.map((page: any) => page.path);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(paths).toEqual(expect.arrayContaining(["/", "/buy", "/sell", "/listings", "/about", "/area-guide", "/contact"]));
+      expect(paths).not.toContain("/services");
+      expect(paths).not.toContain("/pricing");
+      expect(state.appSpec.features).toContain("premium local business conversion system");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("routes natural-language full-stack product prompts to the database app template", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-from-product-prompt-"));
     const projectDir = path.join(dir, "flipscout");

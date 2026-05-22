@@ -178,7 +178,7 @@ function buildAppSpecContract(args: {
   seoProfile?: string;
 }): AppSpecContract {
   const prompt = args.prompt?.trim() || `Create ${args.name} from the ${args.template} template.`;
-  const localService = args.seoProfile === "local-service" || /contractor|roof|remodel|plumb|electric|hvac|local|seo|service area|near me/i.test(prompt);
+  const localService = args.seoProfile === "local-service" || /contractor|roof|remodel|plumb|electric|hvac|realtor|real estate|realty|homes for sale|brokerage|local|seo|service area|near me/i.test(prompt);
   const fullStack = args.profile === "web-db-user";
   return buildPromptAppSpecContract(args, prompt, localService, fullStack);
 }
@@ -194,12 +194,13 @@ function buildPromptAppSpecContract(args: {
   const marketingPages = inferMarketingPages(prompt, { fullStack, localService, hasExplicitPrompt: Boolean(args.prompt) });
   const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages, ...marketingPages];
   const hasMultiPageMarketing = !fullStack && marketingPages.length > 0;
+  const contractorMarketing = /contractor|roof|remodel|plumb|electric|hvac|estimate|quote/i.test(prompt);
   const features = fullStack
     ? uniqueStrings(["authenticated user workflow", "Supabase Auth foundation", "database-backed app state", "Supabase Storage photo uploads", ...productWorkflow.features])
     : uniqueStrings([
       "production homepage",
       "customer-ready marketing content",
-      ...(hasMultiPageMarketing ? ["multi-page marketing site", "conversion-focused contact path", "premium contractor conversion system", "SPA internal navigation", "deploy-safe Vercel static routing"] : []),
+      ...(hasMultiPageMarketing ? ["multi-page marketing site", "conversion-focused contact path", contractorMarketing ? "premium contractor conversion system" : "premium local business conversion system", "SPA internal navigation", "deploy-safe Vercel static routing"] : []),
       ...(localService ? ["local service SEO content"] : []),
     ]);
   return {
@@ -219,7 +220,9 @@ function buildPromptAppSpecContract(args: {
       "Generated app matches this app spec contract",
       "No forbidden integrations appear unless explicitly allowed in this spec",
       ...(hasMultiPageMarketing ? ["Every appSpec page is implemented as a routable page, not collapsed into a single landing page"] : []),
-      ...(hasMultiPageMarketing ? ["Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"] : []),
+      ...(hasMultiPageMarketing ? [contractorMarketing
+        ? "Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"
+        : "Premium marketing sites include a hero system visual, animated value-flow module, interactive conversion/qualification module, proof/comparison section, sticky CTA, and SPA internal navigation"] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
       ...(fullStack ? ["Supabase Auth, database schema, and storage foundation are scaffolded before product-specific data/photo workflows are added"] : []),
     ],
@@ -237,6 +240,16 @@ function inferMarketingPages(prompt: string, args: { fullStack: boolean; localSe
 
   const pages: Array<{ path: string; title: string }> = [];
   const add = (path: string, title: string) => pages.push({ path, title });
+
+  if (/\b(realtor|real estate|realty|brokerage|homes? for sale|listings?)\b/.test(text)) {
+    add("/buy", "Buy");
+    add("/sell", "Sell");
+    add("/listings", "Listings");
+    if (/\babout|agent|realtor|team\b/.test(text)) add("/about", "About");
+    add("/area-guide", "Area Guide");
+    add("/contact", "Contact");
+    return uniquePages(pages);
+  }
 
   add("/services", "Services");
   if (/\bindustr(y|ies)|contractors?|trades?|niches?|markets?\b/.test(text)) add("/industries", "Industries");

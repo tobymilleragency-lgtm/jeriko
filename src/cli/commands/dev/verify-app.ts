@@ -881,7 +881,7 @@ function lineNumberAt(content: string, index: number): number {
 export function scanPremiumMarketingSiteQuality(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
   const spec = projectState?.appSpec;
   if (!spec || projectState?.profile !== "web-static") return [];
-  const requiresPremium = spec.features?.some((feature) => /premium contractor conversion system|multi-page marketing site|local service seo content/i.test(feature))
+  const requiresPremium = spec.features?.some((feature) => /premium (?:contractor|local business) conversion system|multi-page marketing site|local service seo content/i.test(feature))
     || spec.successCriteria?.some((criterion) => /Premium marketing sites include/i.test(criterion));
   if (!requiresPremium) return [];
 
@@ -891,22 +891,41 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
   const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
   const issues: AppSpecIssue[] = [];
-  const requiredRoutes = ["/services", "/pricing", "/contact"];
+  const contractorSite = /contractor|roof|remodel|plumb|electric|hvac|lead|estimate/i.test([spec.prompt, ...(spec.features ?? [])].join(" "));
+  const requiredRoutes = contractorSite ? ["/services", "/pricing", "/contact"] : ["/contact"];
   const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(page.path)) : [];
   if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
-    issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: "Premium marketing sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure." });
+    issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: contractorSite
+      ? "Premium contractor/local-service sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure."
+      : "Premium local business sites must keep a full multi-page appSpec contract with at least five routable pages and /contact. Do not collapse the contract to a one-page brochure." });
   }
   const requireAppToken = (token: string, reason: string) => {
     if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });
   };
 
+  const anyAppToken = (tokens: string[], reason: string) => {
+    if (!tokens.some((token) => app.includes(token))) issues.push({ file: "client/src/App.tsx", line: 0, token: tokens.join("|"), reason });
+  };
+
   requireAppToken("function AppLink", "Internal links must use SPA navigation so mobile taps do not flash the prerender fallback between pages.");
   requireAppToken("useLocation", "SPA navigation must route through wouter location state instead of full page reloads.");
-  requireAppToken("LeadOpsVisual", "Premium contractor sites need a hero system/command-center visual near the fold.");
-  requireAppToken("LeadFlowLineSection", "Premium contractor sites need an animated lead-flow module, not a flat brochure page.");
-  requireAppToken("LeadLeakAudit", "Premium contractor sites need an interactive lead-leak audit/checklist module.");
-  requireAppToken("BeforeAfterComparison", "Premium contractor sites need a before/after comparison showing brochure site vs lead system.");
-  requireAppToken("StickyAuditRail", "Premium contractor sites need a restrained sticky CTA for conversion.");
+  if (contractorSite) {
+    requireAppToken("LeadOpsVisual", "Premium contractor sites need a hero system/command-center visual near the fold.");
+    requireAppToken("LeadFlowLineSection", "Premium contractor sites need an animated lead-flow module, not a flat brochure page.");
+    requireAppToken("LeadLeakAudit", "Premium contractor sites need an interactive lead-leak audit/checklist module.");
+    requireAppToken("BeforeAfterComparison", "Premium contractor sites need a before/after comparison showing brochure site vs lead system.");
+    requireAppToken("StickyAuditRail", "Premium contractor sites need a restrained sticky CTA for conversion.");
+  } else {
+    anyAppToken(["LeadOpsVisual", "HeroVisual", "CommandCenter", "MarketVisual", "ListingVisual"], "Premium local business sites need a strong hero visual or command/market panel near the fold.");
+    anyAppToken(["LeadFlowLineSection", "PathwaySection", "ValueFlow", "MarketPathway"], "Premium local business sites need an animated/value-flow or pathway module, not a flat brochure page.");
+    anyAppToken(["LeadLeakAudit", "InquiryCard", "Qualification", "HomeValue", "Buyer inquiry", "Seller home value"], "Premium local business sites need an interactive conversion or qualification module.");
+    anyAppToken(["BeforeAfterComparison", "TrustSection", "ProofSection", "SourceSection", "Verified details"], "Premium local business sites need proof/source/trust content, not thin generic copy.");
+    anyAppToken(["StickyAuditRail", "MobileSticky", "fixed inset-x-0 bottom-0", "position: fixed"], "Premium local business sites need a restrained sticky CTA for conversion.");
+  }
+
+  if (/\b(redo|redesign|replace|current site|existing site|look it up|research)\b/i.test(spec.prompt) && !hasReferencedLocalImageAsset(dir, app)) {
+    issues.push({ file: "client/src/App.tsx", line: 0, token: "local-source-images", reason: "Redesign/research prompts must use verified source/local image assets or explicitly document that no safe public assets were found; do not ship only remote stock placeholders." });
+  }
 
   if (/<a\s+[^>]*href=["']\//.test(app.replace(/function AppLink[\s\S]*?\n}\n/, ""))) {
     issues.push({ file: "client/src/App.tsx", line: 0, token: "raw-internal-anchor", reason: "Internal route anchors outside AppLink cause full page reloads and mobile white/prerender flashes." });
@@ -944,6 +963,19 @@ function normalizeSpecRoute(route: string): string {
 function isProjectMetadataFile(root: string, file: string): boolean {
   const rel = relative(root, file).replace(/\\/g, "/");
   return rel === ".jeriko" || rel.startsWith(".jeriko/");
+}
+
+function hasReferencedLocalImageAsset(dir: string, app: string): boolean {
+  const localRefs = Array.from(app.matchAll(/["'`]([^"'`]*(?:\/images\/|\/assets\/)[^"'`]*\.(?:png|jpe?g|webp|gif|svg))[^"'`]*["'`]/gi))
+    .map((match) => match[1] ?? "")
+    .filter((value) => value.startsWith("/") || value.startsWith("./") || value.startsWith("../"));
+  if (localRefs.length === 0) return false;
+  return localRefs.some((ref) => {
+    const relativePath = ref.replace(/^\.\.\//, "").replace(/^\.\//, "").replace(/^\//, "");
+    return existsSync(join(dir, "client", "public", relativePath))
+      || existsSync(join(dir, "public", relativePath))
+      || existsSync(join(dir, "client", "src", relativePath));
+  });
 }
 
 function buildSourceIndex(dir: string): { files: Set<string>; text: string } {
