@@ -7,6 +7,7 @@ import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
   googleOAuthRedirectUriFromLocation,
+  isGoogleRedirectUriMismatch,
   isSetupRequiredSmokeBody,
   isVercelProtectionBody,
   resolveGeneratedAppRoot,
@@ -117,6 +118,11 @@ describe("deploy-app production verification helpers", () => {
 
     expect(googleOAuthRedirectUriFromLocation(location)).toBe("https://flipscout-orpin.vercel.app/api/oauth/callback");
     expect(googleOAuthRedirectUriFromLocation("https://example.com/not-google?redirect_uri=https://wrong")).toBeUndefined();
+  });
+
+  it("detects Google redirect_uri_mismatch after following the authorize redirect", () => {
+    expect(isGoogleRedirectUriMismatch("https://accounts.google.com/signin/oauth/error?authError=abc", "redirect_uri_mismatch")).toBe(true);
+    expect(isGoogleRedirectUriMismatch("https://accounts.google.com/o/oauth2/v2/auth", "<html>Sign in with Google</html>")).toBe(false);
   });
 });
 

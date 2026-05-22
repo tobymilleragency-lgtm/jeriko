@@ -9,8 +9,10 @@ import {
   buildStuckDiagnosis,
   checkAgentResourceLimit,
   createModelRequestAbortController,
+  hasProductionDeployEvidence,
   hasRouteBreadthEvidence,
   nextStreamChunkWithNoProgressTimeout,
+  requiresProductionDeployVerification,
   requiresRouteBreadthVerification,
   runAgent,
 } from "../../src/daemon/agent/agent.js";
@@ -362,5 +364,27 @@ describe("agent no-progress guard", () => {
       },
     ];
     expect(hasRouteBreadthEvidence(proved)).toBe(true);
+  });
+
+  it("requires live production deploy/OAuth proof before production completion claims", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "Deploy this generated web-db-user app to production on Vercel and fix Google auth." },
+      { role: "tool", content: "verify_app passed; local preview http://127.0.0.1:4187/" },
+    ];
+
+    expect(requiresProductionDeployVerification(messages)).toBe(true);
+    expect(hasProductionDeployEvidence(messages)).toBe(false);
+
+    const blocked: DriverMessage[] = [
+      ...messages,
+      { role: "tool", content: "production smoke HTTP/2 200; /api/oauth/google/status OK; /api/oauth/google/start redirect_uri=https://example.com/api/oauth/callback; Google returned redirect_uri_mismatch" },
+    ];
+    expect(hasProductionDeployEvidence(blocked)).toBe(false);
+
+    const proved: DriverMessage[] = [
+      ...messages,
+      { role: "tool", content: "vercel inspect Ready Aliased https://example.com; production smoke status=200; /api/oauth/google/status OK; /api/oauth/google/start redirect_uri=https://example.com/api/oauth/callback; Google authorize follow reached account chooser without mismatch" },
+    ];
+    expect(hasProductionDeployEvidence(proved)).toBe(true);
   });
 });

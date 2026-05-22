@@ -42,6 +42,8 @@ interface SmokeResult {
   status?: number;
   bytes?: number;
   error?: string;
+  location?: string;
+  followedUrl?: string;
 }
 
 export interface DeployAppReport {
@@ -447,7 +449,7 @@ async function smokeGoogleOAuthStartUrl(url: string, productionUrl: string): Pro
     const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
     const body = await res.text();
     const location = res.headers.get("location") ?? undefined;
-    const result: SmokeResult = { url, ok: false, status: res.status, bytes: body.length };
+    const result: SmokeResult = { url, ok: false, status: res.status, bytes: body.length, location };
 
     if (isSetupRequiredSmokeBody(body)) return { ...result, error: "setup_required response from production route" };
     if (isVercelProtectionBody(body)) return { ...result, error: "Vercel deployment protection intercepted the OAuth start route" };
@@ -463,9 +465,32 @@ async function smokeGoogleOAuthStartUrl(url: string, productionUrl: string): Pro
       return { ...result, error: `Google OAuth redirect_uri mismatch: got ${redirectUri}; expected ${expected}` };
     }
 
-    return { ...result, ok: true };
+    const googleResult = await smokeGoogleOAuthAuthorizeUrl(location);
+    if (!googleResult.ok) {
+      return { ...result, followedUrl: googleResult.followedUrl, error: googleResult.error };
+    }
+
+    return { ...result, followedUrl: googleResult.followedUrl, ok: true };
   } catch (err) {
     return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function smokeGoogleOAuthAuthorizeUrl(location: string): Promise<{ ok: boolean; followedUrl?: string; error?: string }> {
+  try {
+    const res = await fetch(location, { redirect: "follow", signal: AbortSignal.timeout(30_000) });
+    const body = await res.text();
+    const followedUrl = res.url;
+    if (isGoogleRedirectUriMismatch(followedUrl, body)) {
+      return {
+        ok: false,
+        followedUrl,
+        error: "Google rejected the production callback with redirect_uri_mismatch. Add the exact callback URL to the Google OAuth client before claiming auth is fixed.",
+      };
+    }
+    return { ok: true, followedUrl };
+  } catch (err) {
+    return { ok: false, error: `Google OAuth authorize follow failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -499,6 +524,10 @@ export function googleOAuthRedirectUriFromLocation(location: string): string | u
   } catch {
     return undefined;
   }
+}
+
+export function isGoogleRedirectUriMismatch(url: string, body: string): boolean {
+  return /redirect_uri_mismatch/i.test(url) || /redirect_uri_mismatch/i.test(body);
 }
 
 function normalizeUrlForCompare(url: string): string {
