@@ -7,6 +7,7 @@ import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
   googleOAuthRedirectUriFromLocation,
+  inferDeployAppProfile,
   isDatabaseReadySmokeBody,
   isGoogleRedirectUriMismatch,
   isSetupRequiredSmokeBody,
@@ -65,6 +66,24 @@ describe("deploy-app generated app root locking", () => {
   it("supports explicit generated app roots outside ~/.jeriko/projects", () => {
     const dir = makeProject("external-app", testHome);
     expect(resolveGeneratedAppRoot({ dir }).dir).toBe(dir);
+  });
+});
+
+describe("deploy-app profile inference", () => {
+  it("infers web-db-user from project-state even when --profile is omitted", () => {
+    const dir = makeProject("profile-state-app");
+    fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({ profile: "web-db-user" }));
+
+    expect(inferDeployAppProfile(dir, undefined)).toBe("web-db-user");
+  });
+
+  it("infers web-db-user from Drizzle/server files for older generated apps", () => {
+    const dir = makeProject("profile-files-app");
+    fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {};\n");
+
+    expect(inferDeployAppProfile(dir, undefined)).toBe("web-db-user");
   });
 });
 

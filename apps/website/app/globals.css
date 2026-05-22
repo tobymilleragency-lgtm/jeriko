@@ -127,16 +127,33 @@ h1 {
 
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
 }
 
 .feature-card {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px;
+  border-radius: 14px;
+  padding: 22px;
   background: rgba(24, 24, 27, 0.6);
   transition: border-color 0.15s;
+}
+
+.feature-card:first-child {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: start;
+}
+
+.feature-card:first-child .feature-icon-wrap {
+  grid-row: span 2;
+  margin-bottom: 0;
+}
+
+.feature-card:first-child h3,
+.feature-card:first-child p {
+  min-width: 0;
 }
 
 .feature-card:hover {

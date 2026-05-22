@@ -1208,7 +1208,7 @@ export function requiresProductWorkflowVerification(messages: DriverMessage[]): 
   if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
   const productTerms = /\b(inventory|scanner|scan|orders?|shipments?|listings?|customers?|buyers?|expenses?|sourcing|finance|calculator|workflow|dashboard|portal|crm|save|upload|photos?|items?|records?)\b/.test(text);
   const implementationTerms = /\b(build|create|generate|scaffold|wire|connect|hook up|integrate|implement|update|modify|fix|repair|ship|done|completed?)\b/.test(text);
-  const appTerms = /\b(web-db-user|full-stack|database app|product app|generated app|app)\b/.test(text);
+  const appTerms = /\b(web-db-user|full-stack|database app|product app|generated app)\b/.test(text);
   return productTerms && implementationTerms && appTerms;
 }
 

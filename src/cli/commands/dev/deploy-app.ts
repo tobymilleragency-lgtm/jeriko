@@ -203,17 +203,20 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   };
 
   if (dryRun) {
+    const effectiveProfile = inferDeployAppProfile(dir, options.profile);
     report.steps.push({ name: "lock_target", ok: true, output: dir });
-    report.steps.push({ name: "verify_app", ok: true, command: buildVerifyCommand(dir, options).join(" "), skipped: options.skipVerify === true });
+    report.steps.push({ name: "verify_app", ok: true, command: buildVerifyCommand(dir, { ...options, profile: effectiveProfile }).join(" "), skipped: options.skipVerify === true });
     report.steps.push({ name: "git_push", ok: true, command: `git push origin ${branch}` });
     report.steps.push({ name: "vercel_deploy", ok: true, command: "vercel deploy --prod --yes" });
     return report;
   }
 
   report.gitignoreUpdated = ensureVercelIgnored(dir);
+  const effectiveProfile = inferDeployAppProfile(dir, options.profile);
+  const effectiveOptions = { ...options, profile: effectiveProfile };
 
   if (options.skipVerify !== true) {
-    const verify = runCommand(buildVerifyCommand(dir, options), dir, 900_000);
+    const verify = runCommand(buildVerifyCommand(dir, effectiveOptions), dir, 900_000);
     report.steps.push(stepFromCommand("verify_app", verify));
     if (verify.status !== 0) {
       report.blockers.push("verify-app failed; deploy refused.");
@@ -357,7 +360,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   report.steps.push({ name: "production_smoke", ok: smoke.ok, output: JSON.stringify(smoke) });
   if (!smoke.ok) report.blockers.push(`production smoke failed for ${report.productionUrl}.`);
 
-  if (options.profile === "web-db-user") {
+  if (effectiveProfile === "web-db-user") {
     const healthUrl = joinUrl(report.productionUrl, "/api/health");
     const databaseHealth = await smokeDatabaseHealthUrl(healthUrl);
     report.steps.push({ name: "production_database_health", ok: databaseHealth.ok, output: JSON.stringify(databaseHealth) });
@@ -371,6 +374,26 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   }
 
   return report;
+}
+
+export function inferDeployAppProfile(dir: string, explicitProfile?: string): string | undefined {
+  const normalized = normalizeOptional(explicitProfile);
+  if (normalized) return normalized;
+
+  const statePath = join(dir, ".jeriko", "project-state.json");
+  if (existsSync(statePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as { profile?: unknown };
+      if (parsed.profile === "web-static" || parsed.profile === "web-db-user") return parsed.profile;
+    } catch {
+      // Fall through to file-based inference for older or damaged generated apps.
+    }
+  }
+
+  if (existsSync(join(dir, "server")) && (existsSync(join(dir, "drizzle.config.ts")) || existsSync(join(dir, "drizzle.config.js")))) {
+    return "web-db-user";
+  }
+  return undefined;
 }
 
 function buildVerifyCommand(dir: string, options: DeployAppOptions): string[] {

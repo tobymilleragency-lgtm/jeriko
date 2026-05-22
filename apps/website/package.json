@@ -2,6 +2,7 @@
   "name": "@jeriko/website",
   "private": true,
   "version": "0.1.0",
+  "workspaces": [],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
