@@ -2020,14 +2020,16 @@ async function verifyWorkflowButtonMutation(page: any): Promise<string | null> {
     const beforeText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
     const beforeHtml = await page.content().catch(() => "");
     await locator.click({ timeout: 1_500 }).catch(() => undefined);
-    await delay(250);
-    const afterUrl = page.url();
-    const afterText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
-    const afterHtml = await page.content().catch(() => "");
-    const textChanged = normalizeMutationText(beforeText) !== normalizeMutationText(afterText);
-    const htmlChanged = beforeHtml !== afterHtml;
-    const urlChanged = beforeUrl !== afterUrl;
-    if (textChanged || htmlChanged || urlChanged) return null;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await delay(150);
+      const afterUrl = page.url();
+      const afterText = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+      const afterHtml = await page.content().catch(() => "");
+      const textChanged = normalizeMutationText(beforeText) !== normalizeMutationText(afterText);
+      const htmlChanged = beforeHtml !== afterHtml;
+      const urlChanged = beforeUrl !== afterUrl;
+      if (textChanged || htmlChanged || urlChanged) return null;
+    }
   }
 
   return `Workflow button mutation check failed: visible workflow control(s) did not change URL, DOM, or page text after click: ${candidates.map((candidate) => candidate.text).join(", ")}. Wire buttons to real state/server actions before claiming the app works.`;
