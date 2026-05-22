@@ -222,7 +222,11 @@ function projectListeningPids(dir: string): number[] {
 }
 
 function shouldAutoOpenUrl(): boolean {
-  return !/^(0|false|no)$/i.test(String(process.env.JERIKO_WEBDEV_AUTO_OPEN ?? "1"));
+  // Agent-driven app-builder work should report the localhost URL instead of
+  // repeatedly opening desktop browser tabs. Auto-open is opt-in for explicit
+  // interactive sessions only; runaway browser launches contributed to OOM
+  // pressure during generated-app recovery runs.
+  return /^(1|true|yes)$/i.test(String(process.env.JERIKO_WEBDEV_AUTO_OPEN ?? "0"));
 }
 
 function openUrlBestEffort(url: string): boolean {

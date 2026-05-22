@@ -507,6 +507,7 @@ export async function* runAgent(
         const missingAiScannerProof = requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages);
         const missingPremiumMarketingProof = requiresPremiumMarketingVerification(messages) && !hasPremiumMarketingEvidence(messages);
         const missingProductionDeployProof = requiresProductionDeployVerification(messages) && !hasProductionDeployEvidence(messages);
+        const missingProductWorkflowProof = requiresProductWorkflowVerification(messages) && !hasProductWorkflowEvidence(messages);
         const gateMessage = missingRouteBreadthProof
           ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Full web-app/site work requires route-breadth proof before claiming completion. Prove ROUTE_BREADTH_OK with the implemented routable pages from appSpec/user request, including each requested page such as /services, /industries, /case-studies, /process, /pricing, /resources, and /contact. A one-page landing page plus check/build/verify is not a completed full app."
           : missingContentStructure
@@ -517,7 +518,9 @@ export async function* runAgent(
               ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Contractor/local-service marketing site work requires premium conversion-system proof before claiming completion. Run verify_app and prove `premium_marketing_site_scan` passed, preserving SPA-safe AppLink/useLocation navigation, LeadOpsVisual, LeadFlowLineSection, LeadLeakAudit, BeforeAfterComparison, StickyAuditRail, dark no-flash base styles, and Vercel dist/public static routing. Brochureware plus generic check/build/browser-smoke evidence is not enough."
               : missingProductionDeployProof
                 ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Production deploy work requires deploy_app or equivalent live production evidence before claiming completion. Prove Vercel deployment/alias, production URL smoke, and for web-db-user apps production Google OAuth /status + /start + no Google redirect_uri_mismatch. If Google Cloud or DNS is the blocker, report BLOCKED with exact external action instead of saying fixed."
-                : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
+                : missingProductWorkflowProof
+                  ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Full-stack product app work requires live product workflow proof before claiming completion. Prove PRODUCT_WORKFLOW_OK or READ_AFTER_WRITE_OK with a real create/save/scan/order/listing request, returned ID/result, and list/detail readback from the generated backend/database. Static verify_app, check/build, and browser smoke are not enough for production-builder claims."
+                  : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -1119,6 +1122,7 @@ export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
   if (requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
   if (requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages)) return false;
+  if (requiresProductWorkflowVerification(messages) && !hasProductWorkflowEvidence(messages)) return false;
   if (requiresPremiumMarketingVerification(messages) && !hasPremiumMarketingEvidence(messages)) return false;
   if (requiresProductionDeployVerification(messages) && !hasProductionDeployEvidence(messages)) return false;
   return true;
@@ -1191,6 +1195,37 @@ function hasAiScannerEvidence(messages: DriverMessage[]): boolean {
     return /aiscanner|scanner/.test(haystack)
       && /productname|decision|confidence|estimatedsaleprice|netprofit/.test(haystack)
       && /ok"?\s*:?\s*true|success/.test(haystack);
+  });
+}
+
+export function requiresProductWorkflowVerification(messages: DriverMessage[]): boolean {
+  const text = messages
+    .filter((msg) => msg.role === "user")
+    .map((msg) => messageText(msg))
+    .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
+    .join("\n")
+    .toLowerCase();
+  if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
+  const productTerms = /\b(inventory|scanner|scan|orders?|shipments?|listings?|customers?|buyers?|expenses?|sourcing|finance|calculator|workflow|dashboard|portal|crm|save|upload|photos?|items?|records?)\b/.test(text);
+  const implementationTerms = /\b(build|create|generate|scaffold|wire|connect|hook up|integrate|implement|update|modify|fix|repair|ship|done|completed?)\b/.test(text);
+  const appTerms = /\b(web-db-user|full-stack|database app|product app|generated app|app)\b/.test(text);
+  return productTerms && implementationTerms && appTerms;
+}
+
+export function hasProductWorkflowEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    if (/(PRODUCT_WORKFLOW_OK|READ_AFTER_WRITE_OK)/i.test(text)
+      && /\b(post|create|save|scan|order|listing|inventory|item|record|mutation|request)\b/i.test(text)
+      && /\b(id|recordId|itemId|scanId|orderId|result|saved|created)\b/i.test(text)
+      && /\b(get|list|detail|readback|read-after-write|fetched|returned)\b/i.test(text)) return true;
+    const parsed = parseToolResultJson(text);
+    const haystack = JSON.stringify(parsed ?? {}).toLowerCase();
+    return /(product_workflow_ok|read_after_write_ok)/.test(haystack)
+      && /(created|saved|post|mutation|scan|inventory|order|listing)/.test(haystack)
+      && /(id|recordid|itemid|scanid|orderid|result)/.test(haystack)
+      && /(readback|list|detail|get|fetched|returned)/.test(haystack);
   });
 }
 

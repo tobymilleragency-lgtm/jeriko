@@ -9,9 +9,11 @@ import {
   buildStuckDiagnosis,
   checkAgentResourceLimit,
   createModelRequestAbortController,
+  hasProductWorkflowEvidence,
   hasProductionDeployEvidence,
   hasRouteBreadthEvidence,
   nextStreamChunkWithNoProgressTimeout,
+  requiresProductWorkflowVerification,
   requiresProductionDeployVerification,
   requiresRouteBreadthVerification,
   runAgent,
@@ -386,5 +388,27 @@ describe("agent no-progress guard", () => {
       { role: "tool", content: "vercel inspect Ready Aliased https://example.com; production smoke status=200; /api/oauth/google/status OK; /api/oauth/google/start redirect_uri=https://example.com/api/oauth/callback; Google authorize follow reached account chooser without mismatch" },
     ];
     expect(hasProductionDeployEvidence(proved)).toBe(true);
+  });
+
+  it("requires read-after-write product workflow proof for full-stack product app completion", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "Build a generated full-stack web-db-user inventory scanner app with upload, save to inventory, orders, and listing workflow." },
+      { role: "tool", content: "verify_app passed; check/build/browser_smoke passed; local preview http://127.0.0.1:4187/" },
+    ];
+
+    expect(requiresProductWorkflowVerification(messages)).toBe(true);
+    expect(hasProductWorkflowEvidence(messages)).toBe(false);
+
+    const fakeLocalOnly: DriverMessage[] = [
+      ...messages,
+      { role: "tool", content: "button exists and scan page renders with sample inventory cards" },
+    ];
+    expect(hasProductWorkflowEvidence(fakeLocalOnly)).toBe(false);
+
+    const proved: DriverMessage[] = [
+      ...messages,
+      { role: "tool", content: "PRODUCT_WORKFLOW_OK POST /api/inventory created itemId=inv_123; GET /api/inventory returned readback with itemId=inv_123 and saved listing result" },
+    ];
+    expect(hasProductWorkflowEvidence(proved)).toBe(true);
   });
 });

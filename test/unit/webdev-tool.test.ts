@@ -773,13 +773,19 @@ describe("webdev tool — restart action", () => {
     expect(result.data.logFile).toContain("webdev-restart.log");
   });
 
-  it("auto-open can be disabled for non-interactive verification", async () => {
+  it("auto-open defaults off and can be enabled only for explicit interactive sessions", async () => {
     const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
     const previous = process.env.JERIKO_WEBDEV_AUTO_OPEN;
-    process.env.JERIKO_WEBDEV_AUTO_OPEN = "0";
     try {
+      delete process.env.JERIKO_WEBDEV_AUTO_OPEN;
+      expect(__webdevTest.shouldAutoOpenUrl()).toBe(false);
+
+      process.env.JERIKO_WEBDEV_AUTO_OPEN = "0";
       expect(__webdevTest.shouldAutoOpenUrl()).toBe(false);
       expect(__webdevTest.openUrlBestEffort("http://127.0.0.1:4175/")).toBe(false);
+
+      process.env.JERIKO_WEBDEV_AUTO_OPEN = "1";
+      expect(__webdevTest.shouldAutoOpenUrl()).toBe(true);
     } finally {
       if (previous === undefined) delete process.env.JERIKO_WEBDEV_AUTO_OPEN;
       else process.env.JERIKO_WEBDEV_AUTO_OPEN = previous;
