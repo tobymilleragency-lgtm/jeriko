@@ -1224,6 +1224,38 @@ describe("verify-app command", () => {
     }
   });
 
+  it("does not require product workflow contract for the generic web-db-user auth/storage foundation", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-generic-db-contract-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "generic-portal",
+        template: "web-db-user",
+        profile: "web-db-user",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/", health: "/api/health" },
+        appSpec: {
+          version: 1,
+          source: "template",
+          prompt: "Create generic-portal from the web-db-user template.",
+          appType: "authenticated-web-app",
+          pages: [{ path: "/", title: "Home" }],
+          features: ["authenticated user workflow", "Supabase Auth foundation", "database-backed app state", "Supabase Storage photo uploads"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["Supabase Auth, database schema, and storage foundation are scaffolded before product-specific data/photo workflows are added"],
+        },
+        verification: { requiredGates: ["workflow_contract"] },
+      }, null, 2));
+
+      expect(scanWorkflowContract(dir, readProjectState(dir))).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("detects unwired primary actions and hardcoded business math in product apps", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-action-wiring-"));
     try {

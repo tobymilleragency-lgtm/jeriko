@@ -687,8 +687,12 @@ export function scanAppSpecCompliance(dir: string, projectState: ProjectState | 
 export function scanWorkflowContract(_dir: string, projectState: ProjectState | null): AppSpecIssue[] {
   const spec = projectState?.appSpec;
   if (!spec) return [];
-  const prompt = `${spec.prompt} ${spec.features?.join(" ") ?? ""}`.toLowerCase();
-  const productWorkflowRequired = projectState.profile === "web-db-user" && /scanner|scan|resale|flip|inventory|listing|profit|upload|paste|photo|cost/.test(prompt);
+  const prompt = `${spec.prompt ?? ""}`.toLowerCase();
+  const workflowText = (spec.workflows ?? [])
+    .flatMap((workflow) => [workflow.label, ...(workflow.inputs ?? []), ...(workflow.actions ?? []), ...(workflow.outputs ?? []), ...(workflow.persistence ?? [])])
+    .join(" ")
+    .toLowerCase();
+  const productWorkflowRequired = projectState.profile === "web-db-user" && /scanner|scan|resale|flip|inventory|listing|profit|upload|paste|photo|cost|order|shipment/.test(`${prompt} ${workflowText}`);
   if (!productWorkflowRequired) return [];
 
   const issues: AppSpecIssue[] = [];
