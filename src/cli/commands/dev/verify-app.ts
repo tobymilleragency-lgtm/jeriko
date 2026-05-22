@@ -1785,8 +1785,8 @@ function detectFrozenInstallCommand(dir: string): string | null {
   if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm install --frozen-lockfile --ignore-scripts";
   if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"))) return "bun install --frozen-lockfile";
   if (existsSync(join(dir, "yarn.lock"))) return "yarn install --frozen-lockfile";
-  if (existsSync(join(dir, "package-lock.json"))) return "npm ci --ignore-scripts";
-  return "npm install --ignore-scripts";
+  if (existsSync(join(dir, "package-lock.json"))) return "npm ci --ignore-scripts --workspaces=false";
+  return "npm install --ignore-scripts --workspaces=false";
 }
 
 function detectScriptCommand(dir: string, script: string): string | null {
