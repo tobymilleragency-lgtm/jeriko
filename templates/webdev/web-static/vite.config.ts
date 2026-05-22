@@ -2,10 +2,9 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { defineConfig } from "vite";
-import jerikoDebug from "./vite-plugin-jeriko-debug";
 
-export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss(), command === "serve" ? jerikoDebug() : null].filter(Boolean),
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -25,4 +24,4 @@ export default defineConfig(({ command }) => ({
     host: true,
     allowedHosts: true,
   },
-}));
+});
