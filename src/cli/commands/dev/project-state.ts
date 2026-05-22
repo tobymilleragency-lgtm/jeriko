@@ -189,10 +189,17 @@ function buildPromptAppSpecContract(args: {
   seoProfile?: string;
 }, prompt: string, localService: boolean, fullStack: boolean): AppSpecContract {
   const productWorkflow = inferProductWorkflow(prompt, fullStack);
-  const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages];
+  const marketingPages = inferMarketingPages(prompt, { fullStack, localService, hasExplicitPrompt: Boolean(args.prompt) });
+  const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages, ...marketingPages];
+  const hasMultiPageMarketing = !fullStack && marketingPages.length > 0;
   const features = fullStack
     ? uniqueStrings(["authenticated user workflow", "database-backed app state", ...productWorkflow.features])
-    : ["production homepage", localService ? "local service SEO content" : "customer-ready marketing content"];
+    : uniqueStrings([
+      "production homepage",
+      "customer-ready marketing content",
+      ...(hasMultiPageMarketing ? ["multi-page marketing site", "conversion-focused contact path"] : []),
+      ...(localService ? ["local service SEO content"] : []),
+    ]);
   return {
     version: 1,
     source: args.prompt ? "prompt" : "template",
@@ -209,9 +216,36 @@ function buildPromptAppSpecContract(args: {
       "Full required verify-app gate passes",
       "Generated app matches this app spec contract",
       "No forbidden integrations appear unless explicitly allowed in this spec",
+      ...(hasMultiPageMarketing ? ["Every appSpec page is implemented as a routable page, not collapsed into a single landing page"] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
     ],
   };
+}
+
+function inferMarketingPages(prompt: string, args: { fullStack: boolean; localService: boolean; hasExplicitPrompt: boolean }): Array<{ path: string; title: string }> {
+  if (args.fullStack) return [];
+  const text = prompt.toLowerCase();
+  const asksForFullSite = /\b(full|multi[- ]page|complete|entire)\b/.test(text)
+    || /\b(site|website|web app)\b/.test(text)
+    || /\b(services?|industries|case studies|proof|process|pricing|packages?|resources?|blog|contact|service areas?|locations?|gallery|portfolio)\b/.test(text);
+  if (!args.localService && !args.hasExplicitPrompt && !asksForFullSite) return [];
+  if (!args.localService && !asksForFullSite) return [];
+
+  const pages: Array<{ path: string; title: string }> = [];
+  const add = (path: string, title: string) => pages.push({ path, title });
+
+  add("/services", "Services");
+  if (/\bindustr(y|ies)|contractors?|trades?|niches?|markets?\b/.test(text)) add("/industries", "Industries");
+  if (/\bcase studies|case-studies|proof|results?|portfolio|projects?\b/.test(text)) add("/case-studies", "Case Studies");
+  add("/process", "Process");
+  if (/\bpricing|packages?|plans?|offers?\b/.test(text)) add("/pricing", "Pricing");
+  if (/\bresources?|blog|guides?|articles?\b/.test(text)) add("/resources", "Resources");
+  if (/\babout|company|team|crew\b/.test(text)) add("/about", "About");
+  if (args.localService || /\bservice areas?|locations?|near me|local\b/.test(text)) add("/service-areas", "Service Areas");
+  if (args.localService || /\bgallery|photos?|portfolio|projects?\b/.test(text)) add("/gallery", "Gallery");
+  add("/contact", "Contact");
+
+  return uniquePages(pages);
 }
 
 function inferProductWorkflow(prompt: string, fullStack: boolean): { appType: string; pages: Array<{ path: string; title: string }>; features: string[]; workflow?: NonNullable<AppSpecContract["workflows"]>[number] } {

@@ -32,6 +32,21 @@ describe("create command templates", () => {
     });
   });
 
+  it("requires full marketing sites to declare multiple app pages so one-page landing pages cannot pass", () => {
+    const state = buildProjectState({
+      name: "Go Alpha Marketing",
+      template: "web-static",
+      profile: "web-static",
+      prompt: "Build a full Go Alpha Marketing web app/site for contractor marketing with services, industries, case studies, process, pricing, resources, and contact pages.",
+    });
+
+    const paths = state.appSpec?.pages.map((page) => page.path) ?? [];
+    expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/industries", "/case-studies", "/process", "/pricing", "/resources", "/contact"]));
+    expect(paths.length).toBeGreaterThanOrEqual(8);
+    expect(state.appSpec?.features).toEqual(expect.arrayContaining(["multi-page marketing site", "conversion-focused contact path", "customer-ready marketing content"]));
+    expect(state.appSpec?.successCriteria).toContain("Every appSpec page is implemented as a routable page, not collapsed into a single landing page");
+  });
+
   it("sanitizes stale static auth/runtime residue during repair", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-static-sanitize-"));
     try {

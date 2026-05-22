@@ -502,11 +502,14 @@ export async function* runAgent(
         continue;
       }
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
+        const missingRouteBreadthProof = requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages);
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
         const missingAiScannerProof = requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages);
-        const gateMessage = missingContentStructure
-          ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
-          : missingAiScannerProof
+        const gateMessage = missingRouteBreadthProof
+          ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Full web-app/site work requires route-breadth proof before claiming completion. Prove ROUTE_BREADTH_OK with the implemented routable pages from appSpec/user request, including each requested page such as /services, /industries, /case-studies, /process, /pricing, /resources, and /contact. A one-page landing page plus check/build/verify is not a completed full app."
+          : missingContentStructure
+            ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
+            : missingAiScannerProof
             ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. AI scanner work requires scanner-specific proof before claiming completion. Invoke the live scanner route/API with a real product text/photo payload (or report the exact provider/API blocker) and capture LIVE_AI_SCANNER_OK with app.aiScanner/scanner API evidence plus returned productName/decision/confidence/pricing fields. Generic check/build/browser-smoke evidence is not enough."
             : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
@@ -1097,9 +1100,59 @@ export function requiresAppFactoryVerification(messages: DriverMessage[], finalT
 
 export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
   if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages) || !hasLocalhostPreviewEvidence(messages)) return false;
+  if (requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
   if (requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages)) return false;
   return true;
+}
+
+export function requiresRouteBreadthVerification(messages: DriverMessage[]): boolean {
+  const text = messages
+    .filter((msg) => msg.role === "user")
+    .map((msg) => messageText(msg))
+    .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
+    .join("\n")
+    .toLowerCase();
+  if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
+  const asksFullSite = /\b(full|multi[- ]page|complete|entire)\b[\s\S]{0,80}\b(web\s+app|app|site|website)\b/.test(text)
+    || /\b(web\s+app|app|site|website)\b[\s\S]{0,80}\b(full|multi[- ]page|complete|entire)\b/.test(text);
+  const namedPageCount = uniqueStrings([...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio)\b/g)].map((match) => normalizeRouteProofToken(match[1] ?? ""))).filter(Boolean).length;
+  return asksFullSite || namedPageCount >= 3;
+}
+
+export function hasRouteBreadthEvidence(messages: DriverMessage[]): boolean {
+  const requiredRoutes = requiredRouteBreadthTokens(messages);
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg).toLowerCase();
+    if (!/ROUTE_BREADTH_OK/i.test(messageText(msg)) && !/implemented routable pages|appspec.*pages|route breadth/i.test(text)) return false;
+    const routeHits = new Set([...text.matchAll(/\/(?:services|industries|case-studies|process|pricing|resources|contact|about|service-areas|gallery|portfolio)\b/g)].map((match) => match[0]));
+    if (requiredRoutes.length > 0 && requiredRoutes.every((route) => routeHits.has(route))) return true;
+    return routeHits.size >= Math.max(3, Math.min(5, requiredRoutes.length || 5));
+  });
+}
+
+function requiredRouteBreadthTokens(messages: DriverMessage[]): string[] {
+  const text = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n").toLowerCase();
+  return uniqueStrings([...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio)\b/g)]
+    .map((match) => normalizeRouteProofToken(match[1] ?? ""))
+    .filter(Boolean));
+}
+
+function normalizeRouteProofToken(token: string): string {
+  const normalized = token.toLowerCase().replace(/\s+/g, "-");
+  if (/^services?$/.test(normalized)) return "/services";
+  if (normalized === "industries") return "/industries";
+  if (normalized === "case-studies") return "/case-studies";
+  if (normalized === "process") return "/process";
+  if (/^(pricing|packages?)$/.test(normalized)) return "/pricing";
+  if (/^(resources?|blog)$/.test(normalized)) return "/resources";
+  if (normalized === "contact") return "/contact";
+  if (normalized === "about") return "/about";
+  if (/^(service-areas?|locations?)$/.test(normalized)) return "/service-areas";
+  if (normalized === "gallery") return "/gallery";
+  if (normalized === "portfolio") return "/portfolio";
+  return "";
 }
 
 function requiresAiScannerVerification(messages: DriverMessage[]): boolean {

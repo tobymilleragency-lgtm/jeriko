@@ -9,7 +9,9 @@ import {
   buildStuckDiagnosis,
   checkAgentResourceLimit,
   createModelRequestAbortController,
+  hasRouteBreadthEvidence,
   nextStreamChunkWithNoProgressTimeout,
+  requiresRouteBreadthVerification,
   runAgent,
 } from "../../src/daemon/agent/agent.js";
 import { registerDriver, type DriverConfig, type DriverMessage, type LLMDriver, type StreamChunk } from "../../src/daemon/agent/drivers/index.js";
@@ -335,5 +337,30 @@ describe("agent no-progress guard", () => {
     expect(diagnosis).not.toContain("progress for 0s");
     expect(diagnosis).toContain("progress for 600s");
     expect(diagnosis).toContain("elapsed=600s");
+  });
+
+  it("requires route breadth proof for full website/app requests before final completion", () => {
+    const messages: DriverMessage[] = [
+      {
+        role: "user",
+        content: "Build a full Go Alpha Marketing web app/site with services, industries, case studies, process, pricing, resources, and contact pages.",
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({ ok: true, data: { gates: [{ name: "browser_smoke", ok: true }, { name: "start_route", ok: true }] } }),
+      },
+    ];
+
+    expect(requiresRouteBreadthVerification(messages)).toBe(true);
+    expect(hasRouteBreadthEvidence(messages)).toBe(false);
+
+    const proved: DriverMessage[] = [
+      ...messages,
+      {
+        role: "tool",
+        content: "ROUTE_BREADTH_OK implemented routable pages: /services /industries /case-studies /process /pricing /resources /contact",
+      },
+    ];
+    expect(hasRouteBreadthEvidence(proved)).toBe(true);
   });
 });
