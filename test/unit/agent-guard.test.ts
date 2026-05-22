@@ -161,6 +161,27 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("jeriko ask --cwd /real");
   });
 
+  test("no-progress recovery targets the failed verify_app gate instead of final-reporting", () => {
+    const prompt = buildNoProgressRecoveryPrompt([
+      { role: "tool", content: "> app check\n> tsc --noEmit\n" },
+      { role: "tool", content: "> app build\n> vite build\n✓ built in 1.42s" },
+      { role: "tool", content: JSON.stringify({ ok: false, data: { gates: [
+        { name: "placeholder_scan", ok: true },
+        { name: "install", ok: false, output: "npm ci requires package-lock.json" },
+      ] } }) },
+    ], "Repeated no-progress tool round blocked after 4 matching rounds: verify_app {}");
+
+    expect(prompt).toContain("Fix the install gate root cause");
+    expect(prompt).toContain("Do not repeat the same verify_app arguments");
+    expect(prompt).not.toContain("provide the final answer");
+  });
+
+  test("round-repeat tool result does not instruct completion while gates are red", () => {
+    const source = readFileSync("src/daemon/agent/agent.ts", "utf-8");
+    expect(source).toContain("Do not claim completion while required gates are still red");
+    expect(source).not.toContain("Use the results already in context and provide the final answer now");
+  });
+
   test("forced recap treats passing verify_app check/build gates as verified build evidence", () => {
     const verifyTool = JSON.stringify({ ok: true, data: { gates: [
       { name: "check", ok: true, command: "pnpm run check", output: "tsc --noEmit" },
@@ -181,7 +202,7 @@ describe("No-progress forced summary", () => {
       { role: "tool", content: JSON.stringify({ ok: true, path: "/home/toby/.jeriko/projects/relax-remodel-consulting/client/src/data/blogPosts.ts", bytes: 17952 }) },
     ], "Repeated no-progress tool round blocked after 3 matching rounds: read_file {}");
 
-    expect(prompt).toContain("Next required action: Run the existing typecheck/check command once");
+    expect(prompt).toContain("Next required action: Run verify_app once with install/check/build/start/browser gates");
     expect(prompt).not.toContain("Stop using tools and provide the final answer");
   });
 

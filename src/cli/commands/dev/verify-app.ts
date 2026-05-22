@@ -1924,7 +1924,7 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
       page.on("console", (msg) => {
         if (msg.type() === "error") {
           const text = msg.text();
-          if (!text.startsWith("Failed to load resource:")) consoleErrors.push(`${msg.type()}: ${text}`);
+          if (!isIgnorableBrowserConsoleError(text)) consoleErrors.push(`${msg.type()}: ${text}`);
         }
       });
       page.on("pageerror", (err) => pageErrors.push(err.message));
@@ -1972,7 +1972,7 @@ async function runBrowserSmokeAgainstUrl(command: string, url: string, dir: stri
       page.on("console", (msg) => {
         if (msg.type() === "error") {
           const text = msg.text();
-          if (!text.startsWith("Failed to load resource:")) consoleErrors.push(`${msg.type()}: ${text}`);
+          if (!isIgnorableBrowserConsoleError(text)) consoleErrors.push(`${msg.type()}: ${text}`);
         }
       });
       page.on("pageerror", (err) => pageErrors.push(err.message));
@@ -2026,15 +2026,37 @@ async function tryReuseExistingProjectServer(dir: string, url: string, route: st
 }
 
 function portOwnerCwds(port: number): string[] {
+  const pidSet = new Set<number>();
   const lsof = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], { timeout: 5_000, encoding: "utf8" });
-  const pids = (lsof.stdout || "").trim().split("\n").filter(Boolean).map((pid) => Number(pid)).filter((pid) => Number.isInteger(pid));
+  for (const rawPid of (lsof.stdout || "").trim().split("\n")) {
+    const pid = Number(rawPid.trim());
+    if (Number.isInteger(pid) && pid > 0) pidSet.add(pid);
+  }
+
+  // Minimal Linux installs often do not ship lsof. fuser is available on Toby's
+  // desktop and gives the same listener PID, so use it as a fallback before
+  // declaring an occupied verification port "unrelated".
+  if (pidSet.size === 0) {
+    const fuser = spawnSync("fuser", ["-n", "tcp", String(port)], { timeout: 5_000, encoding: "utf8" });
+    const combined = `${fuser.stdout || ""}\n${fuser.stderr || ""}`;
+    for (const match of combined.matchAll(/\b\d+\b/g)) {
+      const pid = Number(match[0]);
+      if (Number.isInteger(pid) && pid > 0) pidSet.add(pid);
+    }
+  }
+
   const cwds: string[] = [];
-  for (const pid of pids) {
+  for (const pid of pidSet) {
     const readlink = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2_000, encoding: "utf8" });
     const cwd = readlink.status === 0 ? readlink.stdout.trim() : "";
     if (cwd && !cwds.includes(cwd)) cwds.push(cwd);
   }
   return cwds;
+}
+
+function isIgnorableBrowserConsoleError(text: string): boolean {
+  return text.startsWith("Failed to load resource:")
+    || /WebSocket connection to .+\/_next\/webpack-hmr\b[\s\S]*ERR_INVALID_HTTP_RESPONSE/i.test(text);
 }
 
 async function verifyGoogleOAuthButton(page: any, appUrl: string, dir: string): Promise<string | null> {

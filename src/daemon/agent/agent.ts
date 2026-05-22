@@ -538,7 +538,7 @@ export async function* runAgent(
 
     if (roundRepeatCheck) {
       for (const tc of toolCalls) {
-        const result = `${roundRepeatCheck}\nStop rereading the same files or rerunning the same checks. Use the results already in context and provide the final answer now.`;
+        const result = `${roundRepeatCheck}\nStop rereading the same files or rerunning the same checks. Use the results already in context, take a distinct next action, or report the exact blocker. Do not claim completion while required gates are still red.`;
         const isError = true;
         toolResults.push({ tool_call_id: tc.id, content: result, is_error: isError });
         yield { type: "tool_result", toolCallId: tc.id, result, isError };
@@ -906,11 +906,22 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
 
 export function buildNoProgressRecoveryPrompt(messages: DriverMessage[], reason: string): string {
   const state = getCapturedVerificationState(messages);
-  const nextStep = !state.checkPassed
-    ? "Run the existing typecheck/check command once, or report the exact blocker if it cannot run."
-    : !state.buildPassed
-      ? "Run the existing build command once, or report the exact blocker if it cannot run."
-      : "Stop using tools and provide the final answer from the verified evidence already in context.";
+  const failedGate = state.verifyAppGates.find((gate) => !gate.ok);
+  const verifyRan = state.verifyAppGates.length > 0;
+  const verifyFullyGreen = verifyRan && !failedGate;
+  const nextStep = failedGate
+    ? `Fix the ${failedGate.name} gate root cause, then rerun verify_app once. Do not repeat the same verify_app arguments until the ${failedGate.name} failure has been changed or diagnosed.`
+    : !verifyRan
+      ? "Run verify_app once with install/check/build/start/browser gates, or report the exact blocker if it cannot run."
+      : !state.checkPassed
+        ? "Run the existing typecheck/check command once, or report the exact blocker if it cannot run."
+        : !state.buildPassed
+          ? "Run the existing build command once, or report the exact blocker if it cannot run."
+          : !verifyFullyGreen
+            ? "Repair the remaining verify_app blocker, rerun verify_app once, or report the exact blocker."
+            : state.localUrls.length === 0
+              ? "Start a persistent local preview with webdev restart and capture the localhost URL, then browser-confirm it."
+              : "Stop using tools and provide the final answer from the verified evidence already in context.";
 
   return [
     "NO_PROGRESS_RECOVERY: You repeated the same no-progress tool round.",
