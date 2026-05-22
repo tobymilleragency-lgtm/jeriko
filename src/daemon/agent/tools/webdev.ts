@@ -20,6 +20,7 @@
 import { registerTool } from "./registry.js";
 import type { ToolDefinition } from "./registry.js";
 import { getLogger } from "../../../shared/logger.js";
+import { normalizeToolPath } from "../../../shared/tool-path.js";
 import { existsSync, readFileSync, readdirSync, unlinkSync, mkdirSync, openSync } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 import { join, resolve, basename } from "node:path";
@@ -282,7 +283,7 @@ function stopProcessGroup(pid: number | undefined): void {
 function buildDevServerEnv(port: number, dir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port) };
   const localBin = join(dir, "node_modules", ".bin");
-  env.PATH = `${localBin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+  env.PATH = normalizeToolPath(process.env.PATH, [localBin]);
   // Jeriko is a Bun-compiled binary. Child package-manager scripts must run as
   // normal Node/pnpm/npm scripts, not inherit Bun's runtime/package-script
   // markers. Leaving these set made `tsx watch ...` run under Bun and fail with

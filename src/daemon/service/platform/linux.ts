@@ -199,7 +199,7 @@ SyslogIdentifier=jeriko
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/share/jeriko %h/.config/jeriko
+ReadWritePaths=%h/.local/share/jeriko %h/.config/jeriko %h/.config/gcloud
 
 [Install]
 WantedBy=default.target

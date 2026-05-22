@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getLogger } from "../../shared/logger.js";
 import { getDataDir } from "../../shared/config.js";
+import { normalizeToolPath } from "../../shared/tool-path.js";
 
 const log = getLogger();
 
@@ -108,11 +109,11 @@ export function snapshotEnv(outputPath?: string): EnvSnapshotResult {
     }
   }
 
-  // Add PATH so the daemon can find external tools
-  if (process.env.PATH) {
-    const escaped = process.env.PATH.replace(/'/g, "'\\''");
-    lines.push(`export PATH='${escaped}'`);
-  }
+  // Add PATH so the daemon can find external tools. Include common Linux tool
+  // locations such as /snap/bin even when the installing shell or systemd
+  // environment omits them.
+  const escapedPath = normalizeToolPath(process.env.PATH).replace(/'/g, "'\\''");
+  lines.push(`export PATH='${escapedPath}'`);
 
   // Add HOME
   if (process.env.HOME) {
