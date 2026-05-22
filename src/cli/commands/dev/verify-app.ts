@@ -368,6 +368,19 @@ export const command: CommandHandler = {
         });
       }
 
+      const premiumMarketingSiteIssues = scanPremiumMarketingSiteQuality(dir, projectState);
+      gates.push({ name: "premium_marketing_site_scan", ok: premiumMarketingSiteIssues.length === 0 });
+      if (premiumMarketingSiteIssues.length > 0) {
+        failWithDetails("Generated marketing site is plain brochureware or deploy-unsafe. Full contractor/local-service sites need premium conversion modules, SPA internal navigation, dark no-flash base styles, and Vercel static routing.", {
+          errorCode: "E_PREMIUM_MARKETING_SITE",
+          directory: dir,
+          profile,
+          projectState,
+          premiumMarketingSiteIssues,
+          gates,
+        });
+      }
+
       const appSpecIssues = scanAppSpecCompliance(dir, projectState);
       gates.push({ name: "app_spec_verifier", ok: appSpecIssues.length === 0 });
       if (appSpecIssues.length > 0) {
@@ -755,6 +768,55 @@ function stripJsx(value: string): string {
 
 function lineNumberAt(content: string, index: number): number {
   return content.slice(0, index).split(/\r?\n/).length;
+}
+
+export function scanPremiumMarketingSiteQuality(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
+  const spec = projectState?.appSpec;
+  if (!spec || projectState?.profile !== "web-static") return [];
+  const requiresPremium = spec.features?.some((feature) => /premium contractor conversion system|multi-page marketing site|local service seo content/i.test(feature))
+    || spec.successCriteria?.some((criterion) => /Premium marketing sites include/i.test(criterion));
+  if (!requiresPremium) return [];
+
+  const appPath = join(dir, "client", "src", "App.tsx");
+  const indexPath = join(dir, "client", "index.html");
+  const vercelPath = join(dir, "vercel.json");
+  const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
+  const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
+  const issues: AppSpecIssue[] = [];
+  const requireAppToken = (token: string, reason: string) => {
+    if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });
+  };
+
+  requireAppToken("function AppLink", "Internal links must use SPA navigation so mobile taps do not flash the prerender fallback between pages.");
+  requireAppToken("useLocation", "SPA navigation must route through wouter location state instead of full page reloads.");
+  requireAppToken("LeadOpsVisual", "Premium contractor sites need a hero system/command-center visual near the fold.");
+  requireAppToken("LeadFlowLineSection", "Premium contractor sites need an animated lead-flow module, not a flat brochure page.");
+  requireAppToken("LeadLeakAudit", "Premium contractor sites need an interactive lead-leak audit/checklist module.");
+  requireAppToken("BeforeAfterComparison", "Premium contractor sites need a before/after comparison showing brochure site vs lead system.");
+  requireAppToken("StickyAuditRail", "Premium contractor sites need a restrained sticky CTA for conversion.");
+
+  if (/<a\s+[^>]*href=["']\//.test(app.replace(/function AppLink[\s\S]*?\n}\n/, ""))) {
+    issues.push({ file: "client/src/App.tsx", line: 0, token: "raw-internal-anchor", reason: "Internal route anchors outside AppLink cause full page reloads and mobile white/prerender flashes." });
+  }
+  if (!/background:\s*#09090b/i.test(indexHtml) || !/data-jeriko-prerender/.test(indexHtml)) {
+    issues.push({ file: "client/index.html", line: 0, token: "body-background", reason: "Template must include dark critical base/prerender styles to prevent white flashes before hydration." });
+  }
+  if (!existsSync(vercelPath)) {
+    issues.push({ file: "vercel.json", line: 0, token: "vercel.json", reason: "Generated Vite sites must include Vercel static output and SPA fallback config." });
+  } else {
+    try {
+      const vercel = JSON.parse(readFileSync(vercelPath, "utf8"));
+      if (vercel.outputDirectory !== "dist/public") issues.push({ file: "vercel.json", line: 0, token: "vercel-outputDirectory", reason: "Vercel must serve dist/public for generated Vite apps." });
+      const rewrites = Array.isArray(vercel.rewrites) ? vercel.rewrites : [];
+      if (!rewrites.some((rewrite: any) => rewrite?.source === "/(.*)" && rewrite?.destination === "/index.html")) {
+        issues.push({ file: "vercel.json", line: 0, token: "vercel-spa-rewrite", reason: "Vercel must rewrite client routes to /index.html so subroutes do not 404." });
+      }
+    } catch {
+      issues.push({ file: "vercel.json", line: 0, token: "vercel-json", reason: "vercel.json must be valid JSON." });
+    }
+  }
+
+  return issues;
 }
 
 function nonEmpty(value: unknown): value is string {

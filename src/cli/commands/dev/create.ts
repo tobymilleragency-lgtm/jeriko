@@ -1191,7 +1191,7 @@ function renderAnalyticsScripts() {
 
 function extractPageContent(route) {
   const sourcePath = join(pagesDir, route.source.endsWith(".tsx") ? route.source : \`\${route.source}.tsx\`);
-  const text = existsSync(sourcePath) ? readFileSync(sourcePath, "utf8") : "";
+  const text = existsSync(sourcePath) ? readFileSync(sourcePath, "utf8") : (existsSync(appPath) ? readFileSync(appPath, "utf8") : "");
   const candidates = [];
 
   for (const match of text.matchAll(/>([^<>{}][^<>{}]*)</g)) pushClean(candidates, match[1]);

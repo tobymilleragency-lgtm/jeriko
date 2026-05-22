@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { applyCrawlerPrerenderSupport, command as createCommand, repairGeneratedProject, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
+import { scanPremiumMarketingSiteQuality } from "../../src/cli/commands/dev/verify-app.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
 import { buildProjectState } from "../../src/cli/commands/dev/project-state.js";
 import { setOutputFormat } from "../../src/shared/output.js";
@@ -43,8 +44,28 @@ describe("create command templates", () => {
     const paths = state.appSpec?.pages.map((page) => page.path) ?? [];
     expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/industries", "/case-studies", "/process", "/pricing", "/resources", "/contact"]));
     expect(paths.length).toBeGreaterThanOrEqual(8);
-    expect(state.appSpec?.features).toEqual(expect.arrayContaining(["multi-page marketing site", "conversion-focused contact path", "customer-ready marketing content"]));
+    expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
+    expect(state.appSpec?.features).toEqual(expect.arrayContaining(["multi-page marketing site", "conversion-focused contact path", "customer-ready marketing content", "premium contractor conversion system"]));
     expect(state.appSpec?.successCriteria).toContain("Every appSpec page is implemented as a routable page, not collapsed into a single landing page");
+  });
+
+  it("fails premium marketing site quality when a full-site contract is implemented as plain brochureware", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-premium-site-scan-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route, Switch } from "wouter";
+        export default function App(){return <Switch><Route path="/" component={() => <main><h1>Site</h1><a href="/contact">Contact</a></main>} /><Route path="/services" component={() => <main/>} /><Route path="/pricing" component={() => <main/>} /><Route path="/contact" component={() => <main/>} /></Switch>}
+      `);
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head></head><body><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist" }));
+      const state = buildProjectState({ name: "Plain Contractor Site", template: "web-static", profile: "web-static", prompt: "Build a full contractor marketing website with services pricing and contact pages" });
+
+      const issues = scanPremiumMarketingSiteQuality(dir, state);
+      expect(issues.map((issue) => issue.token)).toEqual(expect.arrayContaining(["function AppLink", "LeadFlowLineSection", "LeadLeakAudit", "BeforeAfterComparison", "StickyAuditRail", "body-background", "vercel-outputDirectory"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("sanitizes stale static auth/runtime residue during repair", () => {
@@ -393,6 +414,43 @@ describe("create command templates", () => {
       expect(state.appSpec.prompt).toBe("Build a roofing contractor website in Tulsa with SEO pages and quote photos");
       expect(state.appSpec.appType).toBe("local-service-site");
       expect(state.appSpec.integrations.forbidden).toContain("stripe");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scaffolds contractor marketing prompts with premium multi-page SPA and deploy-safe defaults", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-premium-contractor-site-"));
+    const projectDir = path.join(dir, "alpha-style-site");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build a full contractor marketing website for roofers and remodelers with services, process, proof, pricing, and contact pages", "--name", "Alpha Style Site", "--dir", projectDir]);
+      const app = fs.readFileSync(path.join(projectDir, "client", "src", "App.tsx"), "utf8");
+      const indexHtml = fs.readFileSync(path.join(projectDir, "client", "index.html"), "utf8");
+      const vercelJson = JSON.parse(fs.readFileSync(path.join(projectDir, "vercel.json"), "utf8"));
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(app).toContain("function AppLink");
+      expect(app).toContain("useLocation");
+      expect(app).toContain("<AppLink key={item.href} href={item.href}");
+      expect(app).toContain("LeadFlowLineSection");
+      expect(app).toContain("LeadLeakAudit");
+      expect(app).toContain("BeforeAfterComparison");
+      expect(app).toContain("StickyAuditRail");
+      expect(app).toContain("Website Cleanup");
+      expect(app).toContain("Lead System Buildout");
+      expect(app).toContain("Monthly Growth Help");
+      expect(app).toContain("path=\"/services\"");
+      expect(app).toContain("path=\"/pricing\"");
+      expect(app).toContain("path=\"/contact\"");
+      expect(indexHtml).toContain("background: #09090b");
+      expect(indexHtml).toContain("data-jeriko-prerender");
+      expect(vercelJson.outputDirectory).toBe("dist/public");
+      expect(vercelJson.rewrites).toContainEqual({ source: "/(.*)", destination: "/index.html" });
+      expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
+      expect(state.appSpec.features).toEqual(expect.arrayContaining(["premium contractor conversion system", "SPA internal navigation", "deploy-safe Vercel static routing"]));
+      expect(state.appSpec.successCriteria).toContain("Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -99,6 +99,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "primary_action_wiring",
   "business_math_realness",
   "primary_fetch_error_handling",
+  "premium_marketing_site_scan",
   "app_spec_verifier",
   "install",
   "check",
@@ -197,7 +198,7 @@ function buildPromptAppSpecContract(args: {
     : uniqueStrings([
       "production homepage",
       "customer-ready marketing content",
-      ...(hasMultiPageMarketing ? ["multi-page marketing site", "conversion-focused contact path"] : []),
+      ...(hasMultiPageMarketing ? ["multi-page marketing site", "conversion-focused contact path", "premium contractor conversion system", "SPA internal navigation", "deploy-safe Vercel static routing"] : []),
       ...(localService ? ["local service SEO content"] : []),
     ]);
   return {
@@ -217,6 +218,7 @@ function buildPromptAppSpecContract(args: {
       "Generated app matches this app spec contract",
       "No forbidden integrations appear unless explicitly allowed in this spec",
       ...(hasMultiPageMarketing ? ["Every appSpec page is implemented as a routable page, not collapsed into a single landing page"] : []),
+      ...(hasMultiPageMarketing ? ["Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
     ],
   };
