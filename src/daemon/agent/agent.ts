@@ -505,13 +505,16 @@ export async function* runAgent(
         const missingRouteBreadthProof = requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages);
         const missingContentStructure = requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages);
         const missingAiScannerProof = requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages);
+        const missingPremiumMarketingProof = requiresPremiumMarketingVerification(messages) && !hasPremiumMarketingEvidence(messages);
         const gateMessage = missingRouteBreadthProof
           ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Full web-app/site work requires route-breadth proof before claiming completion. Prove ROUTE_BREADTH_OK with the implemented routable pages from appSpec/user request, including each requested page such as /services, /industries, /case-studies, /process, /pricing, /resources, and /contact. A one-page landing page plus check/build/verify is not a completed full app."
           : missingContentStructure
             ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Content-heavy web-app/page work requires tool-backed content structure evidence before claiming completion. Audit rendered service/city/content pages and prove CONTENT_STRUCTURE_OK: semantic sections, h2/h3 hierarchy, multiple readable paragraphs per long-form section, paragraph lengths under 650 characters, and no wall-of-text blocks; also keep verify_app + checkpoint + persistent localhost preview evidence."
             : missingAiScannerProof
             ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. AI scanner work requires scanner-specific proof before claiming completion. Invoke the live scanner route/API with a real product text/photo payload (or report the exact provider/API blocker) and capture LIVE_AI_SCANNER_OK with app.aiScanner/scanner API evidence plus returned productName/decision/confidence/pricing fields. Generic check/build/browser-smoke evidence is not enough."
-            : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
+            : missingPremiumMarketingProof
+              ? "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Contractor/local-service marketing site work requires premium conversion-system proof before claiming completion. Run verify_app and prove `premium_marketing_site_scan` passed, preserving SPA-safe AppLink/useLocation navigation, LeadOpsVisual, LeadFlowLineSection, LeadLeakAudit, BeforeAfterComparison, StickyAuditRail, dark no-flash base styles, and Vercel dist/public static routing. Brochureware plus generic check/build/browser-smoke evidence is not enough."
+              : "\n\nAPP_FACTORY_DONE_GATE: Final report blocked. Generated/scaffolded/existing web-app implementation work must call verify_app and pass placeholder_scan, unsafe_env_scan, image_uniqueness_scan, install, check, build, start_route, and browser_smoke; save a git checkpoint/commit; then start a persistent local preview with webdev restart and include the localhost URL for Toby to review before deployment. If screenshots, Lighthouse, preview deploy, disabled-route checks, or local preview startup were requested and cannot be completed, report them explicitly as blockers instead of claiming completion. Call verify_app/checkpoint/webdev restart now, then produce the final report from that evidence.";
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
@@ -536,6 +539,16 @@ export async function* runAgent(
         const toolMsg = addMessage(config.sessionId, "tool", result);
         addPart(toolMsg.id, "error", result, tc.name, tc.id);
         messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+      }
+
+      const priorRecoveryPrompts = messages.filter((msg) => /NO_PROGRESS_RECOVERY/i.test(messageText(msg))).length;
+      if (requiresAppFactoryVerification(messages, "Done") && !hasAppFactoryDoneEvidence(messages) && priorRecoveryPrompts < 2) {
+        const recoveryPrompt = buildNoProgressRecoveryPrompt(messages, roundRepeatCheck);
+        const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
+        addPart(recoveryMsg.id, "text", recoveryPrompt);
+        messages.push({ role: "user", content: recoveryPrompt });
+        yield { type: "text_delta", content: `\n\n${recoveryPrompt}` };
+        continue;
       }
 
       const forcedSummary = buildNoProgressStopSummary(messages, roundRepeatCheck);
@@ -1103,6 +1116,7 @@ export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
   if (requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
   if (requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages)) return false;
+  if (requiresPremiumMarketingVerification(messages) && !hasPremiumMarketingEvidence(messages)) return false;
   return true;
 }
 
@@ -1173,6 +1187,32 @@ function hasAiScannerEvidence(messages: DriverMessage[]): boolean {
     return /aiscanner|scanner/.test(haystack)
       && /productname|decision|confidence|estimatedsaleprice|netprofit/.test(haystack)
       && /ok"?\s*:?\s*true|success/.test(haystack);
+  });
+}
+
+export function requiresPremiumMarketingVerification(messages: DriverMessage[]): boolean {
+  const text = messages
+    .filter((msg) => msg.role === "user")
+    .map((msg) => messageText(msg))
+    .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
+    .join("\n")
+    .toLowerCase();
+  if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
+  const siteWork = /\b(build|create|generate|scaffold|make|design|implement|update|fix|repair)\b[\s\S]{0,140}\b(site|website|web app|landing|homepage|pages?)\b/.test(text)
+    || /\b(site|website|web app|landing|homepage|pages?)\b[\s\S]{0,140}\b(build|create|generate|scaffold|make|design|implement|update|fix|repair)\b/.test(text);
+  const contractorOrLocal = /\b(contractor|roof(?:er|ing)?|remodel(?:er|ing)?|construction|service[- ]area|local service|lead(?:s)?|quote|estimate|go alpha|marketing|homeowner|plumb(?:er|ing)|hvac|electric(?:al|ian)?|concrete|fencing|siding|gutter)\b/.test(text);
+  return siteWork && contractorOrLocal;
+}
+
+export function hasPremiumMarketingEvidence(messages: DriverMessage[]): boolean {
+  return messages.some((msg) => {
+    if (msg.role !== "tool") return false;
+    const text = messageText(msg);
+    if (/PREMIUM_MARKETING_SITE_OK/i.test(text) && /\b(LeadOpsVisual|LeadFlowLineSection|LeadLeakAudit|BeforeAfterComparison|StickyAuditRail|premium_marketing_site_scan)\b/i.test(text)) return true;
+    const parsed = parseToolResultJson(text);
+    const gates = parsed?.data?.gates ?? parsed?.gates;
+    if (Array.isArray(gates) && gates.some((gate: any) => gate?.name === "premium_marketing_site_scan" && gate?.ok === true)) return true;
+    return /"premium_marketing_site_scan"\s*,\s*"ok"\s*:\s*true/i.test(text) || /"name"\s*:\s*"premium_marketing_site_scan"[\s\S]{0,80}"ok"\s*:\s*true/i.test(text);
   });
 }
 

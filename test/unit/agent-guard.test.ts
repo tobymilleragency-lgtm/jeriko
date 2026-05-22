@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, hasPremiumMarketingEvidence, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, requiresPremiumMarketingVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -77,6 +77,14 @@ describe("Agent prompt quality rules", () => {
     expect(prompt).toContain("Long-form content quality gate");
     expect(prompt).toContain("No wall-of-text blocks");
     expect(prompt).toContain("CONTENT_STRUCTURE_OK");
+  });
+
+  test("requires premium contractor marketing generation path instead of plain brochureware", () => {
+    const prompt = readFileSync("AGENT.md", "utf-8");
+    expect(prompt).toContain("Premium contractor/local-service marketing sites");
+    expect(prompt).toContain("LeadOpsVisual");
+    expect(prompt).toContain("premium_marketing_site_scan");
+    expect(prompt).toContain("from-prompt");
   });
 });
 
@@ -420,6 +428,65 @@ describe("App-factory final done gate", () => {
       { role: "tool", content: previewTool },
       { role: "tool", content: scannerProof },
     ])).toBe(true);
+  });
+
+  test("premium marketing site work is not done from generic app gates without the premium gate", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Build contractor site" } });
+    const previewTool = JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:4206/", opened: true } });
+    const messages = [
+      { role: "user", content: "Build a full contractor marketing website for roofers and remodelers with services, proof, pricing, and contact pages" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+    ];
+
+    expect(requiresPremiumMarketingVerification(messages)).toBe(true);
+    expect(hasPremiumMarketingEvidence(messages)).toBe(false);
+    expect(hasAppFactoryDoneEvidence(messages)).toBe(false);
+  });
+
+  test("premium marketing site work is done only after premium gate evidence", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "premium_marketing_site_scan", ok: true },
+      { name: "app_spec_verifier", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const checkpointTool = JSON.stringify({ ok: true, data: { hash: "3e72eea", message: "Build contractor site" } });
+    const previewTool = JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:4206/", opened: true } });
+    const routeBreadth = "ROUTE_BREADTH_OK: implemented routable pages /services /pricing /contact /process /case-studies.";
+    const messages = [
+      { role: "user", content: "Build a full contractor marketing website for roofers and remodelers with services, process, proof, pricing, and contact pages" },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: checkpointTool },
+      { role: "tool", content: previewTool },
+      { role: "tool", content: routeBreadth },
+    ];
+
+    expect(hasPremiumMarketingEvidence(messages)).toBe(true);
+    expect(hasAppFactoryDoneEvidence(messages)).toBe(true);
   });
 
   test("content-heavy app work is not done without tool-backed structure evidence", () => {

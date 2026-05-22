@@ -783,6 +783,11 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
   const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
   const issues: AppSpecIssue[] = [];
+  const requiredRoutes = ["/services", "/pricing", "/contact"];
+  const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(page.path)) : [];
+  if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
+    issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: "Premium marketing sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure." });
+  }
   const requireAppToken = (token: string, reason: string) => {
     if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });
   };

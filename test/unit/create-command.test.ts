@@ -60,9 +60,10 @@ describe("create command templates", () => {
       fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head></head><body><div id="root"></div></body></html>');
       fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist" }));
       const state = buildProjectState({ name: "Plain Contractor Site", template: "web-static", profile: "web-static", prompt: "Build a full contractor marketing website with services pricing and contact pages" });
+      if (state.appSpec) state.appSpec.pages = [{ path: "/", title: "Home" }];
 
       const issues = scanPremiumMarketingSiteQuality(dir, state);
-      expect(issues.map((issue) => issue.token)).toEqual(expect.arrayContaining(["function AppLink", "LeadFlowLineSection", "LeadLeakAudit", "BeforeAfterComparison", "StickyAuditRail", "body-background", "vercel-outputDirectory"]));
+      expect(issues.map((issue) => issue.token)).toEqual(expect.arrayContaining(["function AppLink", "LeadFlowLineSection", "LeadLeakAudit", "BeforeAfterComparison", "StickyAuditRail", "body-background", "vercel-outputDirectory", "appSpec.pages"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
