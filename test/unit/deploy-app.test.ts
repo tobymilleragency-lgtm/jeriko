@@ -6,7 +6,9 @@ import * as path from "node:path";
 import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
+  googleOAuthRedirectUriFromLocation,
   isSetupRequiredSmokeBody,
+  isVercelProtectionBody,
   resolveGeneratedAppRoot,
   runGeneratedAppDeploy,
 } from "../../src/cli/commands/dev/deploy-app.js";
@@ -102,6 +104,19 @@ describe("deploy-app production verification helpers", () => {
     });
 
     expect(isSetupRequiredSmokeBody(body)).toBe(true);
+  });
+
+  it("detects Vercel deployment protection bodies", () => {
+    const body = '<title>Authentication Required</title><a>Vercel Authentication</a><code>x-vercel-protection-bypass</code>';
+
+    expect(isVercelProtectionBody(body)).toBe(true);
+  });
+
+  it("extracts the Google OAuth redirect_uri from the Location header", () => {
+    const location = "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&redirect_uri=https%3A%2F%2Fflipscout-orpin.vercel.app%2Fapi%2Foauth%2Fcallback&response_type=code";
+
+    expect(googleOAuthRedirectUriFromLocation(location)).toBe("https://flipscout-orpin.vercel.app/api/oauth/callback");
+    expect(googleOAuthRedirectUriFromLocation("https://example.com/not-google?redirect_uri=https://wrong")).toBeUndefined();
   });
 });
 

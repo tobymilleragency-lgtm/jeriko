@@ -357,7 +357,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
 
   if (options.profile === "web-db-user") {
     const oauthUrl = joinUrl(report.productionUrl, "/api/oauth/google/start");
-    const oauthSmoke = await smokeUrl(oauthUrl);
+    const oauthSmoke = await smokeGoogleOAuthStartUrl(oauthUrl, report.productionUrl);
     report.oauthSmoke = oauthSmoke;
     report.steps.push({ name: "production_google_oauth_smoke", ok: oauthSmoke.ok, output: JSON.stringify(oauthSmoke) });
     if (!oauthSmoke.ok) report.blockers.push(`production Google OAuth smoke failed for ${oauthUrl}.`);
@@ -431,10 +431,39 @@ async function smokeUrl(url: string): Promise<SmokeResult> {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     const body = await res.text();
     const setupRequired = isSetupRequiredSmokeBody(body);
-    const ok = res.ok && !setupRequired;
+    const protectedByVercel = isVercelProtectionBody(body);
+    const ok = res.ok && !setupRequired && !protectedByVercel;
     const result: SmokeResult = { url, ok, status: res.status, bytes: body.length };
     if (setupRequired) result.error = "setup_required response from production route";
+    if (protectedByVercel) result.error = "Vercel deployment protection intercepted production route";
     return result;
+  } catch (err) {
+    return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function smokeGoogleOAuthStartUrl(url: string, productionUrl: string): Promise<SmokeResult> {
+  try {
+    const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    const body = await res.text();
+    const location = res.headers.get("location") ?? undefined;
+    const result: SmokeResult = { url, ok: false, status: res.status, bytes: body.length };
+
+    if (isSetupRequiredSmokeBody(body)) return { ...result, error: "setup_required response from production route" };
+    if (isVercelProtectionBody(body)) return { ...result, error: "Vercel deployment protection intercepted the OAuth start route" };
+    if (!location) return { ...result, error: `OAuth start did not return a redirect Location header (status ${res.status})` };
+
+    const redirectUri = googleOAuthRedirectUriFromLocation(location);
+    if (!redirectUri) {
+      return { ...result, error: `OAuth start redirected somewhere that is not a Google OAuth authorization URL: ${location}` };
+    }
+
+    const expected = joinUrl(productionUrl, "/api/oauth/callback");
+    if (normalizeUrlForCompare(redirectUri) !== normalizeUrlForCompare(expected)) {
+      return { ...result, error: `Google OAuth redirect_uri mismatch: got ${redirectUri}; expected ${expected}` };
+    }
+
+    return { ...result, ok: true };
   } catch (err) {
     return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -455,6 +484,20 @@ export function isSetupRequiredSmokeBody(body: string): boolean {
     return parsed.ok === false && parsed.mode === "setup_required";
   } catch {
     return false;
+  }
+}
+
+export function isVercelProtectionBody(body: string): boolean {
+  return /Authentication Required/i.test(body) && /Vercel Authentication|_vercel_sso_nonce|x-vercel-protection-bypass/i.test(body);
+}
+
+export function googleOAuthRedirectUriFromLocation(location: string): string | undefined {
+  try {
+    const url = new URL(location);
+    if (!/\.google\.com$/i.test(url.hostname) && !/^google\.com$/i.test(url.hostname)) return undefined;
+    return url.searchParams.get("redirect_uri") || undefined;
+  } catch {
+    return undefined;
   }
 }
 
