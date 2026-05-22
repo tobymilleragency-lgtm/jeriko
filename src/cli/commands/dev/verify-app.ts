@@ -2,7 +2,7 @@ import type { CommandHandler } from "../../dispatcher.js";
 import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
 import { fail, failWithDetails, ok } from "../../../shared/output.js";
 import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
@@ -84,14 +84,35 @@ export interface ProductionArtifactStatus {
 }
 
 const PLACEHOLDER_PATTERN = /\{\{[a-zA-Z0-9_]+\}\}|__PLACEHOLDER__|<%=?\s*[^%]+%>/g;
-const SCAFFOLD_RESIDUE_TOKENS = ["Example Page", "Any **markdown** content", "Example Button", "demo response", "Lorem ipsum", "BLOCK TO BE DELETED", "Google Fonts here, example"];
+const SCAFFOLD_RESIDUE_TOKENS = [
+  "Example Page",
+  "Any **markdown** content",
+  "Example Button",
+  "demo response",
+  "Lorem ipsum",
+  "BLOCK TO BE DELETED",
+  "Google Fonts here, example",
+  "contractor marketing system",
+  "missed-call follow-up",
+  "booked estimates",
+];
 const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
 const MAX_OUTPUT = 12_000;
 const BUSINESS_ENTITY_PATTERN = /\b(orders?|shipments?|inventory|listings?|customers?|buyers?|expenses?|stores?|scans?)\b/i;
 const PRIMARY_LOCAL_STORAGE_PATTERN = /(?:window\.)?localStorage\s*\.\s*(?:setItem|getItem|removeItem)/;
 const DEBUG_ARTIFACT_TOKENS = ["/__jeriko__/debug-collector.js", "__JERIKO_DEBUG_COLLECTOR__", "/__jeriko__/logs"];
-const PUBLIC_MOCK_COPY_TOKENS = ["MVP mock data", "mock data", "prototype only", "demo shell", "BLOCK TO BE DELETED", "Google Fonts here, example"];
+const PUBLIC_MOCK_COPY_TOKENS = [
+  "MVP mock data",
+  "mock data",
+  "prototype only",
+  "demo shell",
+  "BLOCK TO BE DELETED",
+  "Google Fonts here, example",
+  "contractor marketing system",
+  "missed-call follow-up",
+  "booked estimates",
+];
 const FORBIDDEN_INTEGRATIONS = {
   stripe: [
     "billing.stripe.com",
@@ -108,6 +129,20 @@ const FORBIDDEN_INTEGRATIONS = {
     "Connect Stripe",
     "Stripe Checkout",
     "Stripe billing",
+  ],
+  supabase: [
+    "@supabase/supabase-js",
+    "@supabase/auth-js",
+    "@supabase/postgrest-js",
+    "@supabase/realtime-js",
+    "@supabase/storage-js",
+    "@supabase/functions-js",
+    "supabase:",
+    "\"supabase\"",
+    "'supabase'",
+    "createClient(",
+    "from(\"",
+    "from('",
   ],
 } as const;
 
@@ -642,7 +677,7 @@ export function scanForbiddenIntegrations(dir: string, projectState: ProjectStat
   const hits: ForbiddenIntegrationHit[] = [];
   walkTextFiles(dir, (file, content) => {
     const normalized = file.replace(/\\/g, "/");
-    if (normalized.includes("/.jeriko/")) return;
+    if (isProjectMetadataFile(dir, file)) return;
     const lines = content.split(/\r?\n/);
     for (const [integration, tokens] of Object.entries(FORBIDDEN_INTEGRATIONS)) {
       if (allowed.has(integration.toLowerCase())) continue;
@@ -906,12 +941,17 @@ function normalizeSpecRoute(route: string): string {
   return route.startsWith("/") ? route : `/${route}`;
 }
 
+function isProjectMetadataFile(root: string, file: string): boolean {
+  const rel = relative(root, file).replace(/\\/g, "/");
+  return rel === ".jeriko" || rel.startsWith(".jeriko/");
+}
+
 function buildSourceIndex(dir: string): { files: Set<string>; text: string } {
   const files = new Set<string>();
   const chunks: string[] = [];
   walkTextFiles(dir, (file, content) => {
     const normalized = file.replace(/\\/g, "/");
-    if (normalized.includes("/.jeriko/")) return;
+    if (isProjectMetadataFile(dir, file)) return;
     if (!/\/(client\/src|src|app|pages|server)\//.test(normalized) && !normalized.endsWith("package.json")) return;
     files.add(normalized.toLowerCase());
     chunks.push(content);
@@ -924,17 +964,17 @@ function routeImplemented(route: string, index: { files: Set<string>; text: stri
     for (const file of index.files) {
       if (/\/(home|index|app)\.(tsx|ts|jsx|js)$/.test(file)) return true;
     }
-    return index.text.includes("path=\"/\"") || index.text.includes("path: \"/\"") || index.text.includes("path: '/'");
+    return index.text.includes('path="/"') || index.text.includes("path='/'") || index.text.includes('path: "/"') || index.text.includes("path: '/'");
   }
   const slug = route.replace(/^\//, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
   for (const file of index.files) {
     if (file.includes(`/${slug}.`) || file.includes(`/${slug}/`) || file.includes(`/${slug.replace(/-/g, "")}.`)) return true;
   }
-  return index.text.includes(`path=\"${route}\"`) ||
+  return index.text.includes(`path="${route}"`) ||
     index.text.includes(`path='${route}'`) ||
-    index.text.includes(`path: \"${route}\"`) ||
+    index.text.includes(`path: "${route}"`) ||
     index.text.includes(`path: '${route}'`) ||
-    index.text.includes(`href=\"${route}\"`) ||
+    index.text.includes(`href="${route}"`) ||
     index.text.includes(`href='${route}'`);
 }
 

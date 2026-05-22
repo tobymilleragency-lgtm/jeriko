@@ -1185,6 +1185,42 @@ describe("verify-app command", () => {
     }
   });
 
+  it("rejects forbidden Supabase dependencies unless the app spec explicitly allows them", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-forbidden-supabase-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "static-site", dependencies: { "@supabase/supabase-js": "^2.75.0" } }, null, 2));
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "static-site",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a static marketing website with no auth or database",
+          appType: "marketing-site",
+          pages: [{ path: "/", title: "Home" }],
+          features: ["contact form"],
+          integrations: { allowed: [], forbidden: ["supabase"] },
+          successCriteria: ["Static site renders without database dependencies"],
+        },
+        verification: { requiredGates: ["forbidden_integration_scan"] },
+      }, null, 2));
+
+      const hits = scanForbiddenIntegrations(dir, readProjectState(dir));
+
+      expect(hits.map((hit) => hit.integration)).toContain("supabase");
+      expect(hits.map((hit) => hit.token)).toContain("@supabase/supabase-js");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("detects missing full-stack workflow contract pieces for FlipScout-style apps", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-workflow-contract-"));
     try {
@@ -1341,6 +1377,88 @@ describe("verify-app command", () => {
       expect(scanBusinessMathRealness(dir, "web-db-user")).toHaveLength(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts inline React router pages that satisfy required app spec routes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-inline-routes-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route, Switch } from "wouter";
+        function Home(){ return <main>Home</main>; }
+        function Buy(){ return <main>Buy</main>; }
+        function Sell(){ return <main>Sell</main>; }
+        export default function App(){
+          return <Switch><Route path="/" component={Home} /><Route path="/buy" component={Buy} /><Route path="/sell" component={Sell} /></Switch>;
+        }
+      `);
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "inline-routes",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/", buy: "/buy", sell: "/sell" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a realtor website with home, buy, and sell routes",
+          appType: "marketing-site",
+          pages: [{ path: "/", title: "Home" }, { path: "/buy", title: "Buy" }, { path: "/sell", title: "Sell" }],
+          features: ["buyer pathway", "seller pathway"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["All routes render"],
+        },
+        verification: { requiredGates: ["app_spec_verifier"] },
+      }, null, 2));
+
+      expect(scanAppSpecCompliance(dir, readProjectState(dir))).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts inline React router pages under a ~/.jeriko-style project root", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-home-root-"));
+    const dir = path.join(base, ".jeriko", "projects", "inline-routes");
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route, Switch } from "wouter";
+        function Home(){ return <main>Home</main>; }
+        function Contact(){ return <main>Contact</main>; }
+        export default function App(){ return <Switch><Route path="/" component={Home} /><Route path="/contact" component={Contact} /></Switch>; }
+      `);
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "inline-routes",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: {},
+        routes: { home: "/", contact: "/contact" },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a site with home and contact routes",
+          appType: "marketing-site",
+          pages: [{ path: "/", title: "Home" }, { path: "/contact", title: "Contact" }],
+          features: ["contact form"],
+          integrations: { allowed: [], forbidden: ["stripe"] },
+          successCriteria: ["All routes render"],
+        },
+        verification: { requiredGates: ["app_spec_verifier"] },
+      }, null, 2));
+
+      expect(scanAppSpecCompliance(dir, readProjectState(dir))).toHaveLength(0);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 
