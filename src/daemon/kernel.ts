@@ -685,6 +685,7 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
     // (OpenAI, OpenAI-compat) receive valid history.
     const history = buildDriverMessages(sessionId);
 
+    const { resolveAgentRunCwd } = await import("./agent/project-resolver.js");
     const agentConfig = {
       sessionId,
       backend: modelBackend,
@@ -697,7 +698,7 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
       maxHistoryTokens: state.config!.agent.maxHistoryTokens,
       maxRssBytes: state.config!.agent.maxRssMb ? state.config!.agent.maxRssMb * 1024 * 1024 : undefined,
       toolIds: params.tools === false ? [] : null,
-      cwd: typeof params.cwd === "string" && params.cwd ? params.cwd : process.cwd(),
+      cwd: resolveAgentRunCwd(typeof params.cwd === "string" && params.cwd ? params.cwd : process.cwd(), message),
     };
 
     let response = "";

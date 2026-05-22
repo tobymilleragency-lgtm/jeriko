@@ -3,14 +3,20 @@ import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
 import { ok, fail } from "../../../shared/output.js";
 import { ExitCode } from "../../../shared/types.js";
 import { loadSystemPrompt } from "../../../shared/prompt.js";
+import { resolveMentionedGeneratedProjectCwd } from "../../../daemon/agent/project-resolver.js";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
-export function resolveAskCwd(flags: Record<string, string | boolean>, callerCwd = process.cwd()): string {
+export function resolveAskCwd(
+  flags: Record<string, string | boolean>,
+  callerCwd = process.cwd(),
+  question = "",
+  opts: { projectSearchRoot?: string } = {},
+): string {
   const cwdFlag = flags.cwd;
-  if (typeof cwdFlag !== "string" || !cwdFlag.trim()) return callerCwd;
-  return isAbsolute(cwdFlag) ? resolve(cwdFlag) : resolve(callerCwd, cwdFlag);
+  if (typeof cwdFlag === "string" && cwdFlag.trim()) return isAbsolute(cwdFlag) ? resolve(cwdFlag) : resolve(callerCwd, cwdFlag);
+  return resolveMentionedGeneratedProjectCwd(question, { searchRoot: opts.projectSearchRoot }) ?? callerCwd;
 }
 
 export const command: CommandHandler = {
@@ -47,7 +53,7 @@ export const command: CommandHandler = {
     const systemOverride = flagStr(parsed, "system", "");
     const maxTokens = flagStr(parsed, "max-tokens", "");
     const noTools = flagBool(parsed, "no-tools");
-    const askCwd = resolveAskCwd(parsed.flags, process.cwd());
+    const askCwd = resolveAskCwd(parsed.flags, process.cwd(), question);
 
     // Parse "provider:model" syntax (e.g. "openrouter:deepseek")
     // The full spec is passed to the daemon for resolution — the CLI doesn't
