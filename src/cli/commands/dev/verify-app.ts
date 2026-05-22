@@ -576,10 +576,13 @@ function recordSuccessfulVerification(dir: string, projectState: ProjectState, p
     ...(gate.command ? { command: gate.command } : {}),
     ...(typeof gate.status === "number" ? { status: gate.status } : {}),
   }));
+  const passedGateNames = gates.filter((gate) => gate.ok).map((gate) => gate.name);
+  const requiredGates = Array.from(new Set([...(projectState.verification.requiredGates ?? []), ...passedGateNames]));
   const updated: ProjectState = {
     ...projectState,
     verification: {
       ...projectState.verification,
+      requiredGates,
       lastSuccessfulVerification: {
         ok: true,
         profile,

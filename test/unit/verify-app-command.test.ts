@@ -609,6 +609,7 @@ describe("verify-app command", () => {
       expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
       expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
       expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
+      expect(state?.verification.requiredGates).toEqual(expect.arrayContaining(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]));
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
