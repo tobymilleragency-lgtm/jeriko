@@ -164,6 +164,46 @@ describe("create command templates", () => {
     }
   });
 
+  it("scaffolds Supabase database and storage foundations for inventory/photo product apps", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-supabase-product-"));
+    const dbDir = path.join(dir, "flipscout");
+    try {
+      const result = await runCreateCommand([
+        "web-db-user",
+        "FlipScout",
+        "--dir",
+        dbDir,
+        "--prompt",
+        "Build FlipScout with Google login, photo upload, inventory, scans, listings, orders, shipments, and profit tracking.",
+      ]);
+
+      expect(result.ok).toBe(true);
+
+      const envExample = fs.readFileSync(path.join(dbDir, ".env.example"), "utf8");
+      const schema = fs.readFileSync(path.join(dbDir, "drizzle", "schema.ts"), "utf8");
+      const storage = fs.readFileSync(path.join(dbDir, "server", "supabaseStorage.ts"), "utf8");
+      const state = JSON.parse(fs.readFileSync(path.join(dbDir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(envExample).toContain("FLIPSCOUT_SUPABASE_STORAGE_BUCKET=inventory-photos");
+      expect(envExample).toContain("SUPABASE_SERVICE_ROLE_KEY");
+      expect(envExample).toContain("storage.buckets");
+      expect(schema).toContain("inventoryItems");
+      expect(schema).toContain("inventoryPhotos");
+      expect(schema).toContain("scans");
+      expect(schema).toContain("listings");
+      expect(schema).toContain("orders");
+      expect(schema).toContain("shipments");
+      expect(storage).toContain("createClient");
+      expect(storage).toContain("storage.from");
+      expect(storage).toContain("FLIPSCOUT_SUPABASE_STORAGE_BUCKET");
+      expect(state.appSpec.prompt).toContain("Google login");
+      expect(state.appSpec.features).toEqual(expect.arrayContaining(["Supabase Auth foundation", "Supabase Storage photo uploads", "database-backed inventory"]));
+      expect(state.verification.requiredGates).toContain("supabase_product_foundation");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lists and scaffolds the existing mobile app template", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-mobile-"));
     const appDir = path.join(dir, "field-app");

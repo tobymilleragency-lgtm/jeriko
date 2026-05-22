@@ -274,6 +274,8 @@ export const command: CommandHandler = {
       template = inferTemplateFromPrompt(promptText);
       name = flagStr(parsed, "name", "") || inferProjectNameFromPrompt(promptText);
       inferredFromPrompt = true;
+    } else {
+      promptText = flagStr(parsed, "prompt", "");
     }
 
     if (!name) fail("Missing project name. Usage: jeriko create <template> <name>");
@@ -333,8 +335,9 @@ export const command: CommandHandler = {
       replaceTemplatePlaceholders(dir, name);
       const scaffoldSanitizerActions = template === "web-static" ? sanitizeStaticWebProject(dir) : [];
       const crawlerPrerender = applyCrawlerPrerenderSupport(dir, name, seoProfile);
-      if (info.category === "webdev" && template === "web-db-user" && promptText) {
-        applyFullStackProductPromptSupport(dir, promptText);
+      const effectivePromptText = promptText || name;
+      if (info.category === "webdev" && template === "web-db-user" && effectivePromptText) {
+        applyFullStackProductPromptSupport(dir, effectivePromptText);
       }
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile, prompt: promptText || undefined, seoProfile }))
@@ -1391,6 +1394,7 @@ function buildTemplatePlaceholderValues(projectName: string): Record<string, str
   return {
     project_name: projectSlug,
     project_title: projectTitle,
+    app_env_prefix: projectSlug.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase() || "APP",
     bundle_id: `space.manus.${bundleName}.t${timestamp}`,
   };
 }

@@ -368,6 +368,19 @@ export const command: CommandHandler = {
         });
       }
 
+      const supabaseProductFoundation = scanSupabaseProductFoundation(dir, profile, projectState);
+      gates.push({ name: "supabase_product_foundation", ok: supabaseProductFoundation.length === 0 });
+      if (supabaseProductFoundation.length > 0) {
+        failWithDetails("Generated database app is missing the standard Supabase Auth/database/storage foundation. Web-db-user product apps must scaffold app-scoped Supabase Auth envs, durable product tables, and Supabase Storage helpers before custom product workflows are added.", {
+          errorCode: "E_SUPABASE_PRODUCT_FOUNDATION",
+          directory: dir,
+          profile,
+          projectState,
+          supabaseProductFoundation,
+          gates,
+        });
+      }
+
       const premiumMarketingSiteIssues = scanPremiumMarketingSiteQuality(dir, projectState);
       gates.push({ name: "premium_marketing_site_scan", ok: premiumMarketingSiteIssues.length === 0 });
       if (premiumMarketingSiteIssues.length > 0) {
@@ -695,6 +708,59 @@ export function scanWorkflowContract(_dir: string, projectState: ProjectState | 
   for (const output of requiredOutputs) if (!merged.outputs.has(output)) issues.push({ file: "project-state.json", line: 0, token: `output:${output}`, reason: `Product workflow must declare ${output} output support.` });
   for (const table of requiredPersistence) if (!merged.persistence.has(table)) issues.push({ file: "project-state.json", line: 0, token: `persistence:${table}`, reason: `Product workflow must declare durable ${table} persistence.` });
   return issues;
+}
+
+export function scanSupabaseProductFoundation(dir: string, profile: AppProfile = inferAppProfile(dir), projectState: ProjectState | null = readProjectState(dir)): RealnessHit[] {
+  if (profile !== "web-db-user") return [];
+  const specText = [
+    projectState?.appSpec?.prompt ?? "",
+    ...(projectState?.appSpec?.features ?? []),
+    ...(projectState?.appSpec?.successCriteria ?? []),
+    ...(projectState?.appSpec?.workflows ?? []).flatMap((workflow) => [
+      workflow.label,
+      ...(workflow.inputs ?? []),
+      ...(workflow.actions ?? []),
+      ...(workflow.outputs ?? []),
+      ...(workflow.persistence ?? []),
+    ]),
+  ].join(" ").toLowerCase();
+  const productWorkflowRequired = /scanner|scan|resale|flip|inventory|listing|profit|upload|photo|order|shipment/.test(specText);
+  if (!productWorkflowRequired) return [];
+
+  const hits: RealnessHit[] = [];
+  const envExamplePath = join(dir, ".env.example");
+  const schemaPath = join(dir, "drizzle", "schema.ts");
+  const storagePath = join(dir, "server", "supabaseStorage.ts");
+  const clientAuthPath = join(dir, "client", "src", "lib", "supabaseAuth.ts");
+  const envExample = existsSync(envExamplePath) ? readFileSync(envExamplePath, "utf8") : "";
+  const schema = existsSync(schemaPath) ? readFileSync(schemaPath, "utf8") : "";
+  const storage = existsSync(storagePath) ? readFileSync(storagePath, "utf8") : "";
+  const clientAuth = existsSync(clientAuthPath) ? readFileSync(clientAuthPath, "utf8") : "";
+
+  const requireText = (file: string, content: string, token: string, reason: string) => {
+    if (content.includes(token)) return;
+    hits.push({ file, line: 0, token, reason });
+  };
+
+  requireText(".env.example", envExample, "VITE_APP_SUPABASE_URL", "Supabase Auth URL env is missing from generated app setup docs.");
+  requireText(".env.example", envExample, "VITE_APP_SUPABASE_ANON_KEY", "Supabase Auth anon key env is missing from generated app setup docs.");
+  requireText(".env.example", envExample, "SUPABASE_SERVICE_ROLE_KEY", "Server-side Supabase service role env is required for storage setup and admin-side workflows.");
+  if (!/[A-Z0-9_]+_SUPABASE_STORAGE_BUCKET=inventory-photos/.test(envExample)) {
+    hits.push({ file: ".env.example", line: 0, token: "<APP>_SUPABASE_STORAGE_BUCKET", reason: "App-scoped Supabase Storage bucket env must be documented so generated apps do not share another app's bucket by accident." });
+  }
+  requireText("client/src/lib/supabaseAuth.ts", clientAuth, "signInWithOAuth", "Client Supabase Google auth helper is missing.");
+  requireText("client/src/lib/supabaseAuth.ts", clientAuth, "provider: \"google\"", "Supabase Auth helper must default to Google OAuth.");
+
+  for (const table of ["inventoryItems", "inventoryPhotos", "scans", "listings", "orders", "shipments"]) {
+    requireText("drizzle/schema.ts", schema, table, `Durable product schema is missing ${table}; product apps must not start from user-only database tables.`);
+  }
+  requireText("server/supabaseStorage.ts", storage, "createClient", "Server Supabase Storage helper must create a Supabase admin client.");
+  requireText("server/supabaseStorage.ts", storage, "storage.from", "Server Supabase Storage helper must upload through Supabase Storage buckets.");
+  if (!/[A-Z0-9_]+_SUPABASE_STORAGE_BUCKET/.test(storage)) {
+    hits.push({ file: "server/supabaseStorage.ts", line: 0, token: "<APP>_SUPABASE_STORAGE_BUCKET", reason: "Storage helper must read an app-scoped bucket env key, not a generic shared bucket setting." });
+  }
+
+  return hits;
 }
 
 export function scanPrimaryActionWiring(dir: string, profile: AppProfile = inferAppProfile(dir)): RealnessHit[] {

@@ -99,6 +99,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "primary_action_wiring",
   "business_math_realness",
   "primary_fetch_error_handling",
+  "supabase_product_foundation",
   "premium_marketing_site_scan",
   "app_spec_verifier",
   "install",
@@ -194,7 +195,7 @@ function buildPromptAppSpecContract(args: {
   const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages, ...marketingPages];
   const hasMultiPageMarketing = !fullStack && marketingPages.length > 0;
   const features = fullStack
-    ? uniqueStrings(["authenticated user workflow", "database-backed app state", ...productWorkflow.features])
+    ? uniqueStrings(["authenticated user workflow", "Supabase Auth foundation", "database-backed app state", "Supabase Storage photo uploads", ...productWorkflow.features])
     : uniqueStrings([
       "production homepage",
       "customer-ready marketing content",
@@ -220,6 +221,7 @@ function buildPromptAppSpecContract(args: {
       ...(hasMultiPageMarketing ? ["Every appSpec page is implemented as a routable page, not collapsed into a single landing page"] : []),
       ...(hasMultiPageMarketing ? ["Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
+      ...(fullStack ? ["Supabase Auth, database schema, and storage foundation are scaffolded before product-specific data/photo workflows are added"] : []),
     ],
   };
 }
@@ -274,7 +276,7 @@ function inferProductWorkflow(prompt: string, fullStack: boolean): { appType: st
       inputs: ["upload", "paste", "cost", "shipping", "fees"],
       actions: ["upload", "paste", "scan", "save", "list", "edit", "delete"],
       outputs: ["price", "profit", "decision", "confidence"],
-      persistence: ["items", "scans", "inventory", "uploads"],
+      persistence: ["items", "photos", "scans", "inventory", "uploads", "listings", "orders", "shipments"],
     },
   };
 }
