@@ -84,6 +84,23 @@ describe("verify-app command", () => {
     }
   });
 
+  it("allows legitimate contractor marketing copy in generated apps", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-contractor-copy-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export default function Home(){return <main>
+          <h1>Contractor marketing systems for booked estimates</h1>
+          <p>Missed-call follow-up, quote forms, and reporting help contractors see which pages create booked estimates.</p>
+        </main>}
+      `);
+
+      expect(scanScaffoldResidue(dir)).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("auto-advances the default verification port when it is already occupied", async () => {
     const server = createServer((_req, res) => res.end("occupied"));
     const occupiedPort = await new Promise<number>((resolve) => {

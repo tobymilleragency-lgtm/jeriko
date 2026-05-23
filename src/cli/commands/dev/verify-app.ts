@@ -92,9 +92,6 @@ const SCAFFOLD_RESIDUE_TOKENS = [
   "Lorem ipsum",
   "BLOCK TO BE DELETED",
   "Google Fonts here, example",
-  "contractor marketing system",
-  "missed-call follow-up",
-  "booked estimates",
 ];
 const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
@@ -109,9 +106,6 @@ const PUBLIC_MOCK_COPY_TOKENS = [
   "demo shell",
   "BLOCK TO BE DELETED",
   "Google Fonts here, example",
-  "contractor marketing system",
-  "missed-call follow-up",
-  "booked estimates",
 ];
 const FORBIDDEN_INTEGRATIONS = {
   stripe: [
