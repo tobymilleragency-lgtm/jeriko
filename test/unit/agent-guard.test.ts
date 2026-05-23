@@ -213,6 +213,31 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("- pnpm check: passed");
     expect(summary).toContain("- pnpm build: passed");
     expect(summary).not.toContain("production build was not proven passing");
+    expect(summary).toContain("Localhost URL:");
+    expect(summary).toContain("- not captured");
+    const localhostSection = summary.split("Verification gates:")[0] ?? summary;
+    expect(localhostSection).not.toContain("http://127.0.0.1:4180/scanner");
+  });
+
+  test("forced recap reports only persistent webdev localhost URLs, not verify_app temporary smoke URLs", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: JSON.stringify({ ok: true, data: { gates: [
+        { name: "check", ok: true, output: "tsc --noEmit" },
+        { name: "build", ok: true, output: "vite build ✓ built in 1.1s" },
+        { name: "browser_smoke", ok: true, output: "loaded http://127.0.0.1:4176/sell" },
+      ] } }) },
+      { role: "tool", content: JSON.stringify({ ok: true, data: {
+        pid: 12345,
+        port: 4188,
+        url: "http://127.0.0.1:4188/",
+        command: "pnpm run dev",
+        logFile: "/tmp/webdev-restart.log",
+      } }) },
+    ], "Repeated no-progress tool round blocked after 3 matching rounds: verify_app {}");
+
+    const localhostSection = summary.split("Verification gates:")[0] ?? summary;
+    expect(localhostSection).toContain("http://127.0.0.1:4188/");
+    expect(localhostSection).not.toContain("http://127.0.0.1:4176/sell");
   });
 
   test("builds a no-progress recovery prompt that does not claim stale verification after a later edit", () => {

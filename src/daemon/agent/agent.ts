@@ -963,40 +963,41 @@ interface CapturedVerificationState {
 function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerificationState {
   const toolTexts = messages.filter((msg) => msg.role === "tool").map((msg) => messageText(msg));
   const latestMutationIndex = latestGeneratedAppMutationIndex(toolTexts);
-  const checkPassed = toolTexts.some((text, index) => index > latestMutationIndex && text.includes("tsc --noEmit") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
-  const buildPassed = toolTexts.some((text, index) => index > latestMutationIndex && ((text.includes("vite build") && text.includes("✓ built in")) || (text.includes("bun build") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text))));
+  const checkPassedDirect = toolTexts.some((text, index) => index > latestMutationIndex && text.includes("tsc --noEmit") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text));
+  const buildPassedDirect = toolTexts.some((text, index) => index > latestMutationIndex && ((text.includes("vite build") && text.includes("✓ built in")) || (text.includes("bun build") && !/error TS\d+|\bFAILED\b|\bERR_/i.test(text))));
   const workspaceTexts = toolTexts.filter((text) => text.includes('"diffStat"') || text.includes('"changed_files"'));
   const latestWorkspace = workspaceTexts.at(-1) ?? "";
   const noChangedFiles = latestWorkspace.includes('"diffStat":""') || latestWorkspace.includes('"diffStat": ""') || latestWorkspace.includes('changed_files: 0') || latestWorkspace.includes('"changed_files": 0');
   const codeIntegrityTriggered = toolTexts.some((text) => text.includes('"guard":"code_integrity"') || text.includes("code_integrity"));
-  const parsedToolResults = toolTexts.map(parseToolResultJson).filter((value): value is Record<string, any> => Boolean(value && typeof value === "object" && !Array.isArray(value)));
+  const parsedToolResultsWithIndex = toolTexts
+    .map((text, index) => ({ index, parsed: parseToolResultJson(text) }))
+    .filter((entry): entry is { index: number; parsed: Record<string, any> } => Boolean(entry.parsed && typeof entry.parsed === "object" && !Array.isArray(entry.parsed)));
+  const parsedToolResults = parsedToolResultsWithIndex.map((entry) => entry.parsed);
   const generatedCopyBlockResult = parsedToolResults.findLast((parsed) => parsed?.guard === "generated_copy_target");
   const generatedCopyBlocker = typeof generatedCopyBlockResult?.error === "string" ? generatedCopyBlockResult.error : "";
 
-  const localUrls = uniqueStrings([
-    ...toolTexts.flatMap(extractLocalUrls),
-    ...parsedToolResults.flatMap((parsed) => {
-      const urls: string[] = [];
-      if (typeof parsed?.data?.server?.url === "string") urls.push(parsed.data.server.url);
-      if (typeof parsed?.server?.url === "string") urls.push(parsed.server.url);
-      if (typeof parsed?.data?.url === "string") urls.push(parsed.data.url);
-      if (typeof parsed?.url === "string") urls.push(parsed.url);
-      return urls;
-    }),
-  ]).slice(0, 4);
+  const localUrls = uniqueStrings(parsedToolResults.flatMap((parsed) => persistentLocalUrlsFromToolResult(parsed))).slice(0, 4);
 
-  const verifyResults = parsedToolResults.filter((parsed) => {
+  const verifyResults = parsedToolResultsWithIndex.filter(({ parsed }) => {
     const gates = parsed?.data?.gates ?? parsed?.gates;
     return Array.isArray(gates);
   });
-  const latestVerify = verifyResults.at(-1);
-  const verifyAppGates: CapturedGateState[] = Array.isArray(latestVerify?.data?.gates ?? latestVerify?.gates)
-    ? (latestVerify?.data?.gates ?? latestVerify?.gates).map((gate: any) => ({
+  const latestVerifyEntry = verifyResults.at(-1);
+  const latestVerify = latestVerifyEntry?.parsed;
+  const latestVerifyGates = latestVerify?.data?.gates ?? latestVerify?.gates;
+  const verifyAppGates: CapturedGateState[] = Array.isArray(latestVerifyGates)
+    ? latestVerifyGates.map((gate: any) => ({
       name: String(gate?.name ?? "unknown"),
       ok: gate?.ok === true,
       output: summarizeGateOutput(gate?.output),
     }))
     : [];
+  const latestVerifyIsAfterMutation = latestVerifyEntry ? latestVerifyEntry.index > latestMutationIndex : false;
+  const checkPassedByVerifyApp = latestVerifyIsAfterMutation && verifyAppGates.some((gate) => gate.name === "check" && gate.ok);
+  const buildPassedByVerifyApp = latestVerifyIsAfterMutation && verifyAppGates.some((gate) => gate.name === "build" && gate.ok);
+
+  const checkPassed = checkPassedDirect || checkPassedByVerifyApp;
+  const buildPassed = buildPassedDirect || buildPassedByVerifyApp;
 
   const latestWorkspaceJson = parseToolResultJson(latestWorkspace);
   const changedFilesSummary = summarizeChangedFiles(latestWorkspaceJson) || summarizeChangedFilesFromText(latestWorkspace);
@@ -1047,8 +1048,28 @@ function isCodeMutationPath(filePath: string): boolean {
   return /\.(tsx?|jsx?|css|json|html|mdx?)$/i.test(filePath);
 }
 
-function extractLocalUrls(text: string): string[] {
-  return [...text.matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[\w./?=&%-]*)?/g)].map((match) => match[0]);
+function persistentLocalUrlsFromToolResult(parsed: Record<string, any>): string[] {
+  const urls: string[] = [];
+  const serverUrl = parsed?.data?.server?.url ?? parsed?.server?.url;
+  if ((parsed?.data?.server?.running === true || parsed?.server?.running === true) && typeof serverUrl === "string") {
+    urls.push(serverUrl);
+  }
+
+  // webdev restart returns data.url after it has spawned a detached server and
+  // proved HTTP readiness. verify_app/browser_smoke URLs are deliberately not
+  // accepted here because verify_app tears down its temporary server after the
+  // gate and those localhost URLs are stale by the time an operator reads the
+  // recap.
+  const restartUrl = parsed?.data?.url;
+  if (parsed?.ok === true
+    && typeof restartUrl === "string"
+    && typeof parsed?.data?.pid === "number"
+    && typeof parsed?.data?.command === "string"
+    && typeof parsed?.data?.logFile === "string") {
+    urls.push(restartUrl);
+  }
+
+  return urls.filter((url) => /^https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[\w./?=&%-]*)?$/i.test(url));
 }
 
 function uniqueStrings(values: string[]): string[] {
