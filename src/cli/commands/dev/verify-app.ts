@@ -92,6 +92,12 @@ const SCAFFOLD_RESIDUE_TOKENS = [
   "Lorem ipsum",
   "BLOCK TO BE DELETED",
   "Google Fonts here, example",
+  "the site speaks to",
+  "site directs visitors",
+  "current site directs",
+  "current site says",
+  "representative listings",
+  "representative residential",
 ];
 const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
@@ -106,6 +112,12 @@ const PUBLIC_MOCK_COPY_TOKENS = [
   "demo shell",
   "BLOCK TO BE DELETED",
   "Google Fonts here, example",
+  "the site speaks to",
+  "site directs visitors",
+  "current site directs",
+  "current site says",
+  "representative listings",
+  "representative residential",
 ];
 const FORBIDDEN_INTEGRATIONS = {
   stripe: [
@@ -1024,8 +1036,9 @@ export function scanScaffoldResidue(dir: string): ScaffoldResidueHit[] {
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";
+      const lowerLine = line.toLowerCase();
       for (const token of SCAFFOLD_RESIDUE_TOKENS) {
-        if (line.includes(token)) hits.push({ file, line: i + 1, token });
+        if (lowerLine.includes(token.toLowerCase())) hits.push({ file, line: i + 1, token });
       }
     }
   });

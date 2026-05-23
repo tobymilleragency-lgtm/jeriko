@@ -101,6 +101,24 @@ describe("verify-app command", () => {
     }
   });
 
+  it("detects public-facing meta copy that describes the site instead of the business", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-meta-site-copy-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export default function Home(){return <main>
+          <h2>Land and farms</h2>
+          <p>The site speaks to farms, acreage, hunting land, rural property, and auction-vs-private-sale decisions.</p>
+          <p>Cody's current site directs visitors to click through for full listing details.</p>
+        </main>}
+      `);
+
+      expect(scanScaffoldResidue(dir).map((hit) => hit.token)).toEqual(["the site speaks to", "site directs visitors", "current site directs"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("auto-advances the default verification port when it is already occupied", async () => {
     const server = createServer((_req, res) => res.end("occupied"));
     const occupiedPort = await new Promise<number>((resolve) => {
