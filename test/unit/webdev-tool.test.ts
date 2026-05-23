@@ -848,6 +848,16 @@ describe("webdev tool — restart action", () => {
     }
   });
 
+  it("preserves an existing project listener port over a different explicit restart port", async () => {
+    const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
+    const dir = createTestProject("existing-port-preferred", { scripts: { dev: "vite --host" } });
+
+    const selected = await __webdevTest.chooseRestartPort(dir, 4175, [6548]);
+
+    expect(selected.port).toBe(6548);
+    expect(selected.explicit).toBe(false);
+  });
+
   it("falls back when a configured Vite port is occupied by a foreign server", async () => {
     const { __webdevTest } = await import("../../src/daemon/agent/tools/webdev.js");
     const dir = createTestProject("configured-occupied", { scripts: { dev: "vite --host" } });

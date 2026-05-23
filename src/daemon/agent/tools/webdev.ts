@@ -221,6 +221,27 @@ function projectListeningPids(dir: string): number[] {
   });
 }
 
+function projectListeningPorts(dir: string): number[] {
+  const lsof = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-FpPn"], { timeout: 5000 });
+  const lines = (lsof.stdout?.toString() ?? "").split("\n").filter(Boolean);
+  const projectRoot = resolve(dir);
+  const ports = new Set<number>();
+  let currentPid = 0;
+  for (const line of lines) {
+    if (line.startsWith("p")) {
+      currentPid = parseInt(line.slice(1), 10) || 0;
+      continue;
+    }
+    if (!line.startsWith("n") || !currentPid) continue;
+    const cwd = pidCwd(currentPid);
+    if (!cwd || !(cwd === projectRoot || cwd.startsWith(`${projectRoot}/`))) continue;
+    const match = line.match(/:(\d+)(?:\s|$)/);
+    const port = match?.[1] ? Number(match[1]) : 0;
+    if (port > 0) ports.add(port);
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
 function shouldAutoOpenUrl(): boolean {
   // Agent-driven app-builder work should report the localhost URL instead of
   // repeatedly opening desktop browser tabs. Auto-open is opt-in for explicit
@@ -247,7 +268,7 @@ function openUrlBestEffort(url: string): boolean {
   }
 }
 
-export const __webdevTest = { pidsFromLsofOutput, pidsOnPort, projectListeningPids, isPortFree, chooseRestartPort, openUrlBestEffort, shouldAutoOpenUrl };
+export const __webdevTest = { pidsFromLsofOutput, pidsOnPort, projectListeningPids, projectListeningPorts, isPortFree, chooseRestartPort, openUrlBestEffort, shouldAutoOpenUrl };
 
 function pidCwd(pid: number): string | null {
   const resolved = spawnSync("readlink", ["-f", `/proc/${pid}/cwd`], { timeout: 2000 });
@@ -266,8 +287,10 @@ async function isPortFree(port: number): Promise<boolean> {
   return true;
 }
 
-async function chooseRestartPort(dir: string, argsPort?: unknown): Promise<{ port: number; explicit: boolean }> {
+async function chooseRestartPort(dir: string, argsPort?: unknown, existingProjectPorts: number[] = []): Promise<{ port: number; explicit: boolean }> {
   const explicit = argsPort !== undefined && argsPort !== null && Number(argsPort) > 0;
+  const existingPort = existingProjectPorts.find((port) => port > 0);
+  if (existingPort) return { port: existingPort, explicit: false };
   const configuredPort = detectConfiguredPort(dir, argsPort);
   if (configuredPort && (explicit || await isPortFree(configuredPort))) return { port: configuredPort, explicit };
 
@@ -719,13 +742,15 @@ async function actionRestart(args: Record<string, unknown>): Promise<string> {
   const { dir } = resolved;
 
   try {
+    const existingProjectPorts = projectListeningPorts(dir);
     const existingProjectPids = projectListeningPids(dir);
     for (const pid of existingProjectPids) stopProcessGroup(pid);
     if (existingProjectPids.length > 0) await new Promise((r) => setTimeout(r, 500));
 
     // Select a restart port without probing unrelated running services. If the
-    // model does not specify a port, pick the first free common dev port.
-    const selected = await chooseRestartPort(dir, args.port);
+    // project was already running (for example from Website Command Center),
+    // preserve that port so dashboard "Open Local" links do not go stale.
+    const selected = await chooseRestartPort(dir, args.port, existingProjectPorts);
     const port = selected.port;
     if (selected.explicit && !(await isPortFree(port))) {
       return JSON.stringify({
