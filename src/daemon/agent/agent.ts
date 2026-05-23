@@ -432,11 +432,10 @@ export async function* runAgent(
           addPart(recoveryMsg.id, "text", recoveryPrompt);
           messages.push({ role: "user", content: recoveryPrompt });
           yield { type: "compaction", beforeTokens, afterTokens };
-          yield { type: "text_delta", content: recoveryPrompt };
           continue;
         }
 
-        const finalDiagnosis = `${diagnosis}\n\n${buildNoProgressStopSummary(messages, "Model stream stopped before Jeriko could complete a normal final response.")}`;
+        const finalDiagnosis = buildNoProgressStopSummary(messages, "Model stream stopped before Jeriko could complete a normal final response.");
         const guardMsg = addMessage(config.sessionId, "assistant", finalDiagnosis, { input: totalTokensIn, output: estimateTokens(finalDiagnosis) });
         addPart(guardMsg.id, "text", finalDiagnosis);
         touchSession(config.sessionId);
@@ -498,7 +497,6 @@ export async function* runAgent(
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
-        yield { type: "text_delta", content: gateMessage };
         continue;
       }
       if (!hadError && requiresAppFactoryVerification(messages, fullText) && !hasAppFactoryDoneEvidence(messages)) {
@@ -524,7 +522,6 @@ export async function* runAgent(
         const gateMsg = addMessage(config.sessionId, "user", gateMessage);
         addPart(gateMsg.id, "text", gateMessage);
         messages.push({ role: "user", content: gateMessage });
-        yield { type: "text_delta", content: gateMessage };
         continue;
       }
       touchSession(config.sessionId);
@@ -553,7 +550,6 @@ export async function* runAgent(
         const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
         addPart(recoveryMsg.id, "text", recoveryPrompt);
         messages.push({ role: "user", content: recoveryPrompt });
-        yield { type: "text_delta", content: `\n\n${recoveryPrompt}` };
         continue;
       }
 
@@ -859,6 +855,7 @@ function summarizeToolCall(toolCall: ToolCall): string {
 
 export function buildNoProgressStopSummary(messages: DriverMessage[], reason: string): string {
   const state = getCapturedVerificationState(messages);
+  const publicReason = publicNoProgressReason(reason);
   const gateLines = state.verifyAppGates.length > 0
     ? state.verifyAppGates.map((gate) => `  - ${gate.name}: ${gate.ok ? "passed" : "FAILED"}${gate.output ? ` — ${gate.output}` : ""}`)
     : ["  - verify_app: not run or not captured"];
@@ -873,8 +870,8 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
     : ["- no captured blockers; review the verification lines above before claiming more"];
 
   const lines = [
-    reason.startsWith("Agent loop exceeded") ? "Agent loop stopped at the maximum-round safety limit." : "No-progress guard stopped the run.",
-    reason,
+    publicReason.startsWith("Agent loop exceeded") ? "Agent loop stopped at the maximum-round safety limit." : "No-progress guard stopped the run.",
+    publicReason,
     "",
     "Operator recap:",
     "",
@@ -902,6 +899,17 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
     "Action taken: stopped after bounded recovery attempts instead of rereading the same files or rerunning the same checks.",
   ];
   return lines.join("\n");
+}
+
+function publicNoProgressReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (/MODEL_STREAM_NO_PROGRESS_RECOVERY|APP_FACTORY_DONE_GATE|NO_PROGRESS_RECOVERY/i.test(trimmed)) {
+    return "Jeriko hit an internal recovery/final-report guard while trying to finish the run.";
+  }
+  if (/Repeated no-progress tool round blocked/i.test(trimmed)) {
+    return trimmed.replace(/:\s*[^\n]*$/, ".");
+  }
+  return trimmed;
 }
 
 export function buildNoProgressRecoveryPrompt(messages: DriverMessage[], reason: string): string {
@@ -1149,7 +1157,7 @@ export function requiresRouteBreadthVerification(messages: DriverMessage[]): boo
   if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
   const asksFullSite = /\b(full|multi[- ]page|complete|entire)\b[\s\S]{0,80}\b(web\s+app|app|site|website)\b/.test(text)
     || /\b(web\s+app|app|site|website)\b[\s\S]{0,80}\b(full|multi[- ]page|complete|entire)\b/.test(text);
-  const namedPageCount = uniqueStrings([...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio)\b/g)].map((match) => normalizeRouteProofToken(match[1] ?? ""))).filter(Boolean).length;
+  const namedPageCount = uniqueStrings([...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio|auctions?|buy|sell|listings?|area guide|area-guide)\b/g)].map((match) => normalizeRouteProofToken(match[1] ?? ""))).filter(Boolean).length;
   return asksFullSite || namedPageCount >= 3;
 }
 
@@ -1159,17 +1167,25 @@ export function hasRouteBreadthEvidence(messages: DriverMessage[]): boolean {
     if (msg.role !== "tool") return false;
     const text = messageText(msg).toLowerCase();
     if (!/ROUTE_BREADTH_OK/i.test(messageText(msg)) && !/implemented routable pages|appspec.*pages|route breadth/i.test(text)) return false;
-    const routeHits = new Set([...text.matchAll(/\/(?:services|industries|case-studies|process|pricing|resources|contact|about|service-areas|gallery|portfolio)\b/g)].map((match) => match[0]));
+    const routeHits = new Set([...text.matchAll(/\/(?:services|industries|case-studies|process|pricing|resources|contact|about|service-areas|gallery|portfolio|auctions|buy|sell|listings|area-guide)\b/g)].map((match) => match[0]));
     if (requiredRoutes.length > 0 && requiredRoutes.every((route) => routeHits.has(route))) return true;
     return routeHits.size >= Math.max(3, Math.min(5, requiredRoutes.length || 5));
   });
 }
 
 function requiredRouteBreadthTokens(messages: DriverMessage[]): string[] {
-  const text = messages.filter((msg) => msg.role === "user").map((msg) => messageText(msg)).join("\n").toLowerCase();
-  return uniqueStrings([...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio)\b/g)]
+  const text = messages
+    .filter((msg) => msg.role === "user")
+    .map((msg) => messageText(msg))
+    .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
+    .join("\n")
+    .toLowerCase();
+  const namedRoutes = [...text.matchAll(/\b(services?|industries|case studies|case-studies|process|pricing|packages?|resources?|blog|contact|about|service areas?|locations?|gallery|portfolio|auctions?|buy|sell|listings?|area guide|area-guide)\b/g)]
     .map((match) => normalizeRouteProofToken(match[1] ?? ""))
-    .filter(Boolean));
+    .filter(Boolean);
+  const explicitSlashRoutes = [...text.matchAll(/\/(?:services|industries|case-studies|process|pricing|resources|contact|about|service-areas|gallery|portfolio|auctions|buy|sell|listings|area-guide)\b/g)]
+    .map((match) => match[0]);
+  return uniqueStrings([...namedRoutes, ...explicitSlashRoutes]);
 }
 
 function normalizeRouteProofToken(token: string): string {
@@ -1185,6 +1201,11 @@ function normalizeRouteProofToken(token: string): string {
   if (/^(service-areas?|locations?)$/.test(normalized)) return "/service-areas";
   if (normalized === "gallery") return "/gallery";
   if (normalized === "portfolio") return "/portfolio";
+  if (/^auctions?$/.test(normalized)) return "/auctions";
+  if (normalized === "buy") return "/buy";
+  if (normalized === "sell") return "/sell";
+  if (/^listings?$/.test(normalized)) return "/listings";
+  if (normalized === "area-guide") return "/area-guide";
   return "";
 }
 
@@ -1442,7 +1463,7 @@ export function hasPassingVerifyApp(messages: DriverMessage[]): boolean {
 export function isFinalAssistantReport(text: string): boolean {
   const normalized = text.toLowerCase();
   if (!normalized.trim()) return false;
-  const hasReportHeading = /(^|\n)\s*#{0,3}\s*(verified fixed now|exact evidence|plain answer|verification results|files changed|remaining issues)\b/i.test(text);
+  const hasReportHeading = /(^|\n)\s*#{0,3}\s*(verified fixed now|exact evidence|plain answer|verification results|verification evidence|files changed|remaining issues|what i did|what i did not do|local preview url|full clickable url)\b/i.test(text);
   const hasDoneSignal = /\b(done|completed|verified|passes|passed)\b/i.test(text);
   const hasVerification = /\b(pnpm|bun|npm)\s+(run\s+)?(check|build|test)\b|\btsc\s+--noemit\b|\bbuild\s+passed\b/i.test(text);
   return hasReportHeading && hasDoneSignal && hasVerification;

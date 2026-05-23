@@ -190,7 +190,9 @@ describe("agent no-progress guard", () => {
     }
 
     expect(seenRequestSignals).toEqual([false, false]);
-    expect(events.some((event) => event.type === "text_delta" && event.content.includes("RECOVERED"))).toBe(true);
+    const visibleText = events.filter((event) => event.type === "text_delta").map((event: any) => event.content).join("\n");
+    expect(visibleText).toContain("RECOVERED");
+    expect(visibleText).not.toContain("MODEL_STREAM_NO_PROGRESS_RECOVERY");
   });
 
   it("hard-stops with an operator recap on repeated tool rounds without asking the model to recover", async () => {
@@ -255,6 +257,52 @@ describe("agent no-progress guard", () => {
     expect(output).toContain("Repeated no-progress tool round blocked after 3 matching rounds");
     expect(output).not.toContain("NO_PROGRESS_RECOVERY");
     expect(output).not.toContain("MODEL_WAS_REASKED_AFTER_REPEAT_GUARD");
+  });
+
+  it("hard-stops after app-builder final reports instead of executing stray tool calls", async () => {
+    let toolExecuted = false;
+    registerTool({
+      id: "post_report_probe",
+      name: "post_report_probe",
+      description: "Test-only post-report probe",
+      parameters: { type: "object", properties: {} },
+      execute: async () => {
+        toolExecuted = true;
+        return JSON.stringify({ ok: true });
+      },
+    });
+
+    const driver: LLMDriver = {
+      name: "test-final-report-hard-stop",
+      async *chat(): AsyncGenerator<StreamChunk> {
+        yield { type: "text", content: "## What I did\nFinished the site.\n\nVerification evidence\n- pnpm run check passed\n- pnpm run build passed\n" };
+        yield {
+          type: "tool_call",
+          content: "",
+          tool_call: { id: "post-report-1", name: "post_report_probe", arguments: "{}" },
+        };
+      },
+    };
+    registerDriver(driver);
+    const session = createSession({ title: "final-report-hard-stop-test", model: "test-model" });
+    const text: string[] = [];
+    const toolResults: string[] = [];
+
+    for await (const event of runAgent({
+      sessionId: session.id,
+      backend: "test-final-report-hard-stop",
+      model: "test-model",
+      noProgressTimeoutMs: 10_000,
+      maxDurationMs: 60_000,
+      maxRounds: 4,
+    }, [{ role: "user", content: "finish this generated web-static site" }])) {
+      if (event.type === "text_delta") text.push(event.content);
+      if (event.type === "tool_result") toolResults.push(event.result);
+    }
+
+    expect(text.join("\n")).toContain("## What I did");
+    expect(toolExecuted).toBe(false);
+    expect(toolResults).toEqual([]);
   });
 
   it("injects the run cwd into cwd-aware tools when the model omits cwd", async () => {

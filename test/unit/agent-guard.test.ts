@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, hasPremiumMarketingEvidence, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, requiresPremiumMarketingVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, hasPremiumMarketingEvidence, hasRouteBreadthEvidence, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, requiresPremiumMarketingVerification, requiresRouteBreadthVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -93,6 +93,10 @@ describe("Final report detection", () => {
     expect(isFinalAssistantReport(`## Verified fixed now\n- Done.\n\n## Exact evidence\n- pnpm check passed\n- pnpm build passed`)).toBe(true);
   });
 
+  test("detects Jeriko app-builder final reports that use What I did / Verification evidence headings", () => {
+    expect(isFinalAssistantReport(`## What I did\nFinished the Cody Chesnutt realtor site revisions.\n\nVerification evidence\n- pnpm run check passed\n- pnpm run build passed\n- Full verify_app passed\n\nLocal preview URL\nhttp://127.0.0.1:4175/`)).toBe(true);
+  });
+
   test("detects broad completion claims without requiring a report heading", () => {
     expect(isCompletionClaim("Done — I built the app and it is ready for review.")).toBe(true);
     expect(isCompletionClaim("All done. The generated app is complete and ready.")).toBe(true);
@@ -126,6 +130,22 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("pnpm build: passed");
     expect(summary).toContain("changed files: none");
     expect(summary).toContain("code_integrity guard triggered: no");
+  });
+
+  test("sanitizes internal guard prompts from operator recaps", () => {
+    const summary = buildNoProgressStopSummary([], "APP_FACTORY_DONE_GATE: Final report blocked. Call verify_app/checkpoint/webdev restart now.");
+
+    expect(summary).toContain("Jeriko hit an internal recovery/final-report guard");
+    expect(summary).not.toContain("APP_FACTORY_DONE_GATE");
+    expect(summary).not.toContain("Final report blocked");
+  });
+
+  test("does not include repeated tool arguments in operator recaps", () => {
+    const summary = buildNoProgressStopSummary([], "Repeated no-progress tool round blocked after 3 matching rounds: verify_app {\"dir\":\"/tmp/app\",\"port\":\"4175\"}");
+
+    expect(summary).toContain("Repeated no-progress tool round blocked after 3 matching rounds.");
+    expect(summary).not.toContain("/tmp/app");
+    expect(summary).not.toContain("4175");
   });
 
   test("includes localhost URL, verify_app gates, checkpoint, and blockers in forced recap", () => {
@@ -507,6 +527,34 @@ describe("App-factory final done gate", () => {
     ];
 
     expect(hasPremiumMarketingEvidence(messages)).toBe(true);
+    expect(hasAppFactoryDoneEvidence(messages)).toBe(true);
+  });
+
+  test("route-breadth proof ignores internal generic gate examples and accepts realtor routes", () => {
+    const verifyTool = JSON.stringify({ ok: true, data: { gates: [
+      { name: "placeholder_scan", ok: true },
+      { name: "unsafe_env_scan", ok: true },
+      { name: "db_auth_workflow_wiring", ok: true },
+      { name: "mock_data_import_scan", ok: true },
+      { name: "provider_config_scan", ok: true },
+      { name: "image_uniqueness_scan", ok: true },
+      { name: "install", ok: true },
+      { name: "check", ok: true },
+      { name: "build", ok: true },
+      { name: "start_route", ok: true },
+      { name: "browser_smoke", ok: true },
+    ] } });
+    const messages = [
+      { role: "user", content: "Build a full Cody Chesnutt realtor site with auctions, buy, sell, listings, about, area guide, and contact pages." },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Full web-app/site work requires route-breadth proof before claiming completion. Prove ROUTE_BREADTH_OK with routes such as /services, /industries, /case-studies, /process, /pricing, /resources, and /contact." },
+      { role: "tool", content: verifyTool },
+      { role: "tool", content: JSON.stringify({ ok: true, data: { hash: "7ac84eb", message: "Polish realtor copy" } }) },
+      { role: "tool", content: JSON.stringify({ ok: true, data: { url: "http://127.0.0.1:4175/", opened: true } }) },
+      { role: "tool", content: "ROUTE_BREADTH_OK / status=200 /auctions status=200 /buy status=200 /sell status=200 /listings status=200 /about status=200 /area-guide status=200 /contact status=200" },
+    ];
+
+    expect(requiresRouteBreadthVerification(messages)).toBe(true);
+    expect(hasRouteBreadthEvidence(messages)).toBe(true);
     expect(hasAppFactoryDoneEvidence(messages)).toBe(true);
   });
 
