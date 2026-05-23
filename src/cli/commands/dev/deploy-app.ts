@@ -214,6 +214,10 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   report.gitignoreUpdated = ensureVercelIgnored(dir);
   const effectiveProfile = inferDeployAppProfile(dir, options.profile);
   const effectiveOptions = { ...options, profile: effectiveProfile };
+  const hydratedVercelToken = hydrateSecretFromCredentialCommandCenter("VERCEL_TOKEN");
+  if (hydratedVercelToken) {
+    report.steps.push({ name: "credential_command_center_vercel_token", ok: true, output: "Loaded VERCEL_TOKEN from Credential Command Center for this deploy process." });
+  }
 
   if (options.skipVerify !== true) {
     const verify = runCommand(buildVerifyCommand(dir, effectiveOptions), dir, 900_000);
@@ -294,8 +298,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     const push = runCommand(["git", "push", "-u", "origin", branch], dir, 300_000);
     report.steps.push(stepFromCommand("git_push", push));
     if (push.status !== 0) {
-      report.blockers.push("git push failed; inspect local/remote branch drift before retrying.");
-      return report;
+      report.blockers.push("git push failed; continuing with direct Vercel production deploy so deployment status is still proven separately from GitHub publication.");
     }
   } else {
     report.steps.push({ name: "git_push", ok: true, skipped: true, output: "Skipped by --skip-push." });
@@ -425,6 +428,23 @@ function runCommand(args: string[], cwd: string, timeout = 120_000): CommandResu
     stderr,
     output,
   };
+}
+
+export function hydrateSecretFromCredentialCommandCenter(name: string): boolean {
+  if (process.env[name]) return false;
+  const cccPath = process.env.CCC_BIN || join(process.env.HOME || homedir(), ".local", "bin", "ccc");
+  if (!existsSync(cccPath)) return false;
+  const result = spawnSync(cccPath, ["get", name, "--raw"], {
+    cwd: process.cwd(),
+    encoding: "utf-8",
+    timeout: 10_000,
+    maxBuffer: 200_000,
+    env: process.env,
+  });
+  const value = result.stdout?.toString().replace(/\r?\n$/, "") ?? "";
+  if (result.status !== 0 || !value) return false;
+  process.env[name] = value;
+  return true;
 }
 
 function stepFromCommand(name: string, result: CommandResult): DeployAppReport["steps"][number] {

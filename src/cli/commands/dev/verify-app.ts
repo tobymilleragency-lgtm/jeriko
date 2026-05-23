@@ -536,7 +536,7 @@ export const command: CommandHandler = {
       if (!startGate.ok) return failGate(dir, profile, gates, startGate);
 
       if (!skipBrowser) {
-        const browserGate = await runBrowserSmokeGate(dir, profile, port, browserRoute);
+        const browserGate = await runBrowserSmokeGate(dir, profile, port, browserRoute, projectState);
         gates.push(browserGate);
         if (!browserGate.ok) return failGate(dir, profile, gates, browserGate);
       }
@@ -1882,8 +1882,8 @@ async function runStartRouteGate(dir: string, profile: AppProfile, port: string,
 }
 
 
-async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: string, route: string): Promise<VerificationGate> {
-  const command = detectStartCommand(dir, profile, port);
+async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: string, route: string, projectState?: ProjectState | null): Promise<VerificationGate> {
+  const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "browser_smoke", ok: false, output: "No package start/preview script found." };
   const executablePath = findBrowserExecutable();
   if (!executablePath) {

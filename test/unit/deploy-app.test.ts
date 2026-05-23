@@ -7,6 +7,7 @@ import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
   googleOAuthRedirectUriFromLocation,
+  hydrateSecretFromCredentialCommandCenter,
   inferDeployAppProfile,
   isDatabaseReadySmokeBody,
   isGoogleRedirectUriMismatch,
@@ -96,6 +97,28 @@ describe("deploy-app Vercel metadata guard", () => {
     expect(ensureVercelIgnored(dir)).toBe(false);
     const content = fs.readFileSync(path.join(dir, ".gitignore"), "utf-8");
     expect(content.match(/^\.vercel$/gm)?.length).toBe(1);
+  });
+});
+
+describe("deploy-app Credential Command Center integration", () => {
+  it("hydrates VERCEL_TOKEN from ccc without requiring vercel login state", () => {
+    const oldToken = process.env.VERCEL_TOKEN;
+    const oldCccBin = process.env.CCC_BIN;
+    const cccBin = path.join(testHome, "fake-ccc");
+    fs.writeFileSync(cccBin, "#!/usr/bin/env bash\nif [ \"$1 $2 $3\" = \"get VERCEL_TOKEN --raw\" ]; then printf 'token-from-ccc'; exit 0; fi\nexit 1\n");
+    fs.chmodSync(cccBin, 0o755);
+
+    delete process.env.VERCEL_TOKEN;
+    process.env.CCC_BIN = cccBin;
+    try {
+      expect(hydrateSecretFromCredentialCommandCenter("VERCEL_TOKEN")).toBe(true);
+      expect(process.env.VERCEL_TOKEN).toBe("token-from-ccc");
+    } finally {
+      if (oldToken === undefined) delete process.env.VERCEL_TOKEN;
+      else process.env.VERCEL_TOKEN = oldToken;
+      if (oldCccBin === undefined) delete process.env.CCC_BIN;
+      else process.env.CCC_BIN = oldCccBin;
+    }
   });
 });
 
