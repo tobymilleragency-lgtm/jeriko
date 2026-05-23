@@ -438,6 +438,28 @@ describe("agent no-progress guard", () => {
     expect(hasProductionDeployEvidence(proved)).toBe(true);
   });
 
+  it("does not require production deploy proof when scope explicitly says do not deploy", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "Use the production-ready SOP for local SEO/accessibility verification, but do not deploy this web-static Cody site." },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Production deploy work requires deploy_app and for web-db-user apps production Google OAuth /status + /start." },
+      { role: "tool", content: "verify_app passed; local preview http://127.0.0.1:4175/" },
+    ];
+
+    expect(requiresProductionDeployVerification(messages)).toBe(false);
+    expect(hasProductionDeployEvidence(messages)).toBe(false);
+  });
+
+  it("does not make OAuth proof mandatory from internal production gate text alone", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "Deploy this web-static marketing site to Vercel production." },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Production deploy work requires deploy_app and for web-db-user apps production Google OAuth /status + /start." },
+      { role: "tool", content: "vercel inspect Ready Aliased https://example.com; production smoke status=200" },
+    ];
+
+    expect(requiresProductionDeployVerification(messages)).toBe(true);
+    expect(hasProductionDeployEvidence(messages)).toBe(true);
+  });
+
   it("requires read-after-write product workflow proof for full-stack product app completion", () => {
     const messages: DriverMessage[] = [
       { role: "user", content: "Build a generated full-stack web-db-user inventory scanner app with upload, save to inventory, orders, and listing workflow." },

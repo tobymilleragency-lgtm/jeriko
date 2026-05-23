@@ -1269,6 +1269,7 @@ export function requiresProductionDeployVerification(messages: DriverMessage[]):
     .join("\n")
     .toLowerCase();
   if (/\b(read[- ]only|audit only|analysis only|do not change|do not modify|no code changes)\b/.test(text)) return false;
+  if (/\b(do not deploy|don't deploy|no deploy|deployment not requested|do not push|don't push|local only)\b/.test(text)) return false;
   return /\b(deploy(?:ed|ment)?|production|vercel|live site|go live|ship)\b/.test(text)
     && /\b(site|website|web app|app|generated app|flipscout|google auth|oauth)\b/.test(text);
 }
@@ -1284,7 +1285,11 @@ export function hasProductionDeployEvidence(messages: DriverMessage[]): boolean 
   const hasManualProductionSmoke = /https?:\/\/[^\s"']+/i.test(toolText)
     && /production(_|\s)?smoke|live production|vercel inspect|aliased/i.test(lower)
     && /http\/2\s+200|status\s*[:=]\s*200|"status"\s*:\s*200/i.test(toolText);
-  const oauthRequested = /google auth|oauth|\/api\/oauth\/google\/start|web-db-user|flipscout/i.test([...messages.map((msg) => messageText(msg))].join("\n"));
+  const oauthRequestText = messages
+    .map((msg) => messageText(msg))
+    .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
+    .join("\n");
+  const oauthRequested = /google auth|oauth|\/api\/oauth\/google\/start|web-db-user|flipscout/i.test(oauthRequestText);
   if (!oauthRequested) return hasDeployAppReport || hasManualProductionSmoke;
   const hasOAuthProof = /\/api\/oauth\/google\/status/i.test(toolText)
     && /\/api\/oauth\/google\/start/i.test(toolText)
