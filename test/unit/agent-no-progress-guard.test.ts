@@ -259,6 +259,91 @@ describe("agent no-progress guard", () => {
     expect(output).not.toContain("MODEL_WAS_REASKED_AFTER_REPEAT_GUARD");
   });
 
+  it("hard-stops repeated status loops after green verify_app instead of asking for more recovery", async () => {
+    registerTool({
+      id: "workspace_status",
+      name: "workspace_status",
+      description: "Test workspace status",
+      parameters: { type: "object", properties: {} },
+      execute: async () => JSON.stringify({
+        ok: true,
+        data: {
+          directory: "/home/toby/.jeriko/projects/cody-chestnut-realtor-site",
+          profile: "web-static",
+          projectState: {
+            name: "cody-chestnut-realtor-site",
+            profile: "web-static",
+            appSpec: {
+              appType: "premium-local-service-marketing-site",
+              features: ["buyer pathway", "seller pathway"],
+              pages: [{ path: "/", title: "Home" }, { path: "/buy", title: "Buy" }, { path: "/sell", title: "Sell" }],
+            },
+          },
+          gates: [
+            { name: "placeholder_scan", ok: true },
+            { name: "check", ok: true, output: "tsc --noEmit" },
+            { name: "build", ok: true, output: "vite build ✓ built in 1.1s" },
+            { name: "start_route", ok: true },
+            { name: "browser_smoke", ok: true },
+          ],
+        },
+      }),
+    });
+
+    let callCount = 0;
+    const driver: LLMDriver = {
+      name: "test-status-loop-after-green-verify",
+      chat(): AsyncGenerator<StreamChunk> {
+        callCount += 1;
+        const callNumber = callCount;
+        let yielded = false;
+        const iterator: AsyncGenerator<StreamChunk> = {
+          async next() {
+            if (yielded) return { done: true, value: undefined as never };
+            yielded = true;
+            if (callNumber <= 3) {
+              return {
+                done: false,
+                value: {
+                  type: "tool_call",
+                  content: "",
+                  tool_call: { id: `status-${callNumber}`, name: "workspace_status", arguments: JSON.stringify({ cwd: "/home/toby/.jeriko/projects/cody-chestnut-realtor-site" }) },
+                },
+              };
+            }
+            return { done: false, value: { type: "text", content: "MODEL_WAS_REASKED_AFTER_GREEN_VERIFY" } };
+          },
+          async return() { return { done: true, value: undefined as never }; },
+          async throw(error?: unknown) { throw error; },
+          [Symbol.asyncIterator]() { return this; },
+        };
+        return iterator;
+      },
+    };
+    registerDriver(driver);
+    const session = createSession({ title: "status-loop-after-green-verify", model: "test-model" });
+    const text: string[] = [];
+
+    for await (const event of runAgent({
+      sessionId: session.id,
+      backend: "test-status-loop-after-green-verify",
+      model: "test-model",
+      noProgressTimeoutMs: 10_000,
+      maxDurationMs: 60_000,
+      maxRounds: 8,
+    }, [{ role: "user", content: "finish this generated Cody realtor website" }])) {
+      if (event.type === "text_delta") text.push(event.content);
+    }
+
+    const output = text.join("\n");
+    expect(callCount).toBe(3);
+    expect(output).toContain("Built / target app:");
+    expect(output).toContain("cody-chestnut-realtor-site");
+    expect(output).toContain("premium-local-service-marketing-site");
+    expect(output).not.toContain("NO_PROGRESS_RECOVERY");
+    expect(output).not.toContain("MODEL_WAS_REASKED_AFTER_GREEN_VERIFY");
+  });
+
   it("hard-stops after app-builder final reports instead of executing stray tool calls", async () => {
     let toolExecuted = false;
     registerTool({

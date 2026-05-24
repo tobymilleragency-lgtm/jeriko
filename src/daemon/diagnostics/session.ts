@@ -106,6 +106,10 @@ function gitOrigin(cwd: string): string {
   return git(["remote", "get-url", "origin"], cwd);
 }
 
+function isBroadHomeRoot(cwd: string, searchRoot = homedir()): boolean {
+  return samePath(resolve(cwd), resolve(searchRoot));
+}
+
 function isGeneratedProjectCopy(cwd: string, searchRoot: string): boolean {
   const generatedRoot = resolve(searchRoot, ".jeriko", "projects");
   const absolute = resolve(cwd);
@@ -137,6 +141,13 @@ function findRepoWithSameOrigin(cwd: string, origin: string, searchRoot: string)
 
 export function detectWorkspaceTarget(cwd: string, searchRoot = homedir()): Record<string, unknown> {
   const absolute = resolve(cwd);
+  if (isBroadHomeRoot(absolute, searchRoot)) {
+    return {
+      classification: "home_directory_not_project",
+      path: absolute,
+      warning: "Workspace status was requested for the home directory, not a project root. Git/status checks are intentionally skipped here to avoid scanning the whole user home.",
+    };
+  }
   const origin = gitOrigin(absolute);
   if (isGeneratedProjectCopy(absolute, searchRoot)) {
     const realRepoPath = findRepoWithSameOrigin(absolute, origin, searchRoot);
@@ -164,10 +175,12 @@ export function detectWorkspaceTarget(cwd: string, searchRoot = homedir()): Reco
 
 export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
+  const searchRoot = opts.projectSearchRoot || homedir();
+  const broadHomeRoot = isBroadHomeRoot(cwd, searchRoot);
   const projectState = readProjectState(cwd);
   const session = latestSession(opts.sessionId);
   const parts = session ? sessionParts(asString(session.id), opts.limit ?? 80) : [];
-  const isLocalGitRepo = localGitRepository(cwd);
+  const isLocalGitRepo = !broadHomeRoot && localGitRepository(cwd);
   const recentToolCalls = parts.filter((p) => p.type === "tool_call").slice(0, 12).map((p) => ({
     rowid: p.rowid,
     tool: p.tool_name,
@@ -184,7 +197,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
     ok: true,
     cwd,
     projectState,
-    workspaceTarget: detectWorkspaceTarget(cwd, opts.projectSearchRoot || homedir()),
+    workspaceTarget: detectWorkspaceTarget(cwd, searchRoot),
     verificationStatus: assessVerificationStatus(cwd, projectState),
     dependencyStatus: getDependencyStatus(cwd),
     git: isLocalGitRepo ? {
@@ -209,7 +222,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
 
 export function buildLatestDiagnosis(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
-  const isLocalGitRepo = localGitRepository(cwd);
+  const isLocalGitRepo = !isBroadHomeRoot(cwd, opts.projectSearchRoot || homedir()) && localGitRepository(cwd);
   const session = latestSession(opts.sessionId);
   if (!session) return { ok: false, error: "No sessions found" };
   const sessionId = asString(session.id);

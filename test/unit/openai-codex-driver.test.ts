@@ -42,6 +42,28 @@ describe("OpenAICodexDriver message conversion", () => {
     ]);
   });
 
+  it("sends fallback instructions when no system prompt is configured", async () => {
+    process.env.OPENAI_CODEX_API_KEY = "test-token";
+    process.env.OPENAI_CODEX_BASE_URL = "https://codex.test/backend-api";
+
+    let capturedBody: Record<string, unknown> | null = null;
+    globalThis.fetch = (async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      return new Response('{"detail":"stop"}', { status: 400, headers: { "Content-Type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const driver = new OpenAICodexDriver();
+    for await (const _chunk of driver.chat(
+      [{ role: "user", content: "hello" }],
+      { model: "gpt-5.5", max_tokens: 128, temperature: 0 },
+    )) {
+      // Drain stream to force request.
+    }
+
+    expect(typeof capturedBody?.instructions).toBe("string");
+    expect((capturedBody?.instructions as string).length).toBeGreaterThan(20);
+  });
+
   it("unblocks a silent streaming response when the AbortSignal fires", async () => {
     process.env.OPENAI_CODEX_API_KEY = "test-token";
     process.env.OPENAI_CODEX_BASE_URL = "https://codex.test/backend-api";

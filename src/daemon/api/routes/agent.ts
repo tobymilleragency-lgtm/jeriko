@@ -5,6 +5,7 @@ import { getLogger } from "../../../shared/logger.js";
 import { loadConfig } from "../../../shared/config.js";
 import { createSession } from "../../agent/session/session.js";
 import { addMessage, addPart, buildDriverMessages } from "../../agent/session/message.js";
+import { compactSession } from "../../agent/session/compaction.js";
 import { runAgent, type AgentRunConfig } from "../../agent/agent.js";
 import { parseModelSpec } from "../../agent/drivers/models.js";
 
@@ -92,6 +93,11 @@ export function agentRoutes(): Hono {
     // Persist the user message
     const userMsg = addMessage(sessionId, "user", body.message);
     addPart(userMsg.id, "text", body.message);
+
+    const compaction = await compactSession(sessionId, { model: modelId });
+    if (compaction.compacted) {
+      log.info(`Agent chat compacted session=${sessionId}: ${compaction.beforeTokens} -> ${compaction.afterTokens} tokens`);
+    }
 
     // Build conversation history from DB — includes tool_calls and tool_call_id
     const conversationHistory = buildDriverMessages(sessionId);
@@ -215,9 +221,15 @@ export function agentRoutes(): Hono {
     const userMsg = addMessage(sessionId, "user", body.message);
     addPart(userMsg.id, "text", body.message);
 
+    const compaction = await compactSession(sessionId, { model: modelId });
+    if (compaction.compacted) {
+      log.info(`Agent stream compacted session=${sessionId}: ${compaction.beforeTokens} -> ${compaction.afterTokens} tokens`);
+    }
+
     // Build conversation history — includes tool metadata
     const conversationHistory = buildDriverMessages(sessionId);
 
+    const streamAbort = new AbortController();
     const agentConfig: AgentRunConfig = {
       sessionId,
       backend,
@@ -228,6 +240,7 @@ export function agentRoutes(): Hono {
       maxHistoryTokens: config.agent.maxHistoryTokens,
       maxRssBytes: config.agent.maxRssMb ? config.agent.maxRssMb * 1024 * 1024 : undefined,
       toolIds: body.tools ?? null,
+      signal: streamAbort.signal,
     };
 
     log.info(`Agent stream: session=${sessionId}, model=${modelId}, backend=${backend}`);
@@ -240,11 +253,33 @@ export function agentRoutes(): Hono {
     const stream = new ReadableStream({
       async start(controller) {
         const encoder = new TextEncoder();
+        let closed = false;
 
-        function sendEvent(event: string, data: unknown): void {
-          const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-          controller.enqueue(encoder.encode(payload));
+        function safeEnqueue(payload: string): boolean {
+          if (closed) return false;
+          try {
+            controller.enqueue(encoder.encode(payload));
+            return true;
+          } catch (err) {
+            closed = true;
+            streamAbort.abort("agent-stream-client-disconnected");
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.warn(`Agent stream client disconnected: session=${sid}, ${errMsg}`);
+            return false;
+          }
         }
+
+        function sendEvent(event: string, data: unknown): boolean {
+          return safeEnqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        }
+
+        // Bun's HTTP server has an idle timeout. Long tool calls can produce no
+        // agent events for many seconds, so send SSE comments to keep the socket
+        // alive instead of letting the browser/UI disconnect mid-run and leave
+        // the in-memory session tracker stuck on "active".
+        const keepAlive = setInterval(() => {
+          safeEnqueue(`: keepalive ${Date.now()}\n\n`);
+        }, 5_000);
 
         try {
           for await (const event of runAgent(agentConfig, conversationHistory)) {
@@ -291,13 +326,28 @@ export function agentRoutes(): Hono {
           trk.status = "idle";
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          sendEvent("error", { message: errMsg });
-          trk.status = "error";
-          log.error(`Agent stream failed: ${errMsg}`);
+          if (!streamAbort.signal.aborted) {
+            sendEvent("error", { message: errMsg });
+            trk.status = "error";
+            log.error(`Agent stream failed: ${errMsg}`);
+          } else {
+            trk.status = "idle";
+            log.warn(`Agent stream aborted: session=${sid}, reason=${String(streamAbort.signal.reason ?? "unknown")}`);
+          }
         } finally {
+          clearInterval(keepAlive);
           trk.last_activity = new Date().toISOString();
-          controller.close();
+          if (!closed) {
+            closed = true;
+            try { controller.close(); } catch { /* client already disconnected */ }
+          }
         }
+      },
+      cancel(reason) {
+        streamAbort.abort(reason ?? "agent-stream-cancelled");
+        trk.status = "idle";
+        trk.last_activity = new Date().toISOString();
+        log.warn(`Agent stream cancelled by client: session=${sid}`);
       },
     });
 

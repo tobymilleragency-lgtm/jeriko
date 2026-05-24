@@ -240,6 +240,11 @@ export function startServer(
     },
     port,
     hostname,
+    // Long-running agent routes stream sparse SSE events while tools such as
+    // verify_app/build/browser smoke run. Bun's default 10s idle timeout kills
+    // those requests mid-run, making the Cockpit look broken even though the
+    // daemon keeps working in the background.
+    idleTimeout: 255,
     websocket: wsHandlers,
   });
 

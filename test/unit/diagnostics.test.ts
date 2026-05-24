@@ -67,4 +67,18 @@ describe("session diagnostics", () => {
     expect(diagnosis.changedFiles).toEqual([]);
     expect(diagnosis.diffStat).toBe("");
   });
+
+  test("workspace status skips git inspection when cwd is the broad search root", () => {
+    const session = setupDb();
+    spawnSync("git", ["init"], { cwd: dir });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "not-a-project-target" }));
+
+    const workspace = buildWorkspaceStatus({ sessionId: session.id, cwd: dir, projectSearchRoot: dir });
+    const diagnosis = buildLatestDiagnosis({ sessionId: session.id, cwd: dir, projectSearchRoot: dir });
+
+    expect((workspace.workspaceTarget as Record<string, unknown>).classification).toBe("home_directory_not_project");
+    expect((workspace.git as Record<string, unknown>).status).toBe("not a git repository at cwd");
+    expect(diagnosis.changedFiles).toEqual([]);
+    expect(diagnosis.diffStat).toBe("");
+  });
 });

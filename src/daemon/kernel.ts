@@ -654,6 +654,7 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
     const { runAgent } = await import("./agent/agent.js");
     const { createSession } = await import("./agent/session/session.js");
     const { addMessage, addPart, buildDriverMessages } = await import("./agent/session/message.js");
+    const { compactSession } = await import("./agent/session/compaction.js");
     const { kvSet } = await import("./storage/kv.js");
 
     const message = params.message as string;
@@ -679,6 +680,12 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
     // Persist user message to DB
     const userMsg = addMessage(sessionId, "user", message);
     addPart(userMsg.id, "text", message);
+
+    const compaction = await compactSession(sessionId, { model });
+    if (compaction.compacted) {
+      log.info(`IPC ask compacted session=${sessionId}: ${compaction.beforeTokens} -> ${compaction.afterTokens} tokens`);
+      emit({ type: "compaction", beforeTokens: compaction.beforeTokens, afterTokens: compaction.afterTokens });
+    }
 
     // Build conversation history from DB — includes tool_calls and tool_call_id
     // metadata from parts table so providers that require paired tool messages
@@ -909,15 +916,15 @@ export async function boot(opts?: { port?: number }): Promise<KernelState> {
   });
 
   registerMethod("compact", async (params) => {
-    // Return approximate token counts for the session
-    const { getMessages } = await import("./agent/session/message.js");
+    const { compactSession } = await import("./agent/session/compaction.js");
     const sessionId = params.session_id as string | undefined;
-    if (!sessionId) return { before: 0, after: 0 };
-    const rows = getMessages(sessionId);
-    const totalChars = rows.reduce((sum: number, m: { content: string }) => sum + m.content.length, 0);
-    const before = Math.round(totalChars / 4);
-    const after = Math.round(before * 0.6);
-    return { before, after };
+    if (!sessionId) return { compacted: false, beforeTokens: 0, afterTokens: 0, beforeMessages: 0, afterMessages: 0 };
+    return compactSession(sessionId, {
+      model: params.model as string | undefined,
+      thresholdPercent: typeof params.thresholdPercent === "number" ? params.thresholdPercent : undefined,
+      preserveRecent: typeof params.preserveRecent === "number" ? params.preserveRecent : undefined,
+      force: params.force === true,
+    });
   });
 
   // ── Model listing IPC method ──────────────────────────────────

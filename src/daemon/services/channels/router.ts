@@ -25,6 +25,7 @@ import {
   getSessionBySlug,
 } from "../../agent/session/session.js";
 import { addMessage, getMessages, clearMessages, buildDriverMessages } from "../../agent/session/message.js";
+import { compactSession } from "../../agent/session/compaction.js";
 import type { DriverMessage, ContentBlock } from "../../agent/drivers/index.js";
 import { listDrivers, getDriver } from "../../agent/drivers/index.js";
 import { resolveModel, getCapabilities, parseModelSpec, listModels } from "../../agent/drivers/models.js";
@@ -312,14 +313,19 @@ export function startChannelRouter(opts: ChannelRouterOptions): void {
       // Persist the text representation in DB (images are transient — too large for SQLite)
       addMessage(state.sessionId, "user", augmentedText);
 
-      // Build driver message history from DB — includes tool_calls and tool_call_id
-      const history: DriverMessage[] = buildDriverMessages(state.sessionId);
-
       // Resolve model capabilities once — used for vision gating and agent config
       const { backend: modelBackend, model: modelId } = parseModelSpec(state.model);
       const provider = getProviderName(modelBackend);
       const resolvedId = resolveModel(provider, modelId);
       const caps = getCapabilities(provider, resolvedId);
+
+      const compaction = await compactSession(state.sessionId, { model: modelId });
+      if (compaction.compacted) {
+        log.info(`Channel compacted session=${state.sessionId}: ${compaction.beforeTokens} -> ${compaction.afterTokens} tokens`);
+      }
+
+      // Build driver message history from DB — includes tool_calls and tool_call_id
+      const history: DriverMessage[] = buildDriverMessages(state.sessionId);
 
       // Replace the last user message's content with vision blocks if available
       // AND the model supports vision. Otherwise keep text-only (graceful fallback).

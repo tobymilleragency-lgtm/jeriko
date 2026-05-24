@@ -545,7 +545,8 @@ export async function* runAgent(
       }
 
       const priorRecoveryPrompts = messages.filter((msg) => /NO_PROGRESS_RECOVERY/i.test(messageText(msg))).length;
-      if (requiresAppFactoryVerification(messages, "Done") && !hasAppFactoryDoneEvidence(messages) && priorRecoveryPrompts < 2) {
+      const repeatedStatusAfterGreenVerify = isStatusOnlyRound(toolCalls) && hasLatestFullyGreenVerifyApp(messages);
+      if (!repeatedStatusAfterGreenVerify && requiresAppFactoryVerification(messages, "Done") && !hasAppFactoryDoneEvidence(messages) && priorRecoveryPrompts < 2) {
         const recoveryPrompt = buildNoProgressRecoveryPrompt(messages, roundRepeatCheck);
         const recoveryMsg = addMessage(config.sessionId, "user", recoveryPrompt);
         addPart(recoveryMsg.id, "text", recoveryPrompt);
@@ -553,7 +554,9 @@ export async function* runAgent(
         continue;
       }
 
-      const forcedSummary = buildNoProgressStopSummary(messages, roundRepeatCheck);
+      const forcedSummary = buildNoProgressStopSummary(messages, repeatedStatusAfterGreenVerify
+        ? `${roundRepeatCheck}\nJeriko already has a fully green verify_app result for this app, so it is stopping the status loop and reporting the captured app/build state now.`
+        : roundRepeatCheck);
       const guardMsg = addMessage(config.sessionId, "assistant", forcedSummary, { input: 0, output: estimateTokens(forcedSummary) });
       addPart(guardMsg.id, "text", forcedSummary);
       yield { type: "text_delta", content: forcedSummary };
@@ -810,6 +813,10 @@ function isVerificationOnlyRound(toolCalls: ToolCall[]): boolean {
   });
 }
 
+function isStatusOnlyRound(toolCalls: ToolCall[]): boolean {
+  return toolCalls.length > 0 && toolCalls.every((toolCall) => toolCall.name === "workspace_status" || toolCall.name === "status_report" || toolCall.name === "situation_report");
+}
+
 export function toolRoundSignature(toolCalls: ToolCall[]): string {
   return toolCalls.map(toolCallSignature).sort().join("\n");
 }
@@ -868,12 +875,16 @@ export function buildNoProgressStopSummary(messages: DriverMessage[], reason: st
   const notDoneLines = state.notDone.length > 0
     ? state.notDone.map((item) => `- ${item}`)
     : ["- no captured blockers; review the verification lines above before claiming more"];
+  const appLines = buildAppSummaryLines(state);
 
   const lines = [
     publicReason.startsWith("Agent loop exceeded") ? "Agent loop stopped at the maximum-round safety limit." : "No-progress guard stopped the run.",
     publicReason,
     "",
     "Operator recap:",
+    "",
+    "Built / target app:",
+    ...appLines,
     "",
     "What Jeriko did:",
     ...doneLines,
@@ -956,6 +967,11 @@ interface CapturedVerificationState {
   checkpoint: string;
   localUrls: string[];
   verifyAppGates: CapturedGateState[];
+  projectName: string;
+  projectDirectory: string;
+  appType: string;
+  appFeatures: string[];
+  appPages: string[];
   completedActions: string[];
   notDone: string[];
 }
@@ -985,6 +1001,20 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
   const latestVerifyEntry = verifyResults.at(-1);
   const latestVerify = latestVerifyEntry?.parsed;
   const latestVerifyGates = latestVerify?.data?.gates ?? latestVerify?.gates;
+  const latestVerifyPayload = latestVerify?.data && typeof latestVerify.data === "object"
+    ? latestVerify.data
+    : latestVerify;
+  const projectState = latestVerifyPayload?.projectState;
+  const appSpec = projectState?.appSpec;
+  const projectName = firstString(projectState?.name, latestVerifyPayload?.project, latestVerifyPayload?.packageName, inferPackageNameFromToolTexts(toolTexts));
+  const projectDirectory = firstString(latestVerifyPayload?.directory, latestVerify?.directory, inferDirectoryFromToolTexts(toolTexts));
+  const appType = firstString(appSpec?.appType, projectState?.template, latestVerifyPayload?.profile, latestVerify?.profile);
+  const appFeatures = Array.isArray(appSpec?.features)
+    ? appSpec.features.map((feature: unknown) => String(feature)).filter(Boolean).slice(0, 6)
+    : [];
+  const appPages = Array.isArray(appSpec?.pages)
+    ? appSpec.pages.map((page: any) => typeof page?.path === "string" ? page.path : "").filter(Boolean).slice(0, 8)
+    : [];
   const verifyAppGates: CapturedGateState[] = Array.isArray(latestVerifyGates)
     ? latestVerifyGates.map((gate: any) => ({
       name: String(gate?.name ?? "unknown"),
@@ -1010,7 +1040,7 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
   const completedActions = buildCompletedActions(parsedToolResults, verifyAppGates, changedFilesSummary, checkpoint, checkPassed, buildPassed);
   const notDone = buildNotDoneList(verifyAppGates, latestVerify, checkPassed, buildPassed, localUrls);
 
-  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, generatedCopyBlocker, changedFilesSummary, checkpoint, localUrls, verifyAppGates, completedActions, notDone };
+  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, generatedCopyBlocker, changedFilesSummary, checkpoint, localUrls, verifyAppGates, projectName, projectDirectory, appType, appFeatures, appPages, completedActions, notDone };
 }
 
 function parseToolResultJson(text: string): Record<string, any> | null {
@@ -1083,6 +1113,44 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function inferPackageNameFromToolTexts(toolTexts: string[]): string {
+  for (let index = toolTexts.length - 1; index >= 0; index -= 1) {
+    const text = toolTexts[index] ?? "";
+    const match = text.match(/>\s*([@\w.-]+)@\d[^\n]*\s+(?:check|build|test|lint)\b/);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function inferDirectoryFromToolTexts(toolTexts: string[]): string {
+  for (let index = toolTexts.length - 1; index >= 0; index -= 1) {
+    const text = toolTexts[index] ?? "";
+    const match = text.match(/(?:directory|dir|cwd)"?\s*[:=]\s*"(\/[^"\n]+)"/) || text.match(/\b(\/home\/[^\s"']+)\b/);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function buildAppSummaryLines(state: CapturedVerificationState): string[] {
+  const lines: string[] = [];
+  if (state.projectName) lines.push(`- project: ${state.projectName}`);
+  if (state.projectDirectory) lines.push(`- directory: ${state.projectDirectory}`);
+  if (state.appType) lines.push(`- type: ${state.appType}`);
+  if (state.appFeatures.length > 0) lines.push(`- features: ${state.appFeatures.join("; ")}`);
+  if (state.appPages.length > 0) lines.push(`- pages/routes: ${state.appPages.join("; ")}`);
+  if (lines.length === 0) {
+    return ["- project details were not captured from tool output; run verify_app from the project root or preserve .jeriko/project-state.json output next time"];
+  }
+  return lines;
+}
+
 function summarizeGateOutput(output: unknown): string {
   if (typeof output !== "string" || !output.trim()) return "";
   return output.trim().replace(/\s+/g, " ").slice(0, 220);
@@ -1120,6 +1188,14 @@ function buildCompletedActions(
   if (webdevStatus?.data?.project) actions.push(`webdev reports project ${webdevStatus.data.project} running`);
   else if (typeof webdevStatus?.data?.url === "string") actions.push(`local preview running at ${webdevStatus.data.url}`);
   return uniqueStrings(actions);
+}
+
+function hasLatestFullyGreenVerifyApp(messages: DriverMessage[]): boolean {
+  const state = getCapturedVerificationState(messages);
+  return state.verifyAppGates.length > 0
+    && state.verifyAppGates.every((gate) => gate.ok)
+    && state.checkPassed
+    && state.buildPassed;
 }
 
 function buildNotDoneList(

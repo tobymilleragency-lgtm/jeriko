@@ -274,7 +274,7 @@ function buildSummary(messages: Array<{ role: string; content: string }>): strin
  * Tries anthropic → openai → local providers, returns the first match.
  */
 function resolveContextLimit(model: string): number {
-  for (const provider of ["anthropic", "openai", "local"]) {
+  for (const provider of ["openai-codex", "anthropic", "openai", "local"]) {
     const resolved = resolveModel(provider, model);
     const caps = getCapabilities(provider, resolved);
     if (caps.context > 0) return caps.context;

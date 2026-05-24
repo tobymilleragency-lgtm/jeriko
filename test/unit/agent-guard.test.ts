@@ -151,16 +151,21 @@ describe("No-progress forced summary", () => {
   test("includes localhost URL, verify_app gates, checkpoint, and blockers in forced recap", () => {
     const summary = buildNoProgressStopSummary([
       { role: "tool", content: JSON.stringify({ ok: true, data: { project: "acp-crm", server: { running: true, url: "http://localhost:3002", port: 3002 } } }) },
-      { role: "tool", content: JSON.stringify({ ok: false, data: { gates: [
+      { role: "tool", content: JSON.stringify({ ok: false, directory: "/home/toby/acp-crm", profile: "web-db-user", projectState: { name: "acp-crm", profile: "web-db-user", appSpec: { appType: "construction CRM", features: ["lead intake", "job pipeline"], pages: [{ path: "/", title: "Home" }, { path: "/dashboard", title: "Dashboard" }] } }, gates: [
         { name: "placeholder_scan", ok: true },
         { name: "check", ok: true, output: "> acp-crm check\n> tsc --noEmit\n" },
         { name: "build", ok: true, output: "> acp-crm build\n> vite build\n✓ built in 1.42s" },
         { name: "start_route", ok: false, output: "port 3002 is already in use" },
-      ] } }) },
+      ] }) },
       { role: "tool", content: JSON.stringify({ ok: true, data: { hash: "39eb8c2", message: "Add ACP AI assistant backbone" } }) },
     ], "Agent loop exceeded maximum rounds (40).");
 
     expect(summary).toContain("Agent loop stopped at the maximum-round safety limit.");
+    expect(summary).toContain("Built / target app:");
+    expect(summary).toContain("- project: acp-crm");
+    expect(summary).toContain("- directory: /home/toby/acp-crm");
+    expect(summary).toContain("- type: construction CRM");
+    expect(summary).toContain("- features: lead intake; job pipeline");
     expect(summary).toContain("http://localhost:3002");
     expect(summary).toContain("start_route: FAILED — port 3002 is already in use");
     expect(summary).toContain("checkpoint: 39eb8c2 — Add ACP AI assistant backbone");

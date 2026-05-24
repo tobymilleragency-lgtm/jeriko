@@ -59,6 +59,7 @@ function messageTextContent(content: DriverMessage["content"]): string {
 }
 
 const OPENAI_CODEX_REQUEST_TIMEOUT_MS = 600_000;
+const DEFAULT_CODEX_INSTRUCTIONS = "You are Jeriko, an autonomous AI agent. Follow the user's instructions, use available tools when needed, and report results clearly.";
 
 type CodexReaderResult = { done: boolean; value?: Uint8Array };
 type CodexStreamReader = {
@@ -219,11 +220,12 @@ export class OpenAICodexDriver implements LLMDriver {
 
   private buildRequestBody(messages: DriverMessage[], config: DriverConfig): Record<string, unknown> {
     const tools = this.convertTools(config.tools);
+    const instructions = config.system_prompt?.trim() || DEFAULT_CODEX_INSTRUCTIONS;
     return {
       model: config.model,
       store: false,
       stream: true,
-      instructions: config.system_prompt,
+      instructions,
       input: this.convertMessages(messages),
       text: { verbosity: "medium" },
       include: ["reasoning.encrypted_content"],
