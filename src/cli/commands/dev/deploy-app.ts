@@ -59,6 +59,7 @@ export interface DeployAppReport {
   deploymentUrl?: string;
   productionUrl?: string;
   smoke?: SmokeResult;
+  routeSmokes?: SmokeResult[];
   deploymentSmoke?: SmokeResult;
   oauthSmoke?: SmokeResult;
   steps: Array<{ name: string; ok: boolean; command?: string; output?: string; skipped?: boolean }>;
@@ -260,8 +261,21 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
       report.blockers.push("failed to add GitHub origin remote.");
       return report;
     }
-  } else if (!report.githubRepo) {
-    report.githubRepo = githubRepoFromRemote(remote.stdout.trim());
+  } else {
+    const remoteUrl = remote.stdout.trim();
+    const currentRepo = githubRepoFromRemote(remoteUrl);
+    const requestedRepo = normalizeOptional(options.githubRepo);
+    if (requestedRepo && currentRepo !== requestedRepo.replace(/\.git$/, "")) {
+      const setRemote = runCommand(["git", "remote", "set-url", "origin", githubUrl(requestedRepo)], dir);
+      report.steps.push(stepFromCommand("git_remote_set_url", setRemote));
+      if (setRemote.status !== 0) {
+        report.blockers.push(`git origin points at ${remoteUrl} and could not be changed to ${requestedRepo}.`);
+        return report;
+      }
+      report.githubRepo = requestedRepo;
+    } else if (!report.githubRepo) {
+      report.githubRepo = currentRepo;
+    }
   }
 
   const status = runCommand(["git", "status", "--porcelain"], dir);
@@ -295,8 +309,16 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   if (sha.status === 0) report.commitSha = sha.stdout.trim();
 
   if (options.skipPush !== true) {
-    const push = runCommand(["git", "push", "-u", "origin", branch], dir, 300_000);
+    let push = runCommand(["git", "push", "-u", "origin", branch], dir, 300_000);
     report.steps.push(stepFromCommand("git_push", push));
+    if (push.status !== 0 && report.githubRepo && /Repository not found|not found/i.test(push.output)) {
+      const createRepo = runCommand(["gh", "repo", "create", report.githubRepo, "--private", "--confirm"], dir, 300_000);
+      report.steps.push(stepFromCommand("github_repo_create", createRepo));
+      if (createRepo.status === 0 || /already exists/i.test(createRepo.output)) {
+        push = runCommand(["git", "push", "-u", "origin", branch], dir, 300_000);
+        report.steps.push(stepFromCommand("git_push_after_repo_create", push));
+      }
+    }
     if (push.status !== 0) {
       report.blockers.push("git push failed; continuing with direct Vercel production deploy so deployment status is still proven separately from GitHub publication.");
     }
@@ -330,7 +352,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     report.blockers.push("vercel production deploy failed.");
     return report;
   }
-  report.deploymentUrl = extractLastUrl(deploy.output);
+  report.deploymentUrl = extractDeploymentUrlFromOutput(deploy.output) || extractLastUrl(deploy.output);
   const aliases = deploymentAliasesFromOutput(deploy.output);
 
   if (report.deploymentUrl) {
@@ -343,11 +365,21 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   }
 
   report.productionUrl = normalizeOptional(options.productionUrl) || aliases[0] || report.deploymentUrl || `https://${vercelProject}.vercel.app/`;
-  if (normalizeOptional(options.productionUrl) && aliases.length > 0) {
+  const requestedProductionUrl = normalizeOptional(options.productionUrl);
+  if (requestedProductionUrl && aliases.length > 0) {
     const requested = normalizeUrlForCompare(report.productionUrl);
     const aliasMatches = aliases.some((alias) => normalizeUrlForCompare(alias) === requested);
     if (!aliasMatches) {
-      report.blockers.push(`requested production URL ${report.productionUrl} was not assigned by Vercel; deployment aliases were: ${aliases.join(", ")}.`);
+      if (report.deploymentUrl) {
+        const aliasTarget = vercelAliasTargetFromUrl(report.productionUrl);
+        const aliasSet = runCommand(["vercel", "alias", "set", report.deploymentUrl, aliasTarget], dir, 300_000);
+        report.steps.push(stepFromCommand("vercel_alias_set_requested_production_url", aliasSet));
+        if (aliasSet.status !== 0) {
+          report.blockers.push(`requested production URL ${report.productionUrl} was not assigned by Vercel and alias reassignment failed; deployment aliases were: ${aliases.join(", ")}.`);
+        }
+      } else {
+        report.blockers.push(`requested production URL ${report.productionUrl} was not assigned by Vercel; deployment aliases were: ${aliases.join(", ")}.`);
+      }
     }
   }
 
@@ -362,6 +394,20 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   report.smoke = smoke;
   report.steps.push({ name: "production_smoke", ok: smoke.ok, output: JSON.stringify(smoke) });
   if (!smoke.ok) report.blockers.push(`production smoke failed for ${report.productionUrl}.`);
+
+  const routesToSmoke = productionRoutesToSmoke(dir, effectiveOptions);
+  if (routesToSmoke.length > 0) {
+    const routeSmokes: SmokeResult[] = [];
+    for (const route of routesToSmoke) {
+      const routeSmoke = await smokeUrl(joinUrl(report.productionUrl, route));
+      routeSmokes.push(routeSmoke);
+    }
+    report.routeSmokes = routeSmokes;
+    report.steps.push({ name: "production_route_smokes", ok: routeSmokes.every((result) => result.ok), output: JSON.stringify(routeSmokes) });
+    for (const routeSmoke of routeSmokes) {
+      if (!routeSmoke.ok) report.blockers.push(`production route smoke failed for ${routeSmoke.url}.`);
+    }
+  }
 
   if (effectiveProfile === "web-db-user") {
     const healthUrl = joinUrl(report.productionUrl, "/api/health");
@@ -397,6 +443,32 @@ export function inferDeployAppProfile(dir: string, explicitProfile?: string): st
     return "web-db-user";
   }
   return undefined;
+}
+
+export function productionRoutesToSmoke(dir: string, options: Pick<DeployAppOptions, "route" | "browserRoute"> = {}): string[] {
+  const routes = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed || /^https?:\/\//i.test(trimmed) || !trimmed.startsWith("/")) return;
+    routes.add(trimmed === "/" ? "/" : `/${trimmed.replace(/^\/+|\/+$/g, "")}`);
+  };
+
+  add("/");
+  add(options.route);
+  add(options.browserRoute);
+
+  const statePath = join(dir, ".jeriko", "project-state.json");
+  if (existsSync(statePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as { appSpec?: { pages?: Array<{ path?: unknown }> } };
+      for (const page of parsed.appSpec?.pages ?? []) add(page.path);
+    } catch {
+      // Ignore damaged project-state; explicit route/browserRoute still smoke.
+    }
+  }
+
+  return [...routes].slice(0, 12);
 }
 
 function buildVerifyCommand(dir: string, options: DeployAppOptions): string[] {
@@ -469,6 +541,22 @@ function githubRepoFromRemote(remote: string): string | undefined {
   const sshMatch = cleaned.match(/github\.com:([^/]+\/[^/]+)$/);
   if (sshMatch?.[1]) return sshMatch[1];
   return undefined;
+}
+
+export function extractDeploymentUrlFromOutput(text: string): string | undefined {
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const standalone = trimmed.match(/^https:\/\/[^\s)]+\.vercel\.app\/?$/i);
+    if (standalone?.[0]) return standalone[0];
+  }
+  for (const line of lines) {
+    if (/\bAliased\b/i.test(line)) continue;
+    const production = line.match(/\bProduction\b\s+(https:\/\/[^\s)]+\.vercel\.app\/?)/i);
+    if (production?.[1]) return production[1];
+  }
+  const matches = text.match(/https:\/\/[^\s)]+\.vercel\.app\/?/gi) ?? [];
+  return matches.find((url) => !url.includes("vercel.com/"));
 }
 
 function extractLastUrl(text: string): string | undefined {
@@ -558,7 +646,7 @@ async function smokeGoogleOAuthAuthorizeUrl(location: string): Promise<{ ok: boo
 export function deploymentAliasesFromOutput(text: string): string[] {
   const aliases: string[] = [];
   for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/\bAliased:\s*(https:\/\/[^\s)]+)/i);
+    const match = line.match(/\bAliased\b\s*:?[\s]+(https:\/\/[^\s)]+)/i);
     if (match?.[1]) aliases.push(match[1]);
   }
   return aliases;
@@ -602,6 +690,15 @@ export function isGoogleRedirectUriMismatch(url: string, body: string): boolean 
 
 function normalizeUrlForCompare(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+export function vercelAliasTargetFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname;
+  } catch {
+    return url.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  }
 }
 
 function joinUrl(base: string, route: string): string {

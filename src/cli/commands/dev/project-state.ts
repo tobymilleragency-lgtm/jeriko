@@ -213,7 +213,7 @@ function buildPromptAppSpecContract(args: {
     features,
     ...(productWorkflow.workflow ? { workflows: [productWorkflow.workflow] } : {}),
     integrations: {
-      allowed: [],
+      allowed: ["supabase"],
       forbidden: ["stripe"],
     },
     successCriteria: [
@@ -224,6 +224,10 @@ function buildPromptAppSpecContract(args: {
       ...(hasMultiPageMarketing ? [contractorMarketing
         ? "Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"
         : "Premium marketing sites include a hero system visual, animated value-flow module, interactive conversion/qualification module, proof/comparison section, sticky CTA, and SPA internal navigation"] : []),
+      ...(localService && contractorMarketing ? [
+        "Local-service contractor sites include real service pages, process, about, gallery/project proof, service-area, and contact routes without homepage fallbacks",
+        "Lead/contact forms are either wired to a real API with matching fields or replaced with honest email/phone CTAs",
+      ] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
       ...(fullStack ? ["Supabase Auth, database schema, and storage foundation are scaffolded before product-specific data/photo workflows are added"] : []),
     ],
@@ -258,8 +262,8 @@ function inferMarketingPages(prompt: string, args: { fullStack: boolean; localSe
   add("/process", "Process");
   if (/\bpricing|packages?|plans?|offers?\b/.test(text)) add("/pricing", "Pricing");
   if (/\bresources?|blog|guides?|articles?\b/.test(text)) add("/resources", "Resources");
-  if (/\babout|company|team|crew\b/.test(text)) add("/about", "About");
-  if (args.localService || /\bservice areas?|locations?|near me|local\b/.test(text)) add("/service-areas", "Service Areas");
+  if (args.localService || /\babout|company|team|crew\b/.test(text)) add("/about", "About");
+  if (args.localService || /\bservice areas?|locations?|near me|local\b/.test(text)) add("/service-area", "Service Area");
   if (args.localService || /\bgallery|photos?|portfolio|projects?\b/.test(text)) add("/gallery", "Gallery");
   add("/contact", "Contact");
 

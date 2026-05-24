@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
   deploymentAliasesFromOutput,
   ensureVercelIgnored,
+  extractDeploymentUrlFromOutput,
   googleOAuthRedirectUriFromLocation,
   hydrateSecretFromCredentialCommandCenter,
   inferDeployAppProfile,
@@ -13,8 +14,10 @@ import {
   isGoogleRedirectUriMismatch,
   isSetupRequiredSmokeBody,
   isVercelProtectionBody,
+  productionRoutesToSmoke,
   resolveGeneratedAppRoot,
   runGeneratedAppDeploy,
+  vercelAliasTargetFromUrl,
 } from "../../src/cli/commands/dev/deploy-app.js";
 import { clearTools, getTool, registerTool } from "../../src/daemon/agent/tools/registry.js";
 
@@ -112,7 +115,7 @@ describe("deploy-app Credential Command Center integration", () => {
     process.env.CCC_BIN = cccBin;
     try {
       expect(hydrateSecretFromCredentialCommandCenter("VERCEL_TOKEN")).toBe(true);
-      expect(process.env.VERCEL_TOKEN).toBe("token-from-ccc");
+      expect(String(process.env.VERCEL_TOKEN)).toBe("token-from-ccc");
     } finally {
       if (oldToken === undefined) delete process.env.VERCEL_TOKEN;
       else process.env.VERCEL_TOKEN = oldToken;
@@ -133,11 +136,40 @@ describe("deploy-app dry run", () => {
   });
 });
 
+describe("deploy-app production route and alias planning", () => {
+  it("normalizes requested production URLs to Vercel alias targets", () => {
+    expect(vercelAliasTargetFromUrl("https://brothers-remodeling-okc.vercel.app/services")).toBe("brothers-remodeling-okc.vercel.app");
+    expect(vercelAliasTargetFromUrl("brothers-remodeling-okc.vercel.app/contact")).toBe("brothers-remodeling-okc.vercel.app");
+  });
+
+  it("builds production route smokes from appSpec pages plus explicit verify routes", () => {
+    const dir = makeProject("route-smoke-app");
+    fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+      appSpec: { pages: [{ path: "/" }, { path: "/services" }, { path: "/contact/" }, { path: "https://external.invalid" }] },
+    }));
+
+    expect(productionRoutesToSmoke(dir, { route: "/api/health", browserRoute: "/services/kitchen-remodeling" })).toEqual([
+      "/",
+      "/api/health",
+      "/services/kitchen-remodeling",
+      "/services",
+      "/contact",
+    ]);
+  });
+});
+
 describe("deploy-app production verification helpers", () => {
   it("extracts Vercel production aliases from deploy output", () => {
-    const output = `\n✓ Ready in 1m\nAliased: https://flipscout-orpin.vercel.app\nhttps://flipscout-abc123.vercel.app\n`;
+    const output = `\n✓ Ready in 1m\nAliased: https://flipscout-orpin.vercel.app\n▲ Aliased     https://brothers-remodeling-okc.vercel.app\nhttps://flipscout-abc123.vercel.app\n`;
 
-    expect(deploymentAliasesFromOutput(output)).toEqual(["https://flipscout-orpin.vercel.app"]);
+    expect(deploymentAliasesFromOutput(output)).toEqual(["https://flipscout-orpin.vercel.app", "https://brothers-remodeling-okc.vercel.app"]);
+  });
+
+  it("extracts the actual deployment URL instead of the final alias URL", () => {
+    const output = `https://brothers-remodeling-a2gt2datr-tobymilleragency-1088s-projects.vercel.app\n▲ Production  https://brothers-remodeling-a2gt2datr-tobymilleragency-1088s-projects.vercel.app\n▲ Aliased     https://okc-remodel-consulting.vercel.app\n✓ Ready in 39s\n`;
+
+    expect(extractDeploymentUrlFromOutput(output)).toBe("https://brothers-remodeling-a2gt2datr-tobymilleragency-1088s-projects.vercel.app");
   });
 
   it("treats setup_required JSON as a failed production smoke body", () => {

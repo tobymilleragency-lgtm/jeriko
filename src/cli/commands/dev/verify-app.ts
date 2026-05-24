@@ -924,26 +924,138 @@ function lineNumberAt(content: string, index: number): number {
   return content.slice(0, index).split(/\r?\n/).length;
 }
 
+function collectPublicSourceText(dir: string): string {
+  const chunks: string[] = [];
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (!/\/(client\/src|client\/index\.html|src|app|pages|api|server)\//.test(normalized) && !normalized.endsWith("client/index.html")) return;
+    if (normalized.includes("/components/ui/") || normalized.includes(".test.")) return;
+    chunks.push(content);
+  });
+  return chunks.join("\n");
+}
+
+function hasExplicitRouteImplementation(sourceText: string, route: string): boolean {
+  const escaped = route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`path\\s*=\\s*['\"]${escaped}['\"]`),
+    new RegExp(`path\\s*:\\s*['\"]${escaped}['\"]`),
+    new RegExp(`pathname\\s*===?\\s*['\"]${escaped}['\"]`),
+    new RegExp(`path\\s*===?\\s*['\"]${escaped}['\"]`),
+    new RegExp(`match\\s*\\(\\s*[/^][^\\n]*${escaped.replace(/^\\\//, "")}[^\\n]*[/]`),
+  ];
+  return patterns.some((pattern) => pattern.test(sourceText));
+}
+
+function hasPrimaryHomeNav(sourceText: string): boolean {
+  return /label:\s*["']Home["']/.test(sourceText)
+    || /<AppLink[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
+    || /<Link[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
+    || /<a[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText);
+}
+
 export function scanPremiumMarketingSiteQuality(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
   const spec = projectState?.appSpec;
   if (!spec || projectState?.profile !== "web-static") return [];
   const requiresPremium = spec.features?.some((feature) => /premium (?:contractor|local business) conversion system|multi-page marketing site|local service seo content/i.test(feature))
-    || spec.successCriteria?.some((criterion) => /Premium marketing sites include/i.test(criterion));
+    || spec.successCriteria?.some((criterion) => /Premium marketing sites include/i.test(criterion))
+    || projectState.verification?.requiredGates?.includes("premium_marketing_site_scan")
+    || /local-service|premium-local-service|contractor/i.test(String(spec.appType ?? ""));
   if (!requiresPremium) return [];
 
   const appPath = join(dir, "client", "src", "App.tsx");
   const indexPath = join(dir, "client", "index.html");
   const vercelPath = join(dir, "vercel.json");
   const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
+  const sourceText = collectPublicSourceText(dir);
   const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
   const issues: AppSpecIssue[] = [];
   const contractorSite = /contractor|roof|remodel|plumb|electric|hvac|lead|estimate/i.test([spec.prompt, ...(spec.features ?? [])].join(" "));
-  const requiredRoutes = contractorSite ? ["/services", "/pricing", "/contact"] : ["/contact"];
+  const localServiceSite = /local-service|premium-local-service/i.test(String(spec.appType ?? "")) || spec.features?.some((feature) => /local service seo content|service area/i.test(feature));
+  const requiredRoutes = contractorSite ? (localServiceSite ? ["/services", "/contact"] : ["/services", "/pricing", "/contact"]) : ["/contact"];
+  const requiredLocalServiceRoutes = contractorSite && localServiceSite ? ["/services", "/process", "/about", "/service-area", "/gallery", "/contact"] : [];
   const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(page.path)) : [];
   if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
     issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: contractorSite
-      ? "Premium contractor/local-service sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure."
+      ? (localServiceSite
+        ? "Premium contractor/local-service sites must keep a full multi-page appSpec contract, including at least /services, /contact, and local-service routes for process, about, service-area, and gallery. Do not collapse the contract to a one-page brochure."
+        : "Premium contractor sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure.")
       : "Premium local business sites must keep a full multi-page appSpec contract with at least five routable pages and /contact. Do not collapse the contract to a one-page brochure." });
+  }
+  for (const route of requiredLocalServiceRoutes) {
+    if (!specRoutes.includes(route) || !hasExplicitRouteImplementation(sourceText, route)) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: `local-service-route:${route}`,
+        reason: `Local-service contractor sites must implement ${route} as a real routed page. Links alone or default homepage fallbacks are not enough.`,
+      });
+    }
+  }
+  if (localServiceSite && !hasPrimaryHomeNav(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "primary-home-nav",
+      reason: "Local-service contractor sites must include a visible Home item in the primary nav; logo-only home navigation is not enough for generated production sites.",
+    });
+  }
+  if (/OKCNearby|Ready to remodel\?Request|pathScope|requestsPhotos|notesMaterials|levelScheduling|<b>OKC<\/b>\s*<span>Nearby|<span>Ready to remodel\?<\/span>\s*<AppLink/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "glued-ui-copy",
+      reason: "Generated UI must not ship concatenated/glued labels such as OKCNearby, Ready to remodel?Request, or collapsed hero-process text.",
+    });
+  }
+  if (localServiceSite && /\b(?:South Edmond|East Yukon)\b/.test(sourceText) && /Oklahoma City|OKC/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "partial-metro-city-labels",
+      reason: "OKC-area local pages should use clear real city/community labels and explain service-radius limits; do not invent awkward partial-city pages like South Edmond or East Yukon as thin SEO targets.",
+    });
+  }
+  if (localServiceSite && /checked (?:for|by) (?:schedule|scope|service radius)|travel radius|near-OKC remodel projects|Nearby communities checked by scope/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "thin-city-page-copy",
+      reason: "City/service-area pages need homeowner-useful local content, not formulaic service-radius filler or doorway-page copy.",
+    });
+  }
+  if (localServiceSite && /gallery explains remodeling categories honestly|can grow as .*real project photos|portfolio grows/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "gallery-placeholder-copy",
+      reason: "Gallery/project-proof pages must not describe future portfolio growth or substitute category explanations for useful proof/expectation content.",
+    });
+  }
+  if (/Lead delivery must be connected before launch|Business phone can be added here when ready|portfolio grows|phone can be added/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "placeholder-contact-copy",
+      reason: "Launch-ready local-service sites must not expose placeholder contact, portfolio, or lead-delivery setup copy to customers.",
+    });
+  }
+  if (/<button[^>]*type=["']button["'][\s\S]{0,240}(?:Send My Project|Request Quote|Send project)/i.test(sourceText)
+    || (/preventDefault\(\)[\s\S]{0,200}setSent\(true\)/i.test(sourceText) && !/fetch\(\s*["']\/api\//i.test(sourceText))) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "fake-lead-form",
+      reason: "Quote/contact forms must either submit to a real API with matching fields or be replaced with honest email/phone CTAs; local setSent-only forms are not launch-ready.",
+    });
+  }
+  if (/Oklahoma Remodel Consulting|advisory service|not the contractor|contractor matching|bid review/i.test(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "stale-business-copy",
+      reason: "Generated contractor/local-service sites must not retain stale business-model copy from another company or advisory template.",
+    });
   }
   const requireAppToken = (token: string, reason: string) => {
     if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });

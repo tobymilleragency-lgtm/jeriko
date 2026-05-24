@@ -53,6 +53,7 @@ describe("create command templates", () => {
     for (const requiredRoute of ["/services", "/industries", "/case-studies", "/process", "/pricing", "/about", "/service-areas", "/gallery", "/contact"]) {
       expect(templateApp).toContain(`path=\"${requiredRoute}\"`);
     }
+    expect(templateApp).toContain('path="/service-area"');
   });
 
   it("fails premium marketing site quality when a full-site contract is implemented as plain brochureware", () => {
@@ -175,6 +176,7 @@ describe("create command templates", () => {
         const envExample = fs.readFileSync(path.join(projectDir, ".env.example"), "utf8");
         const supabaseAuth = fs.readFileSync(path.join(projectDir, "client", "src", "lib", "supabaseAuth.ts"), "utf8");
         const pkg = JSON.parse(fs.readFileSync(path.join(projectDir, "package.json"), "utf8"));
+        const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
 
         expect(envExample).toContain("VITE_APP_SUPABASE_URL");
         expect(envExample).toContain("VITE_APP_SUPABASE_ANON_KEY");
@@ -183,6 +185,8 @@ describe("create command templates", () => {
         expect(supabaseAuth).toContain("signInWithOAuth");
         expect(supabaseAuth).toContain("provider: \"google\"");
         expect(pkg.dependencies["@supabase/supabase-js"]).toBeDefined();
+        expect(state.appSpec.integrations.allowed).toContain("supabase");
+        expect(state.appSpec.integrations.forbidden).toContain("stripe");
       }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -330,7 +334,7 @@ describe("create command templates", () => {
       expect(state.verification.requiredGates).toContain("app_spec_verifier");
       expect(state.appSpec.prompt).toContain("State App");
       expect(state.appSpec.pages).toEqual([{ path: "/", title: "Home" }]);
-      expect(state.appSpec.integrations.allowed).toEqual([]);
+      expect(state.appSpec.integrations.allowed).toEqual(["supabase"]);
       expect(state.appSpec.integrations.forbidden).toContain("stripe");
       expect(state.appSpec.successCriteria).toContain("Full required verify-app gate passes");
     } finally {
@@ -480,6 +484,85 @@ describe("create command templates", () => {
       expect(state.appSpec.prompt).toBe("Build a roofing contractor website in Tulsa with SEO pages and quote photos");
       expect(state.appSpec.appType).toBe("local-service-site");
       expect(state.appSpec.integrations.forbidden).toContain("stripe");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scaffolds local-service contractor prompts with launch-ready route breadth by default", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-local-service-route-breadth-"));
+    const projectDir = path.join(dir, "brothers-remodeling-okc");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build a new site for Brothers Remodeling OKC, a remodeling company in Oklahoma City", "--name", "Brothers Remodeling OKC", "--dir", projectDir]);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      const paths = state.appSpec.pages.map((page: any) => page.path);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/process", "/about", "/service-area", "/gallery", "/contact"]));
+      expect(paths.length).toBeGreaterThanOrEqual(7);
+      expect(state.appSpec.successCriteria).toEqual(expect.arrayContaining([
+        "Local-service contractor sites include real service pages, process, about, gallery/project proof, service-area, and contact routes without homepage fallbacks",
+        "Lead/contact forms are either wired to a real API with matching fields or replaced with honest email/phone CTAs",
+      ]));
+      expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails premium local-service quality when routes fall back to home and the lead form is fake", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-sloppy-local-service-scan-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head><style>body{background: #09090b}</style></head><body><div id="root" data-jeriko-prerender></div><script type="module" src="/src/main.tsx"></script></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }));
+      fs.writeFileSync(path.join(dir, "client", "src", "main.tsx"), `
+        import React from 'react';
+        const services = ['Kitchen Remodeling', 'Bathroom Remodeling'];
+        function HomePage(){ return <main><h1>Remodel your OKC home</h1><a href="/services">Services</a><a href="/contact">Contact</a></main>; }
+        function ServicesPage(){ return <main><h1>Services</h1><LeadForm /></main>; }
+        function ContactPage(){ return <main><h1>Contact</h1><LeadForm /></main>; }
+        function LeadForm(){ const [sent,setSent]=React.useState(false); return <form onSubmit={(e)=>{e.preventDefault(); setSent(true)}}><input name="name" required /><input name="phone" required /><select name="project">{services.map((s)=><option>{s}</option>)}</select><button type="button" onClick={()=>setSent(true)}>Send My Project</button><small>Lead delivery must be connected before launch.</small>{sent && <p>Project request started.</p>}</form>; }
+        function App(){ const path = window.location.pathname.replace(/\\/$/, '') || '/'; if (path === '/services') return <ServicesPage />; if (path === '/contact') return <ContactPage />; return <HomePage />; }
+      `);
+      const state = buildProjectState({ name: "Brothers Remodeling OKC", template: "web-static", profile: "web-static", prompt: "Build a new site for Brothers Remodeling OKC, a remodeling company in Oklahoma City" });
+      const issues = scanPremiumMarketingSiteQuality(dir, state);
+      const tokens = issues.map((issue) => issue.token);
+
+      expect(tokens).toEqual(expect.arrayContaining(["local-service-route:/process", "local-service-route:/about", "local-service-route:/service-area", "local-service-route:/gallery", "fake-lead-form", "placeholder-contact-copy"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails local-service quality for missing Home nav, glued UI copy, and thin OKC city pages", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-trash-local-service-scan-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head><style>body{background: #09090b}</style></head><body><div id="root" data-jeriko-prerender></div><script type="module" src="/src/App.tsx"></script></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route, Switch, Link, useLocation } from 'wouter';
+        function AppLink(props:any){ return <Link {...props} /> }
+        function LeadOpsVisual(){ return <div>Project pathScope → Visit → Quote → Build</div> }
+        function LeadFlowLineSection(){ return <section>lead flow</section> }
+        function LeadLeakAudit(){ return <section>audit</section> }
+        function BeforeAfterComparison(){ return <section>before after</section> }
+        function StickyAuditRail(){ return <aside>Ready to remodel?Request quote</aside> }
+        const cities = ['Oklahoma City', 'South Edmond', 'East Yukon'];
+        function Shell({children}:any){ return <><nav><AppLink href="/services">Services</AppLink><AppLink href="/process">Process</AppLink><AppLink href="/about">About</AppLink><AppLink href="/gallery">Gallery</AppLink><AppLink href="/service-area">Service Area</AppLink><AppLink href="/contact">Contact</AppLink></nav>{children}</> }
+        function Home(){ return <Shell><LeadOpsVisual /><LeadFlowLineSection /><LeadLeakAudit /><BeforeAfterComparison /><StickyAuditRail /></Shell> }
+        function ServiceArea(){ return <Shell><h1>Oklahoma City and nearby surrounding communities.</h1><b>OKC</b><span>Nearby communities checked by scope, schedule, and service radius.</span>{cities.map(c => <a href={'/service-area/'+c.toLowerCase().replaceAll(' ','-')}>{c}</a>)}</Shell> }
+        function City(){ return <Shell><p>Common requests around South Edmond include near-OKC remodel projects checked for schedule, service radius, project scope, and travel radius.</p></Shell> }
+        function Gallery(){ return <Shell><p>The gallery explains remodeling categories honestly and can grow as Brothers Remodeling OKC provides additional real project photos.</p></Shell> }
+        export default function App(){ return <Switch><Route path="/" component={Home}/><Route path="/services" component={Home}/><Route path="/process" component={Home}/><Route path="/about" component={Home}/><Route path="/gallery" component={Gallery}/><Route path="/service-area" component={ServiceArea}/><Route path="/service-area/:citySlug" component={City}/><Route path="/contact" component={Home}/></Switch> }
+      `);
+      const state = buildProjectState({ name: "Brothers Remodeling OKC", template: "web-static", profile: "web-static", prompt: "Build a new site for Brothers Remodeling OKC, a remodeling company in Oklahoma City" });
+      const tokens = scanPremiumMarketingSiteQuality(dir, state).map((issue) => issue.token);
+
+      expect(tokens).toEqual(expect.arrayContaining(["primary-home-nav", "glued-ui-copy", "partial-metro-city-labels", "thin-city-page-copy", "gallery-placeholder-copy"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
