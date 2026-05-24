@@ -119,6 +119,33 @@ const PUBLIC_MOCK_COPY_TOKENS = [
   "representative listings",
   "representative residential",
 ];
+const PUBLIC_BUILDER_META_COPY_PATTERNS: Array<{ pattern: RegExp; token: string; reason: string }> = [
+  {
+    pattern: /\bguide\s+depth\b/i,
+    token: "Guide depth",
+    reason: "Customer-facing pages must not expose builder/SEO production metrics like guide depth.",
+  },
+  {
+    pattern: /\b(?:city|area|seo|location|service|page|route|guide)[A-Za-z0-9_]*WordCount\b|\bwordCount[A-Za-z0-9_]*(?:city|area|seo|location|service|page|route|guide)\b/i,
+    token: "wordCount",
+    reason: "Generated marketing/site UI must not compute or display content word counts as customer-facing proof.",
+  },
+  {
+    pattern: /\b(?:content|guide|page|route|section|article)\s+(?:depth|length|word\s*count)\b/i,
+    token: "content depth/word count",
+    reason: "Public copy must describe the customer's offer, not the builder's content metrics.",
+  },
+  {
+    pattern: /\b(?:created|generated|wrote|rendered)\s+\d{2,}\s+words?\b/i,
+    token: "generated word count",
+    reason: "Do not publish builder progress/word-count claims inside generated customer sites.",
+  },
+  {
+    pattern: /\b\d{2,}\s+words?\b/i,
+    token: "visible word count",
+    reason: "Visible word counts are builder/SEO metadata unless the app is explicitly a writing/editor product.",
+  },
+];
 const FORBIDDEN_INTEGRATIONS = {
   stripe: [
     "billing.stripe.com",
@@ -206,6 +233,19 @@ export const command: CommandHandler = {
         profile,
         projectState,
         scaffoldResidue,
+        gates,
+      });
+    }
+
+    const builderMetaCopy = scanPublicBuilderMetaCopy(dir, projectState);
+    gates.push({ name: "public_builder_meta_scan", ok: builderMetaCopy.length === 0 });
+    if (builderMetaCopy.length > 0) {
+      failWithDetails("Generated app exposes builder/SEO meta copy as customer-facing UI. Remove visible word counts, guide-depth labels, generated-content metrics, and other app-builder commentary from public pages.", {
+        errorCode: "E_PUBLIC_BUILDER_META_COPY",
+        directory: dir,
+        profile,
+        projectState,
+        builderMetaCopy,
         gates,
       });
     }
@@ -1043,6 +1083,49 @@ export function scanScaffoldResidue(dir: string): ScaffoldResidueHit[] {
     }
   });
   return hits;
+}
+
+export function scanPublicBuilderMetaCopy(dir: string, projectState: ProjectState | null = readProjectState(dir)): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  const appText = [projectState?.appSpec?.prompt, ...(projectState?.appSpec?.features ?? []), projectState?.appSpec?.appType]
+    .filter(Boolean)
+    .join(" ");
+  const explicitWritingProduct = /\b(writing|editor|document|word processor|transcription|transcript|content editor|copywriter)\b/i.test(appText);
+  walkTextFiles(dir, (file, content) => {
+    if (!isPublicGeneratedUiSource(dir, file)) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (explicitWritingProduct && /\b\d{2,}\s+words?\b/i.test(line) && !/\bguide\s+depth\b/i.test(line)) continue;
+      for (const rule of PUBLIC_BUILDER_META_COPY_PATTERNS) {
+        if (!rule.pattern.test(line)) continue;
+        hits.push({
+          file,
+          line: i + 1,
+          token: rule.token,
+          reason: rule.reason,
+        });
+        break;
+      }
+      if (/\bwordCount\b/.test(line) && /\b(?:guide|citySeo|seo|area-guide|location)\b/i.test(content) && !hits.some((hit) => hit.file === file && hit.line === i + 1)) {
+        hits.push({
+          file,
+          line: i + 1,
+          token: "wordCount",
+          reason: "Generated guide/location pages must not compute public word-count proof for customers.",
+        });
+      }
+    }
+  });
+  return hits;
+}
+
+function isPublicGeneratedUiSource(root: string, file: string): boolean {
+  const rel = relative(root, file).replace(/\\/g, "/");
+  if (!/^(client\/src|src|app|pages)\//.test(rel)) return false;
+  if (/\/(components\/ui|assets)\//.test(rel)) return false;
+  if (/\.(test|spec)\.[tj]sx?$/.test(rel)) return false;
+  return /\.(tsx|jsx|ts|js|mdx?)$/i.test(rel);
 }
 
 export function scanUnsafeEnvRefs(dir: string): UnsafeEnvHit[] {

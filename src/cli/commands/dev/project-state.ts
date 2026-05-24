@@ -87,6 +87,7 @@ export const REQUIRED_APP_FACTORY_GATES = [
   "app_spec_contract",
   "placeholder_scan",
   "scaffold_residue_scan",
+  "public_builder_meta_scan",
   "unsafe_env_scan",
   "primary_persistence_scan",
   "db_auth_workflow_wiring",
@@ -354,8 +355,16 @@ export function computeSourceFingerprint(dir: string): SourceFingerprint {
 }
 
 export function assessVerificationStatus(dir: string, state: ProjectState | null): VerificationStatus {
+  if (!state) {
+    return {
+      hasSuccessfulVerification: false,
+      fresh: false,
+      reason: "no project-state.json detected; verify-app status is not available for this directory",
+      currentSourceFingerprint: { sha256: "", fileCount: 0, bytes: 0 },
+    };
+  }
   const currentSourceFingerprint = computeSourceFingerprint(dir);
-  const lastSuccessful = state?.verification?.lastSuccessfulVerification;
+  const lastSuccessful = state.verification?.lastSuccessfulVerification;
   if (!lastSuccessful) {
     return {
       hasSuccessfulVerification: false,

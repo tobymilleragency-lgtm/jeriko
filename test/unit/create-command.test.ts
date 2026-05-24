@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { applyCrawlerPrerenderSupport, command as createCommand, repairGeneratedProject, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
-import { scanPremiumMarketingSiteQuality } from "../../src/cli/commands/dev/verify-app.js";
+import { scanPremiumMarketingSiteQuality, scanPublicBuilderMetaCopy } from "../../src/cli/commands/dev/verify-app.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
 import { buildProjectState } from "../../src/cli/commands/dev/project-state.js";
 import { setOutputFormat } from "../../src/shared/output.js";
@@ -45,6 +45,7 @@ describe("create command templates", () => {
     expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/industries", "/case-studies", "/process", "/pricing", "/resources", "/contact"]));
     expect(paths.length).toBeGreaterThanOrEqual(8);
     expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
+    expect(state.verification.requiredGates).toContain("public_builder_meta_scan");
     expect(state.appSpec?.features).toEqual(expect.arrayContaining(["multi-page marketing site", "conversion-focused contact path", "customer-ready marketing content", "premium contractor conversion system"]));
     expect(state.appSpec?.successCriteria).toContain("Every appSpec page is implemented as a routable page, not collapsed into a single landing page");
 
@@ -69,6 +70,25 @@ describe("create command templates", () => {
 
       const issues = scanPremiumMarketingSiteQuality(dir, state);
       expect(issues.map((issue) => issue.token)).toEqual(expect.arrayContaining(["function AppLink", "LeadFlowLineSection", "LeadLeakAudit", "BeforeAfterComparison", "StickyAuditRail", "body-background", "vercel-outputDirectory", "appSpec.pages"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails public builder meta copy when generated sites expose guide depth or word counts", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-builder-meta-scan-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export function CitySeoPage(){
+          const wordCount = 1033;
+          return <aside><p>Guide depth</p><p>{wordCount} words</p></aside>;
+        }
+      `);
+      const state = buildProjectState({ name: "Cody Realtor Site", template: "web-static", profile: "web-static", prompt: "Build a premium realtor area guide site" });
+
+      const issues = scanPublicBuilderMetaCopy(dir, state);
+      expect(issues.map((issue) => issue.token)).toEqual(expect.arrayContaining(["Guide depth", "wordCount"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
