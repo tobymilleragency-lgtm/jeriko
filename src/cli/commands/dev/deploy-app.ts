@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 export { hydrateSecretFromCredentialCommandCenter } from "../../../shared/credential-command-center.js";
 import { hydrateSecretFromCredentialCommandCenter } from "../../../shared/credential-command-center.js";
 
@@ -43,6 +44,9 @@ interface SmokeResult {
   ok: boolean;
   status?: number;
   bytes?: number;
+  sha256?: string;
+  expectedSha256?: string;
+  artifactFresh?: boolean;
   error?: string;
   location?: string;
   followedUrl?: string;
@@ -406,7 +410,8 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   if (routesToSmoke.length > 0) {
     const routeSmokes: SmokeResult[] = [];
     for (const route of routesToSmoke) {
-      const routeSmoke = await smokeUrl(joinUrl(report.productionUrl, route));
+      const expectedArtifact = localPrerenderedArtifactBody(dir, route);
+      const routeSmoke = await smokeUrl(joinUrl(report.productionUrl, route), expectedArtifact);
       routeSmokes.push(routeSmoke);
     }
     report.routeSmokes = routeSmokes;
@@ -560,20 +565,39 @@ function extractLastUrl(text: string): string | undefined {
   return matches?.at(-1);
 }
 
-async function smokeUrl(url: string): Promise<SmokeResult> {
+async function smokeUrl(url: string, expectedBody?: string): Promise<SmokeResult> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
     const body = await res.text();
     const setupRequired = isSetupRequiredSmokeBody(body);
     const protectedByVercel = isVercelProtectionBody(body);
-    const ok = res.ok && !setupRequired && !protectedByVercel;
-    const result: SmokeResult = { url, ok, status: res.status, bytes: body.length };
+    const sha256 = sha256Text(body);
+    const expectedSha256 = expectedBody ? sha256Text(expectedBody) : undefined;
+    const artifactFresh = expectedSha256 ? sha256 === expectedSha256 : undefined;
+    const ok = res.ok && !setupRequired && !protectedByVercel && artifactFresh !== false;
+    const result: SmokeResult = { url, ok, status: res.status, bytes: body.length, sha256 };
+    if (expectedSha256) result.expectedSha256 = expectedSha256;
+    if (artifactFresh !== undefined) result.artifactFresh = artifactFresh;
     if (setupRequired) result.error = "setup_required response from production route";
     if (protectedByVercel) result.error = "Vercel deployment protection intercepted production route";
+    if (artifactFresh === false) result.error = "production route HTML did not match the freshly built local prerendered artifact";
     return result;
   } catch (err) {
     return { url, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export function localPrerenderedArtifactBody(dir: string, route: string): string | undefined {
+  const normalizedRoute = route === "/" ? "/" : `/${route.replace(/^\/+|\/+$/g, "")}`;
+  const artifactPath = normalizedRoute === "/"
+    ? join(dir, "dist", "public", "index.html")
+    : join(dir, "dist", "public", ...normalizedRoute.slice(1).split("/"), "index.html");
+  if (!existsSync(artifactPath)) return undefined;
+  return readFileSync(artifactPath, "utf-8");
+}
+
+function sha256Text(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 async function smokeDatabaseHealthUrl(url: string): Promise<SmokeResult> {

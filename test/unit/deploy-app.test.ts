@@ -16,6 +16,7 @@ import {
   isSetupRequiredSmokeBody,
   isVercelProtectionBody,
   productionRoutesToSmoke,
+  localPrerenderedArtifactBody,
   resolveGeneratedAppRoot,
   runGeneratedAppDeploy,
   vercelAliasTargetFromUrl,
@@ -163,6 +164,17 @@ describe("deploy-app production route and alias planning", () => {
       "/services",
       "/contact",
     ]);
+  });
+
+  it("finds local prerendered HTML for route freshness checks", () => {
+    const dir = makeProject("route-freshness-app");
+    fs.mkdirSync(path.join(dir, "dist", "public", "service-area", "oklahoma-city"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "dist", "public", "index.html"), "<html>home</html>");
+    fs.writeFileSync(path.join(dir, "dist", "public", "service-area", "oklahoma-city", "index.html"), "<html>okc</html>");
+
+    expect(localPrerenderedArtifactBody(dir, "/")).toBe("<html>home</html>");
+    expect(localPrerenderedArtifactBody(dir, "/service-area/oklahoma-city")).toBe("<html>okc</html>");
+    expect(localPrerenderedArtifactBody(dir, "/missing")).toBeUndefined();
   });
 });
 
