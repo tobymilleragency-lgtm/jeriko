@@ -5,6 +5,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
+export { hydrateSecretFromCredentialCommandCenter } from "../../../shared/credential-command-center.js";
+import { hydrateSecretFromCredentialCommandCenter } from "../../../shared/credential-command-center.js";
 
 const MAX_OUTPUT = 20_000;
 
@@ -216,8 +218,13 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   const effectiveProfile = inferDeployAppProfile(dir, options.profile);
   const effectiveOptions = { ...options, profile: effectiveProfile };
   const hydratedVercelToken = hydrateSecretFromCredentialCommandCenter("VERCEL_TOKEN");
+  const vercelToken = normalizeOptional(process.env.VERCEL_TOKEN);
   if (hydratedVercelToken) {
     report.steps.push({ name: "credential_command_center_vercel_token", ok: true, output: "Loaded VERCEL_TOKEN from Credential Command Center for this deploy process." });
+  } else if (vercelToken) {
+    report.steps.push({ name: "credential_env_vercel_token", ok: true, output: "Using VERCEL_TOKEN from the deploy process environment." });
+  } else {
+    report.steps.push({ name: "credential_discovery_vercel_token", ok: false, output: "VERCEL_TOKEN was not present in the environment and was not found in Credential Command Center. Vercel CLI login state will be the only remaining auth source." });
   }
 
   if (options.skipVerify !== true) {
@@ -327,7 +334,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   }
 
   if (!existsSync(join(dir, ".vercel", "project.json"))) {
-    const link = runCommand(["vercel", "link", "--yes", "--project", vercelProject], dir, 300_000);
+    const link = runCommand(buildVercelCliArgs(["link", "--yes", "--project", vercelProject], vercelToken), dir, 300_000);
     report.steps.push(stepFromCommand("vercel_link", link));
     if (link.status !== 0) {
       report.blockers.push("vercel link failed.");
@@ -338,7 +345,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   }
 
   if (options.connectGit === true && report.githubRepo) {
-    const connect = runCommand(["vercel", "git", "connect", report.githubRepo], dir, 300_000);
+    const connect = runCommand(buildVercelCliArgs(["git", "connect", report.githubRepo], vercelToken), dir, 300_000);
     report.steps.push(stepFromCommand("vercel_git_connect", connect));
     if (connect.status !== 0) {
       report.blockers.push("Vercel Git integration connect failed. Direct production deploy was not attempted after this blocker.");
@@ -346,7 +353,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     }
   }
 
-  const deploy = runCommand(["vercel", "deploy", "--prod", "--yes"], dir, 900_000);
+  const deploy = runCommand(buildVercelCliArgs(["deploy", "--prod", "--yes"], vercelToken), dir, 900_000);
   report.steps.push(stepFromCommand("vercel_deploy", deploy));
   if (deploy.status !== 0) {
     report.blockers.push("vercel production deploy failed.");
@@ -356,7 +363,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
   const aliases = deploymentAliasesFromOutput(deploy.output);
 
   if (report.deploymentUrl) {
-    const inspect = runCommand(["vercel", "inspect", report.deploymentUrl, "--wait"], dir, 900_000);
+    const inspect = runCommand(buildVercelCliArgs(["inspect", report.deploymentUrl, "--wait"], vercelToken), dir, 900_000);
     report.steps.push(stepFromCommand("vercel_inspect", inspect));
     if (inspect.status !== 0) {
       report.blockers.push("vercel inspect --wait failed.");
@@ -372,7 +379,7 @@ export async function runGeneratedAppDeploy(options: DeployAppOptions): Promise<
     if (!aliasMatches) {
       if (report.deploymentUrl) {
         const aliasTarget = vercelAliasTargetFromUrl(report.productionUrl);
-        const aliasSet = runCommand(["vercel", "alias", "set", report.deploymentUrl, aliasTarget], dir, 300_000);
+        const aliasSet = runCommand(buildVercelCliArgs(["alias", "set", report.deploymentUrl, aliasTarget], vercelToken), dir, 300_000);
         report.steps.push(stepFromCommand("vercel_alias_set_requested_production_url", aliasSet));
         if (aliasSet.status !== 0) {
           report.blockers.push(`requested production URL ${report.productionUrl} was not assigned by Vercel and alias reassignment failed; deployment aliases were: ${aliases.join(", ")}.`);
@@ -494,7 +501,7 @@ function runCommand(args: string[], cwd: string, timeout = 120_000): CommandResu
   const stderr = result.stderr?.toString() ?? "";
   const output = `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`.slice(0, MAX_OUTPUT);
   return {
-    command: args.map(shellDisplay).join(" "),
+    command: displayCommand(args),
     status: result.status ?? 1,
     stdout,
     stderr,
@@ -502,21 +509,10 @@ function runCommand(args: string[], cwd: string, timeout = 120_000): CommandResu
   };
 }
 
-export function hydrateSecretFromCredentialCommandCenter(name: string): boolean {
-  if (process.env[name]) return false;
-  const cccPath = process.env.CCC_BIN || join(process.env.HOME || homedir(), ".local", "bin", "ccc");
-  if (!existsSync(cccPath)) return false;
-  const result = spawnSync(cccPath, ["get", name, "--raw"], {
-    cwd: process.cwd(),
-    encoding: "utf-8",
-    timeout: 10_000,
-    maxBuffer: 200_000,
-    env: process.env,
-  });
-  const value = result.stdout?.toString().replace(/\r?\n$/, "") ?? "";
-  if (result.status !== 0 || !value) return false;
-  process.env[name] = value;
-  return true;
+export function buildVercelCliArgs(args: string[], token = normalizeOptional(process.env.VERCEL_TOKEN)): string[] {
+  const command = args[0] === "vercel" ? [...args] : ["vercel", ...args];
+  if (!token || command.includes("--token")) return command;
+  return [...command, "--token", token];
 }
 
 function stepFromCommand(name: string, result: CommandResult): DeployAppReport["steps"][number] {
@@ -703,6 +699,10 @@ export function vercelAliasTargetFromUrl(url: string): string {
 
 function joinUrl(base: string, route: string): string {
   return `${base.replace(/\/+$/, "")}/${route.replace(/^\/+/, "")}`;
+}
+
+function displayCommand(args: string[]): string {
+  return args.map((arg, index) => args[index - 1] === "--token" ? "[redacted]" : shellDisplay(arg)).join(" ");
 }
 
 function shellDisplay(arg: string): string {

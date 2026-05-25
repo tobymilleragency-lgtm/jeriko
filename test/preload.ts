@@ -10,3 +10,7 @@
 import chalk from "chalk";
 
 chalk.level = 3; // truecolor (24-bit) — consistent across all environments
+
+// Keep tests hermetic: production code may auto-discover missing secrets from
+// ~/.local/bin/ccc, but tests should only use CCC when a test sets CCC_BIN.
+process.env.JERIKO_TEST_DISABLE_DEFAULT_CCC = "1";

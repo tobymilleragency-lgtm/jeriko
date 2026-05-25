@@ -8,6 +8,7 @@ import {
   ensureVercelIgnored,
   extractDeploymentUrlFromOutput,
   googleOAuthRedirectUriFromLocation,
+  buildVercelCliArgs,
   hydrateSecretFromCredentialCommandCenter,
   inferDeployAppProfile,
   isDatabaseReadySmokeBody,
@@ -122,6 +123,12 @@ describe("deploy-app Credential Command Center integration", () => {
       if (oldCccBin === undefined) delete process.env.CCC_BIN;
       else process.env.CCC_BIN = oldCccBin;
     }
+  });
+
+  it("passes discovered VERCEL_TOKEN through --token so deploys do not depend on vercel login", () => {
+    const args = buildVercelCliArgs(["deploy", "--prod", "--yes"], "token-from-ccc");
+
+    expect(args).toEqual(["vercel", "deploy", "--prod", "--yes", "--token", "token-from-ccc"]);
   });
 });
 

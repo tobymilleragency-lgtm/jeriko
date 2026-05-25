@@ -15,10 +15,16 @@
 
 import { getLogger } from "../../../shared/logger.js";
 import { isConnectorConfigured, CONNECTOR_DEFS } from "../../../shared/connector.js";
+import { hydrateSecretFromCredentialCommandCenter } from "../../../shared/credential-command-center.js";
 import { CONNECTOR_FACTORIES } from "./registry.js";
 import type { ConnectorInterface, HealthResult, WebhookEvent } from "./interface.js";
 
 const log = getLogger();
+
+function hydrateVercelSecretsFromCredentialCommandCenter(name: string): void {
+  if (name !== "vercel") return;
+  hydrateSecretFromCredentialCommandCenter("VERCEL_TOKEN");
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +86,7 @@ export class ConnectorManager {
       return null;
     }
 
+    hydrateVercelSecretsFromCredentialCommandCenter(name);
     // Check if credentials are configured
     if (!isConnectorConfigured(name)) {
       log.debug(`ConnectorManager: connector "${name}" is not configured (missing env vars)`);
@@ -133,6 +140,7 @@ export class ConnectorManager {
    * Check if a connector is available (configured and can be initialized).
    */
   has(name: string): boolean {
+    hydrateVercelSecretsFromCredentialCommandCenter(name);
     return !!CONNECTOR_FACTORIES[name] && isConnectorConfigured(name);
   }
 
@@ -166,6 +174,7 @@ export class ConnectorManager {
   async health(name: string): Promise<ConnectorStatus> {
     const def = CONNECTOR_DEFS.find((d) => d.name === name);
     const label = def?.label ?? name;
+    hydrateVercelSecretsFromCredentialCommandCenter(name);
     const configured = isConnectorConfigured(name);
 
     if (!configured) {
