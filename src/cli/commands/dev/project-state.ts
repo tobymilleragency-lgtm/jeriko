@@ -45,11 +45,43 @@ export interface AppBuilderRepairRouter {
   action: string;
 }
 
+export type AppBuilderPhaseStatus = "pending" | "in_progress" | "completed" | "blocked" | "skipped";
+export type AppBuilderRunStatus = "running" | "blocked" | "completed";
+
 export interface AppBuilderControlPlan {
   mode: "controlled-app-build";
   mandatorySkills: string[];
   phases: AppBuilderPhase[];
   repairRouters: AppBuilderRepairRouter[];
+}
+
+export interface AppBuilderPhaseRun {
+  id: string;
+  status: AppBuilderPhaseStatus;
+  description: string;
+  requiredEvidence: string[];
+  evidence: string[];
+  startedAt?: string;
+  completedAt?: string;
+  blockedAt?: string;
+}
+
+export interface AppBuilderFailure {
+  failedGate: string;
+  output?: string;
+  repairAction: string;
+  recordedAt: string;
+}
+
+export interface AppBuilderRun {
+  status: AppBuilderRunStatus;
+  trigger: string;
+  startedAt: string;
+  updatedAt: string;
+  currentPhaseId: string;
+  mandatorySkillsLoaded: string[];
+  phases: AppBuilderPhaseRun[];
+  failures: AppBuilderFailure[];
 }
 
 export interface ProjectState {
@@ -61,6 +93,7 @@ export interface ProjectState {
   generatedAt: string;
   appSpec?: AppSpecContract;
   appBuilderPlan?: AppBuilderControlPlan;
+  appBuilderRun?: AppBuilderRun;
   commands: {
     install?: string;
     check?: string;

@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { readProjectState, writeProjectState, computeSourceFingerprint, type AppProfile, type ProjectState, type AppSpecContract } from "./project-state.js";
+import { recordAppBuilderPhase, recordAppBuilderVerificationFailure, resolveAppBuilderRepairAction } from "./app-builder-controller.js";
 
 export { readProjectState } from "./project-state.js";
 
@@ -719,7 +720,12 @@ function recordSuccessfulVerification(dir: string, projectState: ProjectState, p
     },
   };
   writeProjectState(dir, updated);
-  return updated;
+  try {
+    recordAppBuilderPhase(dir, "verify", "completed", [`verify_app passed ${slimGates.filter((gate) => gate.ok).length} gates`]);
+  } catch {
+    // Older/generated projects may not have an appBuilderRun yet; verification should remain usable.
+  }
+  return readProjectState(dir) ?? updated;
 }
 
 export function getDependencyStatus(dir: string): DependencyStatus {
@@ -2667,12 +2673,20 @@ function detectStartCommand(dir: string, profile: AppProfile, port: string): str
 }
 
 function failGate(directory: string, profile: AppProfile, gates: VerificationGate[], gate: VerificationGate, dependencyStatus = getDependencyStatus(directory)): never {
+  const projectState = readProjectState(directory);
+  const repairAction = resolveAppBuilderRepairAction(projectState, gate.name);
+  try {
+    recordAppBuilderVerificationFailure(directory, { name: gate.name, output: gate.output });
+  } catch {
+    // Verification must still return its original structured failure even if controller state cannot be updated.
+  }
   failWithDetails(`App verification gate failed: ${gate.name}`, {
     errorCode: "E_VERIFY_GATE",
     directory,
     profile,
     dependencyStatus,
     failedGate: gate,
+    repairAction,
     gates,
   });
 }

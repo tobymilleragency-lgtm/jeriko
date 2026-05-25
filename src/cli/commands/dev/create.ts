@@ -7,6 +7,7 @@ import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { detectDevCommand, getProjectDevLogFile, startDetachedDevServer, type DetachedDevServer } from "./dev.js";
 import { buildProjectState, writeProjectState, type AppProfile } from "./project-state.js";
+import { initializeAppBuilderRun, recordAppBuilderPhase } from "./app-builder-controller.js";
 
 // ---------------------------------------------------------------------------
 // Template registry
@@ -342,6 +343,13 @@ export const command: CommandHandler = {
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile, prompt: promptText || undefined, seoProfile }))
         : undefined;
+      if (info.category === "webdev") {
+        initializeAppBuilderRun(dir, { trigger: "create" });
+        recordAppBuilderPhase(dir, "target-lock", "completed", [`directory: ${dir}`, `template: ${template}`, `project: ${name}`]);
+        recordAppBuilderPhase(dir, "skill-bind", "completed", ["mandatory skills recorded in appBuilderRun"]);
+        recordAppBuilderPhase(dir, "appspec-plan", "completed", ["appSpec and appBuilderPlan written to .jeriko/project-state.json"]);
+        recordAppBuilderPhase(dir, "scaffold", "completed", ["template copied", ...scaffoldSanitizerActions, ...(crawlerPrerender ? ["crawler prerender support applied"] : [])]);
+      }
 
       // Remove metadata files
       const metaFiles = [".manus-template-version", ".DS_Store", "template.json"];
