@@ -98,6 +98,9 @@ const SCAFFOLD_RESIDUE_TOKENS = [
   "current site says",
   "representative listings",
   "representative residential",
+  "Badass",
+  "trash site",
+  "garbage site",
 ];
 const UNSAFE_ENV_PATTERN = /\bVITE_SUPABASE_(URL|ANON_KEY)\b/g;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".svelte-kit", "coverage"]);
@@ -979,6 +982,13 @@ function hasPrimaryHomeNav(sourceText: string): boolean {
     || /<a[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText);
 }
 
+function hasPrimaryServiceAreasNav(sourceText: string): boolean {
+  return /label:\s*["']Service Areas["']/.test(sourceText)
+    || /<AppLink[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText)
+    || /<Link[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText)
+    || /<a[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText);
+}
+
 export function scanUncontractedContractorMarketingSite(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
   if (projectState?.appSpec) return [];
   const sourceText = collectPublicSourceText(dir);
@@ -1114,6 +1124,14 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
       line: 0,
       token: "primary-home-nav",
       reason: "Local-service contractor sites must include a visible Home item in the primary nav; logo-only home navigation is not enough for generated production sites.",
+    });
+  }
+  if (localServiceSite && !hasPrimaryServiceAreasNav(sourceText)) {
+    issues.push({
+      file: "client/src/App.tsx",
+      line: 0,
+      token: "primary-service-areas-nav",
+      reason: "Local-service contractor sites must label the primary service-area navigation as Service Areas; vague labels like Cities are not enough for production contractor nav.",
     });
   }
   if (/OKCNearby|Ready to remodel\?Request|pathScope|requestsPhotos|notesMaterials|levelScheduling|<b>OKC<\/b>\s*<span>Nearby|<span>Ready to remodel\?<\/span>\s*<AppLink/i.test(sourceText)) {

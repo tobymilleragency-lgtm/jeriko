@@ -581,7 +581,7 @@ export default defineConfig({
         function BeforeAfterComparison(){ return <section>before after</section> }
         function StickyAuditRail(){ return <aside>Ready to remodel?Request quote</aside> }
         const cities = ['Oklahoma City', 'South Edmond', 'East Yukon'];
-        function Shell({children}:any){ return <><nav><AppLink href="/services">Services</AppLink><AppLink href="/process">Process</AppLink><AppLink href="/about">About</AppLink><AppLink href="/gallery">Gallery</AppLink><AppLink href="/service-area">Service Area</AppLink><AppLink href="/contact">Contact</AppLink></nav>{children}</> }
+        function Shell({children}:any){ return <><nav><AppLink href="/services">Services</AppLink><AppLink href="/process">Process</AppLink><AppLink href="/about">About</AppLink><AppLink href="/gallery">Gallery</AppLink><AppLink href="/service-area">Cities</AppLink><AppLink href="/contact">Contact</AppLink></nav>{children}</> }
         function Home(){ return <Shell><LeadOpsVisual /><LeadFlowLineSection /><LeadLeakAudit /><BeforeAfterComparison /><StickyAuditRail /></Shell> }
         function ServiceArea(){ return <Shell><h1>Oklahoma City and nearby surrounding communities.</h1><b>OKC</b><span>Nearby communities checked by scope, schedule, and service radius.</span>{cities.map(c => <a href={'/service-area/'+c.toLowerCase().replaceAll(' ','-')}>{c}</a>)}</Shell> }
         function City(){ return <Shell><p>Common requests around South Edmond include near-OKC remodel projects checked for schedule, service radius, project scope, and travel radius.</p></Shell> }
@@ -591,7 +591,7 @@ export default defineConfig({
       const state = buildProjectState({ name: "Brothers Remodeling OKC", template: "web-static", profile: "web-static", prompt: "Build a new site for Brothers Remodeling OKC, a remodeling company in Oklahoma City" });
       const tokens = scanPremiumMarketingSiteQuality(dir, state).map((issue) => issue.token);
 
-      expect(tokens).toEqual(expect.arrayContaining(["primary-home-nav", "glued-ui-copy", "partial-metro-city-labels", "thin-city-page-copy", "gallery-placeholder-copy"]));
+      expect(tokens).toEqual(expect.arrayContaining(["primary-home-nav", "primary-service-areas-nav", "glued-ui-copy", "partial-metro-city-labels", "thin-city-page-copy", "gallery-placeholder-copy"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

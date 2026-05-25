@@ -101,6 +101,33 @@ describe("verify-app command", () => {
     }
   });
 
+  it("rejects operator-voice leakage in generated public contractor copy", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-operator-voice-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "valhalla-construction",
+        scripts: { check: "echo should-not-run" },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        export default function App(){return <main>
+          <h1>Badass contractor site for practical builds, remodels, repairs, and outdoor projects.</h1>
+          <p>Valhalla Construction helps Parsons homeowners request an estimate.</p>
+        </main>}
+      `);
+
+      const hits = scanScaffoldResidue(dir);
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start", "--skip-browser"]);
+
+      expect(hits.map((hit) => hit.token)).toContain("Badass");
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_SCAFFOLD_RESIDUE");
+      expect(result.scaffoldResidue.some((hit: any) => hit.token === "Badass")).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails contractor/local-service sites that bypass Jeriko appSpec contract and ship stale identity/contact defects", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-uncontracted-contractor-"));
     try {
