@@ -568,6 +568,78 @@ describe("create command templates", () => {
     }
   });
 
+  it("fails autonomous contractor sites without complete route, service, city, SEO, claim, form, and mobile proof", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-contractor-hard-gates-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head><style>body{background: #09090b}</style></head><body><div id="root" data-jeriko-prerender></div><script type="module" src="/src/App.tsx"></script></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import React from 'react';
+        import { Route, Switch, Link, useLocation } from 'wouter';
+        function AppLink(props:any){ return <Link {...props} /> }
+        function LeadOpsVisual(){ return <div>visual</div> }
+        function LeadFlowLineSection(){ return <section>flow</section> }
+        function LeadLeakAudit(){ return <section>audit</section> }
+        function BeforeAfterComparison(){ return <section>before after</section> }
+        function StickyAuditRail(){ return <aside>Request Quote</aside> }
+        function Home(){ return <main><nav><AppLink href="/">Home</AppLink><AppLink href="/services">Services</AppLink><AppLink href="/contact">Contact</AppLink></nav><p>Licensed and insured 5-star contractor serving since 1999.</p></main> }
+        function ServicePage(){ return <main><h1>Service</h1><p>service title only same copy</p></main> }
+        function CityPage(){ return <main><h1>City</h1><p>city name only same copy</p></main> }
+        function Contact(){ const [sent,setSent]=React.useState(false); return <form onSubmit={(e)=>{e.preventDefault(); setSent(true)}}><button type="button" onClick={()=>setSent(true)}>Request Quote</button>{sent && <p>Sent</p>}</form> }
+        export default function App(){ return <Switch><Route path="/" component={Home}/><Route path="/services" component={Home}/><Route path="/services/kitchen-remodeling" component={ServicePage}/><Route path="/contact" component={Contact}/></Switch> }
+      `);
+      const state = buildProjectState({ name: "Brothers Remodeling OKC", template: "web-static", profile: "web-static", prompt: "Build a new site for Brothers Remodeling OKC, a remodeling company in Oklahoma City" });
+      if (state.appSpec) state.appSpec.pages = [
+        { path: "/", title: "Home" },
+        { path: "/services", title: "Services" },
+        { path: "/services/kitchen-remodeling", title: "Kitchen Remodeling" },
+        { path: "/contact", title: "Contact" },
+      ];
+      const tokens = scanPremiumMarketingSiteQuality(dir, state).map((issue) => issue.token);
+
+      expect(tokens).toEqual(expect.arrayContaining([
+        "contractor-route-contract",
+        "contractor-false-claim-scan",
+        "fake-lead-form",
+        "contractor-seo-foundation",
+        "contractor-mobile-conversion-smoke",
+        "contractor-page-depth-uniqueness",
+      ]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails autonomous contractor routes that exist in appSpec but are not implemented", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-contractor-route-implementation-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "public", "sitemap.xml"), '<urlset><url><loc>/</loc></url></urlset>');
+      fs.writeFileSync(path.join(dir, "public", "robots.txt"), 'User-agent: *\nAllow: /\nSitemap: /sitemap.xml\n');
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head><title>Contractor</title><meta name="description" content="Contractor site"><link rel="canonical" href="/"><style>body{background: #09090b}</style></head><body><div id="root" data-jeriko-prerender></div><script type="module" src="/src/App.tsx"></script></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route, Switch, Link, useLocation } from 'wouter';
+        function AppLink(props:any){ return <Link {...props} /> }
+        function LeadOpsVisual(){ return <div>visual</div> }
+        function LeadFlowLineSection(){ return <section>flow</section> }
+        function LeadLeakAudit(){ return <section>audit</section> }
+        function BeforeAfterComparison(){ return <section>before after</section> }
+        function StickyAuditRail(){ return <aside className="fixed inset-x-0 bottom-0">Request Quote</aside> }
+        function Home(){ return <main><nav aria-label="Mobile navigation"><AppLink href="/">Home</AppLink><AppLink href="/services">Services</AppLink><AppLink href="/contact">Contact</AppLink></nav></main> }
+        export default function App(){ return <Switch><Route path="/" component={Home}/><Route path="/services" component={Home}/><Route path="/process" component={Home}/><Route path="/about" component={Home}/><Route path="/service-areas" component={Home}/><Route path="/projects" component={Home}/><Route path="/gallery" component={Home}/><Route path="/reviews" component={Home}/><Route path="/faq" component={Home}/><Route path="/contact" component={Home}/><Route path="/privacy" component={Home}/><Route path="/terms" component={Home}/></Switch> }
+      `);
+      const state = buildProjectState({ name: "Tulsa Roofing", template: "web-static", profile: "web-static", prompt: "Build a roofing contractor website in Tulsa with SEO pages and quote photos" });
+      const tokens = scanPremiumMarketingSiteQuality(dir, state).map((issue) => issue.token);
+
+      expect(tokens).toEqual(expect.arrayContaining(["contractor-service-page-implementation", "contractor-city-page-implementation"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("scaffolds contractor marketing prompts with premium multi-page SPA and deploy-safe defaults", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-premium-contractor-site-"));
     const projectDir = path.join(dir, "alpha-style-site");

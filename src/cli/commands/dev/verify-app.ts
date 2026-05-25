@@ -947,6 +947,18 @@ function hasExplicitRouteImplementation(sourceText: string, route: string): bool
   return patterns.some((pattern) => pattern.test(sourceText));
 }
 
+function hasDynamicRouteImplementation(sourceText: string, baseRoute: string): boolean {
+  const escaped = baseRoute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const withoutSlash = baseRoute.replace(/^\//, "");
+  const patterns = [
+    new RegExp(`path\\s*=\\s*['\"]${escaped}/:[A-Za-z0-9_]+['\"]`),
+    new RegExp(`path\\s*:\\s*['\"]${escaped}/:[A-Za-z0-9_]+['\"]`),
+    new RegExp(`startsWith\\(\\s*['\"]${escaped}/['\"]\\s*\\)`),
+    new RegExp(`match\\s*\\(\\s*[/^][^\\n]*${withoutSlash}\\/[^\\n]*[/]`),
+  ];
+  return patterns.some((pattern) => pattern.test(sourceText));
+}
+
 function hasPrimaryHomeNav(sourceText: string): boolean {
   return /label:\s*["']Home["']/.test(sourceText)
     || /<AppLink[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
@@ -974,13 +986,29 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const localServiceSite = /local-service|premium-local-service/i.test(String(spec.appType ?? "")) || spec.features?.some((feature) => /local service seo content|service area/i.test(feature));
   const requiredRoutes = contractorSite ? (localServiceSite ? ["/services", "/contact"] : ["/services", "/pricing", "/contact"]) : ["/contact"];
   const requiredLocalServiceRoutes = contractorSite && localServiceSite ? ["/services", "/process", "/about", "/service-area", "/gallery", "/contact"] : [];
+  const requiredAutonomousContractorRoutes = contractorSite && localServiceSite
+    ? ["/services", "/process", "/about", "/service-areas", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"]
+    : [];
   const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(page.path)) : [];
+  const serviceRoutes = specRoutes.filter((route) => route.startsWith("/services/") && route !== "/services/");
+  const cityRoutes = specRoutes.filter((route) => route.startsWith("/service-areas/") && route !== "/service-areas/");
   if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
     issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: contractorSite
       ? (localServiceSite
         ? "Premium contractor/local-service sites must keep a full multi-page appSpec contract, including at least /services, /contact, and local-service routes for process, about, service-area, and gallery. Do not collapse the contract to a one-page brochure."
         : "Premium contractor sites must keep a full multi-page appSpec contract, including at least /services, /pricing, and /contact. Do not collapse the contract to a one-page brochure.")
       : "Premium local business sites must keep a full multi-page appSpec contract with at least five routable pages and /contact. Do not collapse the contract to a one-page brochure." });
+  }
+  if (contractorSite && localServiceSite) {
+    const missingAutonomousRoutes = requiredAutonomousContractorRoutes.filter((route) => !specRoutes.includes(route));
+    if (missingAutonomousRoutes.length > 0 || serviceRoutes.length < 4 || cityRoutes.length < 3) {
+      issues.push({
+        file: "project-state.json",
+        line: 0,
+        token: "contractor-route-contract",
+        reason: `Autonomous contractor sites must declare the full route contract: core pages, at least four service pages, and at least three city pages. Missing/weak: ${[...missingAutonomousRoutes, serviceRoutes.length < 4 ? "service-pages" : "", cityRoutes.length < 3 ? "city-pages" : ""].filter(Boolean).join(", ")}.`,
+      });
+    }
   }
   for (const route of requiredLocalServiceRoutes) {
     if (!specRoutes.includes(route) || !hasExplicitRouteImplementation(sourceText, route)) {
@@ -989,6 +1017,26 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
         line: 0,
         token: `local-service-route:${route}`,
         reason: `Local-service contractor sites must implement ${route} as a real routed page. Links alone or default homepage fallbacks are not enough.`,
+      });
+    }
+  }
+  if (contractorSite && localServiceSite) {
+    const missingServiceImplementations = serviceRoutes.filter((route) => !hasExplicitRouteImplementation(sourceText, route) && !hasDynamicRouteImplementation(sourceText, "/services"));
+    const missingCityImplementations = cityRoutes.filter((route) => !hasExplicitRouteImplementation(sourceText, route) && !hasDynamicRouteImplementation(sourceText, "/service-areas"));
+    if (missingServiceImplementations.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-service-page-implementation",
+        reason: `Every service route in appSpec must render through a real service page implementation, not homepage fallback. Missing: ${missingServiceImplementations.slice(0, 6).join(", ")}.`,
+      });
+    }
+    if (missingCityImplementations.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-city-page-implementation",
+        reason: `Every city route in appSpec must render through a real city/service-area page implementation, not homepage fallback. Missing: ${missingCityImplementations.slice(0, 6).join(", ")}.`,
       });
     }
   }
@@ -1057,6 +1105,47 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
       reason: "Generated contractor/local-service sites must not retain stale business-model copy from another company or advisory template.",
     });
   }
+  if (contractorSite && localServiceSite) {
+    if (/\b(?:licensed|insured|bonded|certified|bbb accredited|5[- ]star|five[- ]star|award[- ]winning|#[ ]?1|number one|family[- ]owned|veteran[- ]owned|financing available|24\/7|hundreds of|thousands of|serving since|in business since)\b/i.test(sourceText)
+      && !/setup[- ]required|provided|verified|when supplied|once supplied|add proof|placeholder/i.test(sourceText)) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-false-claim-scan",
+        reason: "Contractor sites must not publish license/insurance/review/award/years/financing/24-7 claims unless supplied or verified; use neutral trust language instead.",
+      });
+    }
+    const hasMetadataSignals = /<title>|metaDescription|description:|<meta\s+name=["']description|canonical|rel=["']canonical|og:title|twitter:card|JSON-LD|application\/ld\+json|schema/i.test(sourceText + "\n" + indexHtml);
+    const hasSitemap = existsAny(dir, ["public/sitemap.xml", "client/public/sitemap.xml", "dist/public/sitemap.xml", "dist/sitemap.xml"]);
+    const hasRobots = existsAny(dir, ["public/robots.txt", "client/public/robots.txt", "dist/public/robots.txt", "dist/robots.txt"]);
+    if (!hasSitemap || !hasRobots || !hasMetadataSignals) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-seo-foundation",
+        reason: `Contractor sites require sitemap.xml, robots.txt, and page metadata/schema/canonical signals before launch. Missing: ${[!hasSitemap ? "sitemap.xml" : "", !hasRobots ? "robots.txt" : "", !hasMetadataSignals ? "metadata/schema" : ""].filter(Boolean).join(", ")}.`,
+      });
+    }
+    const hasMobileNavSignal = /Mobile|menuOpen|Menu|hamburger|aria-label=["'][^"']*(menu|navigation)|md:hidden|lg:hidden|sm:hidden/i.test(sourceText);
+    const hasStickyCtaSignal = /StickyAuditRail|fixed\s+inset-x-0\s+bottom-0|position:\s*fixed|sticky\s+bottom|Call|Request|Quote/i.test(sourceText);
+    if (!hasMobileNavSignal || !hasStickyCtaSignal) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-mobile-conversion-smoke",
+        reason: "Contractor sites need mobile navigation and a reachable call/quote CTA; desktop-only nav is not production-ready.",
+      });
+    }
+    if (/\b(?:same copy|generic service|service title only|city name only)\b/i.test(sourceText)
+      || repeatedShortPageComponent(sourceText, ["ServicePage", "CityPage", "ServiceAreaPage"])) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "contractor-page-depth-uniqueness",
+        reason: "Service and city pages must contain useful unique sections/copy; repeated thin page components or title-swap pages are not complete contractor sites.",
+      });
+    }
+  }
   const requireAppToken = (token: string, reason: string) => {
     if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });
   };
@@ -1116,6 +1205,23 @@ function nonEmpty(value: unknown): value is string {
 function normalizeSpecRoute(route: string): string {
   if (!route || route === "home") return "/";
   return route.startsWith("/") ? route : `/${route}`;
+}
+
+function existsAny(root: string, candidates: string[]): boolean {
+  return candidates.some((candidate) => existsSync(join(root, candidate)));
+}
+
+function repeatedShortPageComponent(sourceText: string, names: string[]): boolean {
+  for (const name of names) {
+    const matches = Array.from(sourceText.matchAll(new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]{0,900}?)\\n\\}`, "g")));
+    for (const match of matches) {
+      const body = match[1] ?? "";
+      const readableWords = Array.from(body.replace(/<[^>]+>/g, " ").matchAll(/\b[A-Za-z][A-Za-z'-]{3,}\b/g)).length;
+      const sectionCount = (body.match(/<section|<h2|<h3|faq|process|scope|include|expect|problem|material/gi) ?? []).length;
+      if (readableWords > 0 && (readableWords < 80 || sectionCount < 3)) return true;
+    }
+  }
+  return false;
 }
 
 function isProjectMetadataFile(root: string, file: string): boolean {

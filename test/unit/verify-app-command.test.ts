@@ -167,7 +167,7 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_UNSAFE_ENV");
       expect(result.unsafeEnvRefs.length).toBe(2);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -605,7 +605,7 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(true);
       expect(result.data.directory).toBe(dir);
       expect(result.data.profile).toBe("web-static");
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
       expect(result.data.gates.every((gate: any) => gate.ok)).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -633,7 +633,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { check: "pnpm run check", build: "pnpm run build" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -643,8 +643,8 @@ describe("verify-app command", () => {
       expect(state?.verification.lastSuccessfulVerification).toBeDefined();
       expect((state?.verification.lastSuccessfulVerification as any).ok).toBe(true);
       expect((state?.verification.lastSuccessfulVerification as any).profile).toBe("web-static");
-      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
-      expect(state?.verification.requiredGates).toEqual(expect.arrayContaining(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]));
+      expect((state?.verification.lastSuccessfulVerification as any).gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]);
+      expect(state?.verification.requiredGates).toEqual(expect.arrayContaining(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "check", "build"]));
       expect((state?.verification.lastSuccessfulVerification as any).completedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       expect((state?.verification.lastSuccessfulVerification as any).command).toContain("verify-app");
       expect((state?.verification.lastSuccessfulVerification as any).sourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -680,14 +680,14 @@ describe("verify-app command", () => {
           build: "node -e \"const fs=require('fs'); if(!fs.existsSync('node_modules')) process.exit(8); fs.appendFileSync('order.txt','build\\n')\"",
         },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
 
       expect(result.ok).toBe(true);
       expect(result.data.dependencyStatus.nodeModules).toBe(true);
-      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"]);
+      expect(result.data.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "check", "build"]);
       expect(fs.readFileSync(orderFile, "utf8")).toBe("install\ncheck\nbuild\n");
       expect(result.data.gates.find((gate: any) => gate.name === "install").output).toContain("node_modules missing");
     } finally {
@@ -709,7 +709,7 @@ describe("verify-app command", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         commands: { install: "node -e \"console.log('INSTALL_WITHOUT_NODE_MODULES')\"", check: "node -e \"process.exit(99)\"" },
         routes: { home: "/" },
-        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "install", "check"] },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "install", "check"] },
       }, null, 2));
 
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start"]);
@@ -719,7 +719,7 @@ describe("verify-app command", () => {
       expect(result.failedGate.name).toBe("dependency_preflight");
       expect(result.failedGate.output).toContain("node_modules is still missing");
       expect(result.dependencyStatus.missingNodeModules).toBe(true);
-      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "dependency_preflight"]);
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan", "unsafe_env_scan", "primary_persistence_scan", "db_auth_workflow_wiring", "auth_runtime_config_scan", "mock_data_import_scan", "provider_config_scan", "readiness_claim_scan", "image_uniqueness_scan", "install", "dependency_preflight"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
