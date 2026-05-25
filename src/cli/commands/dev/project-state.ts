@@ -192,10 +192,11 @@ function buildPromptAppSpecContract(args: {
   seoProfile?: string;
 }, prompt: string, localService: boolean, fullStack: boolean): AppSpecContract {
   const productWorkflow = inferProductWorkflow(prompt, fullStack);
-  const marketingPages = inferMarketingPages(prompt, { fullStack, localService, hasExplicitPrompt: Boolean(args.prompt) });
+  const contractorMarketing = isContractorMarketingPrompt(prompt);
+  const contractorSite = isContractorSitePrompt(prompt);
+  const marketingPages = inferMarketingPages(prompt, { fullStack, localService, hasExplicitPrompt: Boolean(args.prompt), contractorSite });
   const pages = [{ path: "/", title: "Home" }, ...productWorkflow.pages, ...marketingPages];
   const hasMultiPageMarketing = !fullStack && marketingPages.length > 0;
-  const contractorMarketing = /contractor|roof|remodel|plumb|electric|hvac|estimate|quote/i.test(prompt);
   const features = fullStack
     ? uniqueStrings(["authenticated user workflow", "Supabase Auth foundation", "database-backed app state", "Supabase Storage photo uploads", ...productWorkflow.features])
     : uniqueStrings([
@@ -224,8 +225,8 @@ function buildPromptAppSpecContract(args: {
       ...(hasMultiPageMarketing ? [contractorMarketing
         ? "Premium marketing sites include a hero system visual, lead-flow module, interactive audit, before/after comparison, sticky CTA, and SPA internal navigation"
         : "Premium marketing sites include a hero system visual, animated value-flow module, interactive conversion/qualification module, proof/comparison section, sticky CTA, and SPA internal navigation"] : []),
-      ...(localService && contractorMarketing ? [
-        "Local-service contractor sites include real service pages, process, about, gallery/project proof, service-area, and contact routes without homepage fallbacks",
+      ...(localService && contractorSite ? [
+        "Contractor/local-service sites follow contractor-site-autonomous-build: complete route map, service pages, city pages, reviews/FAQ/contact/privacy, sitemap/robots, and honest no-fake-claims copy",
         "Lead/contact forms are either wired to a real API with matching fields or replaced with honest email/phone CTAs",
       ] : []),
       ...(productWorkflow.workflow ? ["Every primary workflow action is wired to UI, API, and durable state or visible setup-required fallback"] : []),
@@ -234,7 +235,7 @@ function buildPromptAppSpecContract(args: {
   };
 }
 
-function inferMarketingPages(prompt: string, args: { fullStack: boolean; localService: boolean; hasExplicitPrompt: boolean }): Array<{ path: string; title: string }> {
+function inferMarketingPages(prompt: string, args: { fullStack: boolean; localService: boolean; hasExplicitPrompt: boolean; contractorSite: boolean }): Array<{ path: string; title: string }> {
   if (args.fullStack) return [];
   const text = prompt.toLowerCase();
   const asksForFullSite = /\b(full|multi[- ]page|complete|entire)\b/.test(text)
@@ -242,6 +243,10 @@ function inferMarketingPages(prompt: string, args: { fullStack: boolean; localSe
     || /\b(services?|industries|case studies|proof|process|pricing|packages?|resources?|blog|contact|service areas?|locations?|gallery|portfolio)\b/.test(text);
   if (!args.localService && !args.hasExplicitPrompt && !asksForFullSite) return [];
   if (!args.localService && !asksForFullSite) return [];
+
+  if (args.contractorSite) {
+    return inferContractorSitePages(prompt);
+  }
 
   const pages: Array<{ path: string; title: string }> = [];
   const add = (path: string, title: string) => pages.push({ path, title });
@@ -268,6 +273,144 @@ function inferMarketingPages(prompt: string, args: { fullStack: boolean; localSe
   add("/contact", "Contact");
 
   return uniquePages(pages);
+}
+
+function isContractorMarketingPrompt(prompt: string): boolean {
+  return /\b(contractor|construction|home service|trade|trades|roof|roofing|remodel|remodeling|plumb|plumbing|electric|electrical|hvac|concrete|landscap|painting|flooring|deck|patio|gutter|siding|window|estimate|quote)\b/i.test(prompt);
+}
+
+function isContractorSitePrompt(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  if (/\b(marketing|agency|lead gen|lead generation|seo|advertising|website cleanup|growth help)\b/.test(text)
+    && /\b(for|serving|helps?)\s+(contractors?|roofers?|remodelers?|trades?)\b/.test(text)) {
+    return false;
+  }
+  return /\b(?:roofing|roofers?|remodel(?:ing|ers?)?|plumbing|plumbers?|electrical|electricians?|hvac|concrete|landscaping|painting|flooring|general contractor|contractor|construction|home service|trade|trades)\b/.test(text)
+    && /\b(?:site|website|service area|service areas|city pages?|near me|quote|estimate|inspection|company|business)\b/.test(text);
+}
+
+function inferContractorSitePages(prompt: string): Array<{ path: string; title: string }> {
+  const pages: Array<{ path: string; title: string }> = [];
+  const add = (path: string, title: string) => pages.push({ path, title });
+  const services = inferContractorServices(prompt);
+  const cities = inferContractorCities(prompt);
+
+  add("/services", "Services");
+  for (const service of services) add(`/services/${service.slug}`, service.title);
+  add("/process", "Process");
+  add("/about", "About");
+  add("/service-areas", "Service Areas");
+  add("/service-area", "Service Area");
+  for (const city of cities) add(`/service-areas/${city.slug}`, city.title);
+  add("/projects", "Projects");
+  add("/gallery", "Gallery");
+  add("/reviews", "Reviews");
+  add("/faq", "FAQ");
+  add("/contact", "Contact");
+  add("/privacy", "Privacy Policy");
+  add("/terms", "Terms");
+
+  return uniquePages(pages);
+}
+
+function inferContractorServices(prompt: string): Array<{ slug: string; title: string }> {
+  const text = prompt.toLowerCase();
+  if (/\b(roof|roofing|roofer)\b/.test(text)) {
+    return [
+      { slug: "roof-replacement", title: "Roof Replacement" },
+      { slug: "roof-repair", title: "Roof Repair" },
+      { slug: "storm-damage-restoration", title: "Storm Damage Restoration" },
+      { slug: "roof-inspections", title: "Roof Inspections" },
+      { slug: "gutter-installation", title: "Gutter Installation" },
+      { slug: "metal-roofing", title: "Metal Roofing" },
+    ];
+  }
+  if (/\b(hvac|air conditioning|furnace|heat pump)\b/.test(text)) {
+    return [
+      { slug: "ac-repair", title: "AC Repair" },
+      { slug: "ac-installation", title: "AC Installation" },
+      { slug: "heating-repair", title: "Heating Repair" },
+      { slug: "furnace-installation", title: "Furnace Installation" },
+      { slug: "heat-pumps", title: "Heat Pumps" },
+      { slug: "maintenance", title: "Maintenance" },
+    ];
+  }
+  if (/\b(plumb|plumbing)\b/.test(text)) {
+    return [
+      { slug: "leak-repair", title: "Leak Repair" },
+      { slug: "drain-cleaning", title: "Drain Cleaning" },
+      { slug: "water-heaters", title: "Water Heaters" },
+      { slug: "sewer-line-repair", title: "Sewer Line Repair" },
+      { slug: "fixture-installation", title: "Fixture Installation" },
+      { slug: "repiping", title: "Repiping" },
+    ];
+  }
+  if (/\b(electric|electrical|electrician)\b/.test(text)) {
+    return [
+      { slug: "panel-upgrades", title: "Panel Upgrades" },
+      { slug: "lighting-installation", title: "Lighting Installation" },
+      { slug: "outlet-switch-repair", title: "Outlet and Switch Repair" },
+      { slug: "rewiring", title: "Rewiring" },
+      { slug: "ev-chargers", title: "EV Chargers" },
+      { slug: "generator-installation", title: "Generator Installation" },
+    ];
+  }
+  if (/\b(concrete|flatwork|driveway|patio|sidewalk)\b/.test(text)) {
+    return [
+      { slug: "driveways", title: "Driveways" },
+      { slug: "patios", title: "Patios" },
+      { slug: "sidewalks", title: "Sidewalks" },
+      { slug: "slabs-foundations", title: "Slabs and Foundations" },
+      { slug: "decorative-concrete", title: "Decorative Concrete" },
+      { slug: "concrete-repair", title: "Concrete Repair" },
+    ];
+  }
+  if (/\b(landscap|lawn|hardscap|irrigation)\b/.test(text)) {
+    return [
+      { slug: "landscape-design", title: "Landscape Design" },
+      { slug: "lawn-care", title: "Lawn Care" },
+      { slug: "hardscaping", title: "Hardscaping" },
+      { slug: "irrigation", title: "Irrigation" },
+      { slug: "drainage-solutions", title: "Drainage Solutions" },
+      { slug: "outdoor-living", title: "Outdoor Living" },
+    ];
+  }
+  return [
+    { slug: "kitchen-remodeling", title: "Kitchen Remodeling" },
+    { slug: "bathroom-remodeling", title: "Bathroom Remodeling" },
+    { slug: "whole-home-remodeling", title: "Whole-Home Remodeling" },
+    { slug: "home-additions", title: "Home Additions" },
+    { slug: "exterior-remodeling", title: "Exterior Remodeling" },
+    { slug: "decks-patios-porches", title: "Decks, Patios, and Porches" },
+  ];
+}
+
+function inferContractorCities(prompt: string): Array<{ slug: string; title: string }> {
+  const text = prompt.toLowerCase();
+  if (/\btulsa\b/.test(text)) {
+    return ["Tulsa", "Broken Arrow", "Owasso", "Bixby", "Jenks", "Sand Springs", "Sapulpa", "Claremore"].map(cityPage);
+  }
+  if (/\boklahoma city\b|\bokc\b/.test(text)) {
+    return ["Oklahoma City", "Edmond", "Yukon", "Moore", "Norman", "Bethany", "Mustang", "Midwest City"].map(cityPage);
+  }
+  if (/\boswego\b/.test(text)) {
+    return ["Oswego", "Parsons", "Chetopa", "Altamont", "Columbus", "Baxter Springs", "Miami", "Joplin"].map(cityPage);
+  }
+  if (/\bjoplin\b/.test(text)) {
+    return ["Joplin", "Webb City", "Carl Junction", "Carthage", "Neosho", "Galena", "Pittsburg", "Miami"].map(cityPage);
+  }
+  if (/\bpittsburg\b/.test(text)) {
+    return ["Pittsburg", "Frontenac", "Girard", "Arma", "Mulberry", "Parsons", "Joplin", "Fort Scott"].map(cityPage);
+  }
+  return ["Primary Service Area", "North Service Area", "South Service Area", "East Service Area", "West Service Area", "Nearby Communities"].map(cityPage);
+}
+
+function cityPage(title: string): { slug: string; title: string } {
+  return { slug: slugifySegment(title), title };
+}
+
+function slugifySegment(value: string): string {
+  return value.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 function inferProductWorkflow(prompt: string, fullStack: boolean): { appType: string; pages: Array<{ path: string; title: string }>; features: string[]; workflow?: NonNullable<AppSpecContract["workflows"]>[number] } {

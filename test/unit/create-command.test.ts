@@ -500,10 +500,10 @@ describe("create command templates", () => {
       expect(result.ok).toBe(true);
       expect(result.data.template).toBe("web-static");
       expect(result.data.seoProfile).toBe("local-service");
-      expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/process", "/about", "/service-area", "/gallery", "/contact"]));
-      expect(paths.length).toBeGreaterThanOrEqual(7);
+      expect(paths).toEqual(expect.arrayContaining(["/", "/services", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/process", "/about", "/service-areas", "/service-areas/oklahoma-city", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"]));
+      expect(paths.length).toBeGreaterThanOrEqual(25);
       expect(state.appSpec.successCriteria).toEqual(expect.arrayContaining([
-        "Local-service contractor sites include real service pages, process, about, gallery/project proof, service-area, and contact routes without homepage fallbacks",
+        "Contractor/local-service sites follow contractor-site-autonomous-build: complete route map, service pages, city pages, reviews/FAQ/contact/privacy, sitemap/robots, and honest no-fake-claims copy",
         "Lead/contact forms are either wired to a real API with matching fields or replaced with honest email/phone CTAs",
       ]));
       expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
