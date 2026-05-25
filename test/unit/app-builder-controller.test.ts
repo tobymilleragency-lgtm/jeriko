@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { buildProjectState, readProjectState, writeProjectState } from "../../src/cli/commands/dev/project-state.js";
-import { initializeAppBuilderRun, recordAppBuilderPhase, recordAppBuilderVerificationFailure, resolveAppBuilderRepairAction } from "../../src/cli/commands/dev/app-builder-controller.js";
+import { initializeAppBuilderRun, recordAppBuilderPhase, recordAppBuilderVerificationFailure, resolveAppBuilderRepairAction, runAppBuilderControlledRepair } from "../../src/cli/commands/dev/app-builder-controller.js";
 
 describe("app-builder controller", () => {
   it("initializes executable phase state from the appBuilderPlan", () => {
@@ -69,6 +69,77 @@ describe("app-builder controller", () => {
       }));
       expect(run.phases.find((phase) => phase.id === "repair")?.status).toBe("blocked");
       expect(readProjectState(dir)?.appBuilderRun?.failures.at(-1)?.output).toContain("Missing premium conversion modules");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("performs a bounded repair cycle, reruns verification, and records visible repair state", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-builder-controller-cycle-"));
+    try {
+      writeProjectState(dir, buildProjectState({ name: "contractor-site", template: "web-static", profile: "web-static", prompt: "Build a contractor website with services and service areas", seoProfile: "local-service" }));
+      initializeAppBuilderRun(dir, { trigger: "create" });
+      const repairTasks: any[] = [];
+      let verifyCalls = 0;
+
+      const result = await runAppBuilderControlledRepair(dir, {
+        maxRepairAttempts: 2,
+        verify: async () => {
+          verifyCalls += 1;
+          if (verifyCalls === 1) {
+            return { ok: false, failedGate: { name: "premium_marketing_site_scan", output: "Missing premium conversion modules" } };
+          }
+          return { ok: true, output: "VERIFY_OK" };
+        },
+        repair: async (task) => {
+          repairTasks.push(task);
+          return { ok: true, output: "patched premium modules" };
+        },
+      });
+
+      const state = readProjectState(dir);
+      expect(result.ok).toBe(true);
+      expect(result.attempts).toBe(2);
+      expect(repairTasks).toHaveLength(1);
+      expect(repairTasks[0]).toEqual(expect.objectContaining({
+        projectDir: dir,
+        failedGate: "premium_marketing_site_scan",
+        attempt: 1,
+        maxRepairAttempts: 2,
+      }));
+      expect(repairTasks[0].repairAction).toContain("premium");
+      expect(repairTasks[0].prompt).toContain("rerun verify-app");
+      expect(state?.appBuilderRun?.status).toBe("completed");
+      expect(state?.appBuilderRun?.repairAttemptCount).toBe(1);
+      expect(state?.appBuilderRun?.lastVerification).toEqual(expect.objectContaining({ ok: true, attempt: 2 }));
+      expect(state?.appBuilderRun?.activeRepair).toEqual(expect.objectContaining({ status: "completed", failedGate: "premium_marketing_site_scan" }));
+      expect(state?.appBuilderRun?.phases.find((phase) => phase.id === "verify")?.status).toBe("completed");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops after max repair attempts with an exact blocker and persisted failed gate", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-builder-controller-blocked-"));
+    try {
+      writeProjectState(dir, buildProjectState({ name: "inventory-app", template: "web-db-user", profile: "web-db-user", prompt: "Build an inventory scanner app." }));
+      initializeAppBuilderRun(dir, { trigger: "create" });
+
+      const result = await runAppBuilderControlledRepair(dir, {
+        maxRepairAttempts: 1,
+        verify: async () => ({ ok: false, failedGate: { name: "build", output: "TypeScript compile error" } }),
+        repair: async () => ({ ok: true, output: "attempted compiler fix" }),
+      });
+
+      const state = readProjectState(dir);
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_APP_BUILDER_REPAIR_EXHAUSTED");
+      expect(result.blocker).toContain("build");
+      expect(result.blocker).toContain("TypeScript compile error");
+      expect(state?.appBuilderRun?.status).toBe("blocked");
+      expect(state?.appBuilderRun?.repairAttemptCount).toBe(1);
+      expect(state?.appBuilderRun?.lastVerification).toEqual(expect.objectContaining({ ok: false, failedGate: "build" }));
+      expect(state?.appBuilderRun?.activeRepair).toEqual(expect.objectContaining({ status: "blocked", failedGate: "build", attempt: 1 }));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -132,6 +132,7 @@ async function loadBuiltinCommands(): Promise<void> {
   const { command: dev } = await import("./commands/dev/dev.js");
   const { command: deployApp } = await import("./commands/dev/deploy-app.js");
   const { command: verifyApp } = await import("./commands/dev/verify-app.js");
+  const { command: appBuilder } = await import("./commands/dev/app-builder.js");
   const { command: parallel } = await import("./commands/dev/parallel.js");
 
   // Agent
@@ -171,7 +172,7 @@ async function loadBuiltinCommands(): Promise<void> {
     notion, linear, jira, airtable, asana, mailchimp, dropbox,
     connectors,
   ], "integrations");
-  registerAll([code, create, dev, deployApp, verifyApp, parallel], "dev");
+  registerAll([code, create, dev, deployApp, verifyApp, appBuilder, parallel], "dev");
   registerAll([ask, diagnose, memory, discover, prompt, skill, share, provider], "agent");
   registerAll([init, onboard, server, task, setup, update], "automation");
   registerAll([install, trust, uninstall], "plugin");

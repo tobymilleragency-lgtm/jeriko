@@ -37,4 +37,10 @@ describe("dispatcher", () => {
     expect(output).toContain("Unix-first CLI toolkit");
     expect(output).toContain("Commands:");
   });
+
+  it("registers the app-builder controlled repair command", async () => {
+    const { getCommands } = await import("../../src/cli/dispatcher.js");
+    const commands = await getCommands();
+    expect(commands.get("app-builder")?.description).toContain("controlled app-builder repair");
+  });
 });

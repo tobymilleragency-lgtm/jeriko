@@ -73,6 +73,26 @@ export interface AppBuilderFailure {
   recordedAt: string;
 }
 
+export interface AppBuilderLastVerification {
+  ok: boolean;
+  attempt: number;
+  completedAt: string;
+  failedGate?: string;
+  output?: string;
+}
+
+export interface AppBuilderActiveRepair {
+  status: "pending" | "in_progress" | "completed" | "blocked";
+  attempt: number;
+  maxRepairAttempts: number;
+  failedGate: string;
+  repairAction: string;
+  prompt: string;
+  startedAt: string;
+  completedAt?: string;
+  output?: string;
+}
+
 export interface AppBuilderRun {
   status: AppBuilderRunStatus;
   trigger: string;
@@ -82,6 +102,9 @@ export interface AppBuilderRun {
   mandatorySkillsLoaded: string[];
   phases: AppBuilderPhaseRun[];
   failures: AppBuilderFailure[];
+  repairAttemptCount?: number;
+  lastVerification?: AppBuilderLastVerification;
+  activeRepair?: AppBuilderActiveRepair;
 }
 
 export interface ProjectState {
