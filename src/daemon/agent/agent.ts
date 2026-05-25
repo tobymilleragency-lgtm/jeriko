@@ -806,11 +806,21 @@ function isVerificationOnlyRound(toolCalls: ToolCall[]): boolean {
       const parsed = JSON.parse(toolCall.arguments);
       const command = typeof parsed.command === "string" ? parsed.command : "";
       return /\b(pnpm|npm|yarn|bun)\s+run\s+(check|build|test|lint)\b/.test(command)
-        || /\b(tsc\s+--noEmit|vite\s+build)\b/.test(command);
+        || /\b(tsc\s+--noEmit|vite\s+build)\b/.test(command)
+        || isTargetIdentityVerificationCommand(command);
     } catch {
       return false;
     }
   });
+}
+
+function isTargetIdentityVerificationCommand(command: string): boolean {
+  const normalized = command.replace(/\s+/g, " ").trim();
+  return /\bpwd\b/.test(normalized)
+    && /\bbasename\b/.test(normalized)
+    && /package\.json/.test(normalized)
+    && /\.name\b/.test(normalized)
+    && !/\b(rm|mv|cp|git|pnpm|npm|bun|yarn)\b/.test(normalized);
 }
 
 function isStatusOnlyRound(toolCalls: ToolCall[]): boolean {

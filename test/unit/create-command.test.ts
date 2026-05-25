@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { applyCrawlerPrerenderSupport, command as createCommand, repairGeneratedProject, replaceTemplatePlaceholders } from "../../src/cli/commands/dev/create.js";
+import { applyCrawlerPrerenderSupport, command as createCommand, repairGeneratedProject, replaceTemplatePlaceholders, sanitizeStaticWebProject } from "../../src/cli/commands/dev/create.js";
 import { scanPremiumMarketingSiteQuality, scanPublicBuilderMetaCopy } from "../../src/cli/commands/dev/verify-app.js";
 import { detectDevCommand, parseDevInvocation } from "../../src/cli/commands/dev/dev.js";
 import { buildProjectState } from "../../src/cli/commands/dev/project-state.js";
@@ -131,6 +131,34 @@ describe("create command templates", () => {
       expect(pkg.devDependencies["@builder.io/vite-plugin-jsx-loc"]).toBeUndefined();
       expect(pkg.devDependencies["vite-plugin-jeriko-runtime"]).toBeUndefined();
       expect(fs.readFileSync(path.join(dir, "vite.config.ts"), "utf8")).toContain("jerikoDebug");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the Jeriko debug collector out of production builds during static repair", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-static-debug-build-"));
+    try {
+      fs.writeFileSync(path.join(dir, "template.json"), JSON.stringify({ files: { "client/src/pages/Home.tsx": "Example Page" } }));
+      fs.writeFileSync(path.join(dir, "vite.config.ts"), `import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import path from "node:path";
+import { defineConfig } from "vite";
+import jerikoDebug from "./vite-plugin-jeriko-debug";
+
+export default defineConfig({
+  plugins: [react(), tailwindcss(), jerikoDebug()],
+  resolve: { alias: { "@": path.resolve(import.meta.dirname, "client", "src") } },
+});
+`);
+
+      const actions = sanitizeStaticWebProject(dir);
+      const viteConfig = fs.readFileSync(path.join(dir, "vite.config.ts"), "utf8");
+
+      expect(actions).toEqual(expect.arrayContaining(["limited_static_debug_plugin_to_dev_server", "removed_template_metadata_residue"]));
+      expect(viteConfig).toContain("command === \"serve\" ? jerikoDebug() : null");
+      expect(viteConfig).toContain("defineConfig(({ command }) => ({");
+      expect(fs.existsSync(path.join(dir, "template.json"))).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

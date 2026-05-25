@@ -839,7 +839,20 @@ export function sanitizeStaticWebProject(dir: string): string[] {
     if (/vitePluginManusRuntime|vite-plugin-jeriko-runtime|jsxLocPlugin|@builder\.io\/vite-plugin-jsx-loc|manuspre\.computer|manus\.computer|manusvm\.computer/.test(current)) {
       writeFileSync(viteConfigPath, STATIC_WEB_VITE_CONFIG);
       actions.push("rewrote_static_vite_config_without_manus_runtime");
+    } else if (/jerikoDebug\s*\(\s*\)/.test(current) && !/command\s*===\s*["']serve["']/.test(current)) {
+      const repaired = current
+        .replace(/export\s+default\s+defineConfig\s*\(\s*\{/, "export default defineConfig(({ command }) => ({")
+        .replace(/plugins:\s*\[react\(\),\s*tailwindcss\(\),\s*jerikoDebug\(\)\]/, 'plugins: [react(), tailwindcss(), command === "serve" ? jerikoDebug() : null].filter(Boolean)')
+        .replace(/\}\s*\)\s*;\s*$/, "}));\n");
+      writeFileSync(viteConfigPath, repaired);
+      actions.push("limited_static_debug_plugin_to_dev_server");
     }
+  }
+
+  const staleTemplateJsonPath = join(dir, "template.json");
+  if (existsSync(staleTemplateJsonPath)) {
+    rmSync(staleTemplateJsonPath, { force: true });
+    actions.push("removed_template_metadata_residue");
   }
 
   const debugPluginPath = join(dir, "vite-plugin-jeriko-debug.ts");

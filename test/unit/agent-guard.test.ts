@@ -69,6 +69,17 @@ describe("Repeated tool-call guard", () => {
     expect(guard(round.map((call) => ({ ...call, id: "b" })))).toBeNull();
     expect(guard(round.map((call) => ({ ...call, id: "c" })))).toBeNull();
   });
+
+  test("does not stop app-factory target identity checks as repeated no-progress rounds", () => {
+    const guard = createToolRoundRepeatGuard(3);
+    const round = [
+      { id: "a", name: "bash", arguments: JSON.stringify({ command: "pwd && basename /home/toby/.jeriko/projects/valhalla-construction && node -p \"require('/home/toby/.jeriko/projects/valhalla-construction/package.json').name\"", cwd: "/home/toby/.jeriko/projects/valhalla-construction" }) },
+    ];
+
+    expect(guard(round)).toBeNull();
+    expect(guard(round.map((call) => ({ ...call, id: "b" })))).toBeNull();
+    expect(guard(round.map((call) => ({ ...call, id: "c" })))).toBeNull();
+  });
 });
 
 describe("Agent prompt quality rules", () => {
