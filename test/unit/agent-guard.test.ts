@@ -97,6 +97,13 @@ describe("Agent prompt quality rules", () => {
     expect(prompt).toContain("premium_marketing_site_scan");
     expect(prompt).toContain("from-prompt");
   });
+
+  test("requires operator build discipline skills before generated app work", () => {
+    const prompt = readFileSync("AGENT.md", "utf-8");
+    expect(prompt).toContain("load `operator-build-discipline` with `use_skill` before editing");
+    expect(prompt).toContain("load `operator-build-discipline` and `contractor-site-autonomous-build`");
+    expect(prompt).toContain("checkpoint → persistent local preview → report");
+  });
 });
 
 describe("Final report detection", () => {

@@ -24,6 +24,8 @@ screenshots/
 skills/*
 !skills/launch-readiness/
 !skills/launch-readiness/**
+!skills/operator-build-discipline/
+!skills/operator-build-discipline/**
 skills-lock.json
 *.log
 

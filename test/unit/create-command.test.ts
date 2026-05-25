@@ -47,6 +47,7 @@ describe("create command templates", () => {
     expect(state.verification.requiredGates).toContain("premium_marketing_site_scan");
     expect(state.verification.requiredGates).toContain("public_builder_meta_scan");
     expect(state.appSpec?.features).toEqual(expect.arrayContaining(["multi-page marketing site", "conversion-focused contact path", "customer-ready marketing content", "premium contractor conversion system"]));
+    expect(state.appSpec?.successCriteria).toContain("Operator build discipline followed: target lock, plan, real implementation, verify_app, checkpoint, persistent local preview, and exact blocker reporting");
     expect(state.appSpec?.successCriteria).toContain("Every appSpec page is implemented as a routable page, not collapsed into a single landing page");
 
     const templateApp = fs.readFileSync(path.join(repoRoot, "templates", "webdev", "web-static", "client", "src", "App.tsx"), "utf8");

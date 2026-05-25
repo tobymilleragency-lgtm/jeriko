@@ -220,6 +220,7 @@ function buildPromptAppSpecContract(args: {
     successCriteria: [
       "Full required verify-app gate passes",
       "Generated app matches this app spec contract",
+      "Operator build discipline followed: target lock, plan, real implementation, verify_app, checkpoint, persistent local preview, and exact blocker reporting",
       "No forbidden integrations appear unless explicitly allowed in this spec",
       ...(hasMultiPageMarketing ? ["Every appSpec page is implemented as a routable page, not collapsed into a single landing page"] : []),
       ...(hasMultiPageMarketing ? [contractorMarketing
