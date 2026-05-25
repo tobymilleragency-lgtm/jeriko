@@ -972,6 +972,7 @@ interface CapturedVerificationState {
   appType: string;
   appFeatures: string[];
   appPages: string[];
+  targetMismatch: string;
   completedActions: string[];
   notDone: string[];
 }
@@ -1038,9 +1039,10 @@ function getCapturedVerificationState(messages: DriverMessage[]): CapturedVerifi
   const checkpoint = checkpointHash ? `${checkpointHash}${checkpointMessage ? ` — ${checkpointMessage}` : ""}` : "";
 
   const completedActions = buildCompletedActions(parsedToolResults, verifyAppGates, changedFilesSummary, checkpoint, checkPassed, buildPassed);
-  const notDone = buildNotDoneList(verifyAppGates, latestVerify, checkPassed, buildPassed, localUrls);
+  const targetMismatch = detectProjectDirectoryMismatch(projectName, projectDirectory);
+  const notDone = buildNotDoneList(verifyAppGates, latestVerify, checkPassed, buildPassed, localUrls, targetMismatch);
 
-  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, generatedCopyBlocker, changedFilesSummary, checkpoint, localUrls, verifyAppGates, projectName, projectDirectory, appType, appFeatures, appPages, completedActions, notDone };
+  return { checkPassed, buildPassed, noChangedFiles, codeIntegrityTriggered, generatedCopyBlocker, changedFilesSummary, checkpoint, localUrls, verifyAppGates, projectName, projectDirectory, appType, appFeatures, appPages, targetMismatch, completedActions, notDone };
 }
 
 function parseToolResultJson(text: string): Record<string, any> | null {
@@ -1138,10 +1140,18 @@ function inferDirectoryFromToolTexts(toolTexts: string[]): string {
   return "";
 }
 
+function detectProjectDirectoryMismatch(projectName: string, projectDirectory: string): string {
+  if (!projectName || !projectDirectory) return "";
+  const dirName = projectDirectory.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  if (!dirName || dirName === projectName) return "";
+  return `PROJECT/DIRECTORY MISMATCH: captured project '${projectName}' but directory basename is '${dirName}' (${projectDirectory}). Treat this run as not trustworthy until the target is reconciled.`;
+}
+
 function buildAppSummaryLines(state: CapturedVerificationState): string[] {
   const lines: string[] = [];
   if (state.projectName) lines.push(`- project: ${state.projectName}`);
   if (state.projectDirectory) lines.push(`- directory: ${state.projectDirectory}`);
+  if (state.targetMismatch) lines.push(`- target guard: ${state.targetMismatch}`);
   if (state.appType) lines.push(`- type: ${state.appType}`);
   if (state.appFeatures.length > 0) lines.push(`- features: ${state.appFeatures.join("; ")}`);
   if (state.appPages.length > 0) lines.push(`- pages/routes: ${state.appPages.join("; ")}`);
@@ -1204,8 +1214,10 @@ function buildNotDoneList(
   checkPassed: boolean,
   buildPassed: boolean,
   localUrls: string[],
+  targetMismatch = "",
 ): string[] {
   const items: string[] = [];
+  if (targetMismatch) items.push(targetMismatch);
   if (!checkPassed) items.push("pnpm check / TypeScript was not proven passing in captured output");
   if (!buildPassed) items.push("production build was not proven passing in captured output");
   if (gates.length === 0) {

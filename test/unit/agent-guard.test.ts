@@ -172,6 +172,20 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("start_route failed: port 3002 is already in use");
   });
 
+  test("flags mismatched captured project and directory in forced recaps", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: JSON.stringify({ ok: true, data: { directory: "/home/toby/.jeriko/projects/valhalla-construction", project: "brothers-remodeling-okc", gates: [
+        { name: "check", ok: true },
+        { name: "build", ok: true },
+      ] } }) },
+    ], "Model stream stopped before Jeriko could complete a normal final response.");
+
+    expect(summary).toContain("PROJECT/DIRECTORY MISMATCH");
+    expect(summary).toContain("brothers-remodeling-okc");
+    expect(summary).toContain("valhalla-construction");
+    expect(summary).toContain("Treat this run as not trustworthy");
+  });
+
   test("includes generated-copy block guidance in forced recaps", () => {
     const summary = buildNoProgressStopSummary([
       { role: "tool", content: JSON.stringify({
