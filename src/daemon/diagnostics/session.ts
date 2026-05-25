@@ -173,6 +173,80 @@ export function detectWorkspaceTarget(cwd: string, searchRoot = homedir()): Reco
   };
 }
 
+function buildAppBuilderStatus(cwd: string, projectState: ReturnType<typeof readProjectState>, isLocalGitRepo: boolean): Record<string, unknown> | null {
+  const run = projectState?.appBuilderRun;
+  if (!run) return null;
+  const currentPhase = run.phases.find((phase) => phase.id === run.currentPhaseId) ?? null;
+  const latestFailure = run.failures.at(-1);
+  const failedGate = run.activeRepair?.failedGate ?? run.lastVerification?.failedGate ?? latestFailure?.failedGate ?? null;
+  const repairAction = run.activeRepair?.repairAction ?? latestFailure?.repairAction ?? null;
+  const maxRepairAttempts = run.activeRepair?.maxRepairAttempts ?? null;
+  const previewUrl = extractFirstUrl([
+    ...run.phases.flatMap((phase) => phase.evidence),
+    run.activeRepair?.output ?? "",
+    run.lastVerification?.output ?? "",
+  ]);
+  const checkpoint = latestCheckpoint(cwd, isLocalGitRepo);
+  return {
+    status: run.status,
+    trigger: run.trigger,
+    currentPhase: currentPhase ? {
+      id: currentPhase.id,
+      status: currentPhase.status,
+      description: currentPhase.description,
+      evidence: currentPhase.evidence,
+      requiredEvidence: currentPhase.requiredEvidence,
+    } : null,
+    phases: run.phases.map((phase) => ({
+      id: phase.id,
+      status: phase.status,
+      evidenceCount: phase.evidence.length,
+      startedAt: phase.startedAt,
+      completedAt: phase.completedAt,
+      blockedAt: phase.blockedAt,
+    })),
+    mandatorySkillsLoaded: run.mandatorySkillsLoaded,
+    failedGate,
+    repairAction,
+    attempts: {
+      repair: run.repairAttemptCount ?? 0,
+      maxRepairAttempts,
+      lastVerification: run.lastVerification?.attempt ?? null,
+    },
+    lastVerification: run.lastVerification ?? null,
+    activeRepair: run.activeRepair ? {
+      status: run.activeRepair.status,
+      attempt: run.activeRepair.attempt,
+      maxRepairAttempts: run.activeRepair.maxRepairAttempts,
+      failedGate: run.activeRepair.failedGate,
+      repairAction: run.activeRepair.repairAction,
+      startedAt: run.activeRepair.startedAt,
+      completedAt: run.activeRepair.completedAt,
+      output: run.activeRepair.output ? truncate(run.activeRepair.output, 700) : undefined,
+    } : null,
+    preview: {
+      captured: Boolean(previewUrl),
+      url: previewUrl,
+    },
+    checkpoint,
+    updatedAt: run.updatedAt,
+  };
+}
+
+function extractFirstUrl(values: string[]): string | null {
+  const combined = values.filter(Boolean).join("\n");
+  const match = combined.match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[\w./?=&%-]*)?/i);
+  return match?.[0] ?? null;
+}
+
+function latestCheckpoint(cwd: string, isLocalGitRepo: boolean): Record<string, unknown> {
+  if (!isLocalGitRepo) return { captured: false, hash: null, message: null };
+  const hash = git(["rev-parse", "--short", "HEAD"], cwd);
+  if (!hash) return { captured: false, hash: null, message: null };
+  const message = git(["log", "-1", "--pretty=%s"], cwd);
+  return { captured: true, hash, message: message || null };
+}
+
 export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<string, unknown> {
   const cwd = resolve(opts.cwd || process.cwd());
   const searchRoot = opts.projectSearchRoot || homedir();
@@ -197,6 +271,7 @@ export function buildWorkspaceStatus(opts: DiagnoseLatestOptions = {}): Record<s
     ok: true,
     cwd,
     projectState,
+    appBuilderStatus: buildAppBuilderStatus(cwd, projectState, isLocalGitRepo),
     workspaceTarget: detectWorkspaceTarget(cwd, searchRoot),
     verificationStatus: assessVerificationStatus(cwd, projectState),
     dependencyStatus: getDependencyStatus(cwd),

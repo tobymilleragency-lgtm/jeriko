@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { spawnSync } from "node:child_process";
 
+import { buildProjectState, writeProjectState } from "../../src/cli/commands/dev/project-state.js";
 import { buildWorkspaceStatus } from "../../src/daemon/diagnostics/session.js";
 
 function git(dir: string, args: string[]) {
@@ -100,6 +101,77 @@ describe("workspace status project-state", () => {
       expect((status.verificationStatus as any).reason).toContain("source fingerprint changed");
       expect((status.verificationStatus as any).currentSourceFingerprint.sha256).toMatch(/^[a-f0-9]{64}$/);
       expect((status.verificationStatus as any).verifiedSourceFingerprint.sha256).toBe("0".repeat(64));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces app-builder run visibility for daemon and UI status panels", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-workspace-app-builder-status-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "repair-visible-app" }));
+      const state = buildProjectState({
+        name: "repair-visible-app",
+        template: "web-static",
+        profile: "web-static",
+        prompt: "Build a contractor website with services and service areas.",
+        seoProfile: "local-service",
+      });
+      writeProjectState(dir, {
+        ...state,
+        appBuilderRun: {
+          status: "blocked",
+          trigger: "app-builder-run",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:03:00.000Z",
+          currentPhaseId: "repair",
+          mandatorySkillsLoaded: ["operator-build-discipline", "contractor-site-autonomous-build"],
+          repairAttemptCount: 2,
+          lastVerification: {
+            ok: false,
+            attempt: 3,
+            completedAt: "2026-01-01T00:03:00.000Z",
+            failedGate: "premium_marketing_site_scan",
+            output: "Missing premium conversion modules",
+          },
+          activeRepair: {
+            status: "blocked",
+            attempt: 2,
+            maxRepairAttempts: 2,
+            failedGate: "premium_marketing_site_scan",
+            repairAction: "Restore premium conversion modules.",
+            prompt: "repair prompt",
+            startedAt: "2026-01-01T00:02:00.000Z",
+            output: "still missing conversion modules",
+          },
+          phases: state.appBuilderPlan!.phases.map((phase) => ({
+            id: phase.id,
+            status: phase.id === "repair" ? "blocked" : phase.id === "verify" ? "completed" : "pending",
+            description: phase.description,
+            requiredEvidence: phase.requiredEvidence,
+            evidence: phase.id === "repair" ? ["failed gate: premium_marketing_site_scan"] : [],
+          })),
+          failures: [{
+            failedGate: "premium_marketing_site_scan",
+            output: "Missing premium conversion modules",
+            repairAction: "Restore premium conversion modules.",
+            recordedAt: "2026-01-01T00:03:00.000Z",
+          }],
+        },
+      });
+
+      const status = buildWorkspaceStatus({ cwd: dir, sessionId: "missing-session" });
+      const appBuilder = status.appBuilderStatus as any;
+
+      expect(appBuilder.status).toBe("blocked");
+      expect(appBuilder.currentPhase.id).toBe("repair");
+      expect(appBuilder.failedGate).toBe("premium_marketing_site_scan");
+      expect(appBuilder.repairAction).toBe("Restore premium conversion modules.");
+      expect(appBuilder.attempts).toEqual({ repair: 2, maxRepairAttempts: 2, lastVerification: 3 });
+      expect(appBuilder.lastVerification).toEqual(expect.objectContaining({ ok: false, failedGate: "premium_marketing_site_scan" }));
+      expect(appBuilder.preview).toEqual(expect.objectContaining({ captured: false, url: null }));
+      expect(appBuilder.checkpoint).toEqual(expect.objectContaining({ captured: false, hash: null }));
+      expect(appBuilder.phases.find((phase: any) => phase.id === "repair")).toEqual(expect.objectContaining({ status: "blocked" }));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
