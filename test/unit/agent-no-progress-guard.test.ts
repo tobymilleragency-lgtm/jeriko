@@ -9,10 +9,14 @@ import {
   buildStuckDiagnosis,
   checkAgentResourceLimit,
   createModelRequestAbortController,
+  hasAppFactoryDoneEvidence,
   hasProductWorkflowEvidence,
   hasProductionDeployEvidence,
   hasRouteBreadthEvidence,
+  isCompletionClaim,
+  isFinalAssistantReport,
   nextStreamChunkWithNoProgressTimeout,
+  requiresAppFactoryVerification,
   requiresProductWorkflowVerification,
   requiresProductionDeployVerification,
   requiresRouteBreadthVerification,
@@ -521,6 +525,61 @@ describe("agent no-progress guard", () => {
       { role: "tool", content: "vercel inspect Ready Aliased https://example.com; production smoke status=200; /api/oauth/google/status OK; /api/oauth/google/start redirect_uri=https://example.com/api/oauth/callback; Google authorize follow reached account chooser without mismatch" },
     ];
     expect(hasProductionDeployEvidence(proved)).toBe(true);
+  });
+
+  it("accepts live production evidence as complete for deploy-only generated app requests", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "now go deploy the app to git and vercel" },
+      { role: "tool", content: "vercel inspect Ready Aliased https://brothers-remodeling-okc.vercel.app; production smoke status=200; deployment ID dpl_123 target production state READY" },
+    ];
+
+    expect(requiresProductionDeployVerification(messages)).toBe(true);
+    expect(hasProductionDeployEvidence(messages)).toBe(true);
+    expect(hasAppFactoryDoneEvidence(messages)).toBe(true);
+  });
+
+  it("accepts raw curl smoke for production alias and deployment URL as complete deploy evidence", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "now go deploy the app to git and vercel" },
+      { role: "tool", content: `--- https://brothers-remodeling-okc.vercel.app/\nhttp_code=200\nbody_bytes=4356\ncontent_check=pass\n--- https://brothers-remodeling-okc.vercel.app/service-area/oklahoma-city\nhttp_code=200\nbody_bytes=10013\ncontent_check=pass\n--- https://brothers-remodeling-53ve36v89-tobymilleragency-1088s-projects.vercel.app/service-area/oklahoma-city\nhttp_code=200\nbody_bytes=10013\ncontent_check=pass` },
+    ];
+
+    expect(requiresProductionDeployVerification(messages)).toBe(true);
+    expect(hasProductionDeployEvidence(messages)).toBe(true);
+    expect(hasAppFactoryDoneEvidence(messages)).toBe(true);
+  });
+
+  it("treats truthful BLOCKED deployment reports as terminal instead of completion claims", () => {
+    const blocked = "BLOCKED — latest Vercel Git deployment for the newest commit exists, but it is still building, so production deploy completion is not yet proven. State: BUILDING. Missing required production evidence.";
+    const messages: DriverMessage[] = [
+      { role: "user", content: "ok redeploy the brother app" },
+      { role: "tool", content: '{"ok":true,"data":{"deployments":[{"uid":"dpl_123","state":"BUILDING","readyState":"BUILDING","url":"brothers-remodeling-abc.vercel.app"}]}}' },
+    ];
+
+    expect(isCompletionClaim(blocked)).toBe(false);
+    expect(isFinalAssistantReport(blocked)).toBe(false);
+    expect(requiresAppFactoryVerification(messages, blocked)).toBe(false);
+  });
+
+  it("treats BLOCKED reports with passing smoke but missing alias/status as terminal", () => {
+    const blocked = "BLOCKED — production smoke now passes, but I still do not have evidence that the latest deployment dpl_31 has finished as READY/PROMOTED or that the alias was assigned to it.";
+    const messages: DriverMessage[] = [
+      { role: "user", content: "ok redeploy the brother app" },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Production deploy work requires deploy_app or equivalent live production evidence before claiming completion." },
+      { role: "tool", content: "--- https://brothers-remodeling-okc.vercel.app/\nhttp_code=200\ncontent_check=pass" },
+    ];
+
+    expect(isCompletionClaim(blocked)).toBe(false);
+    expect(requiresAppFactoryVerification(messages, blocked)).toBe(false);
+  });
+
+  it("does not let internal app-factory gate prompts create their own verification loop", () => {
+    const messages: DriverMessage[] = [
+      { role: "user", content: "hello" },
+      { role: "user", content: "APP_FACTORY_DONE_GATE: Final report blocked. Production deploy work requires deploy_app or equivalent live production evidence before claiming completion." },
+    ];
+
+    expect(requiresAppFactoryVerification(messages, "DONE — production deploy complete and verified.")).toBe(false);
   });
 
   it("does not require production deploy proof when scope explicitly says do not deploy", () => {

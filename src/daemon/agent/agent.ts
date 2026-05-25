@@ -1234,6 +1234,15 @@ export function requiresAppFactoryVerification(messages: DriverMessage[], finalT
 }
 
 export function hasAppFactoryDoneEvidence(messages: DriverMessage[]): boolean {
+  const productionDeployRequested = requiresProductionDeployVerification(messages);
+  if (productionDeployRequested && hasProductionDeployEvidence(messages)) {
+    if (requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages)) return false;
+    if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
+    if (requiresAiScannerVerification(messages) && !hasAiScannerEvidence(messages)) return false;
+    if (requiresProductWorkflowVerification(messages) && !hasProductWorkflowEvidence(messages)) return false;
+    if (requiresPremiumMarketingVerification(messages) && !hasPremiumMarketingEvidence(messages)) return false;
+    return true;
+  }
   if (!hasPassingVerifyApp(messages) || !hasCheckpointEvidence(messages) || !hasLocalhostPreviewEvidence(messages)) return false;
   if (requiresRouteBreadthVerification(messages) && !hasRouteBreadthEvidence(messages)) return false;
   if (requiresContentStructureVerification(messages) && !hasContentStructureEvidence(messages)) return false;
@@ -1380,8 +1389,9 @@ export function hasProductionDeployEvidence(messages: DriverMessage[]): boolean 
     && /"productionUrl"\s*:\s*"https?:\/\//.test(toolText)
     && /"blockers"\s*:\s*\[\s*\]/.test(toolText);
   const hasManualProductionSmoke = /https?:\/\/[^\s"']+/i.test(toolText)
-    && /production(_|\s)?smoke|live production|vercel inspect|aliased/i.test(lower)
-    && /http\/2\s+200|status\s*[:=]\s*200|"status"\s*:\s*200/i.test(toolText);
+    && (/production(_|\s)?smoke|live production|vercel inspect|aliased/i.test(lower)
+      || (/\.vercel\.app/i.test(toolText) && /content_check\s*=\s*pass/i.test(toolText)))
+    && /http\/2\s+200|http_code\s*=\s*200|status\s*[:=]\s*200|"status"\s*:\s*200/i.test(toolText);
   const oauthRequestText = messages
     .map((msg) => messageText(msg))
     .filter((value) => !/APP_FACTORY_DONE_GATE|EXPLICIT_DELIVERABLE_DONE_GATE|NO_PROGRESS_RECOVERY|MODEL_STREAM_NO_PROGRESS_RECOVERY/i.test(value))
@@ -1574,6 +1584,7 @@ export function isFinalAssistantReport(text: string): boolean {
 export function isCompletionClaim(text: string): boolean {
   const normalized = text.toLowerCase().trim();
   if (!normalized) return false;
+  if (/^blocked\b|\b(blocked|blocker|missing required|missing .*evidence|not yet proven|not proven|still incomplete|cannot claim|do not have evidence|failed because|is still building)\b/i.test(normalized)) return false;
   if (/\b(i will|i'll|next i|going to|need to|still need|not done|not complete|working on|in progress)\b/i.test(normalized)) return false;
   return /\b(done|all done|complete|completed|finished|ready|ready for review|built the app|implemented|fixed|verified|shipped|deployed|all set)\b/i.test(normalized);
 }
