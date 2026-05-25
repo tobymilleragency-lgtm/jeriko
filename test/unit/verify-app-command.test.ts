@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -96,6 +96,36 @@ describe("verify-app command", () => {
       `);
 
       expect(scanScaffoldResidue(dir)).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails contractor/local-service sites that bypass Jeriko appSpec contract and ship stale identity/contact defects", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-uncontracted-contractor-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "valhalla-construction",
+        scripts: { check: "echo should-not-run" },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        export default function Home(){return <main>
+          <h1>Alpha Construction Pros</h1>
+          <a href="tel:+162****1234">Call now</a>
+          <p>Request an estimate for roofing, remodeling, and general contracting.</p>
+        </main>}
+      `);
+
+      const issues = scanUncontractedContractorMarketingSite(dir, null);
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start", "--skip-browser"]);
+
+      expect(issues.map((issue) => issue.token)).toContain("missing-app-spec-contract");
+      expect(issues.some((issue) => issue.reason.includes("stale business copy"))).toBe(true);
+      expect(issues.some((issue) => issue.reason.includes("masked, dummy, or placeholder phone"))).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_CONTRACTOR_SITE_CONTRACT");
+      expect(result.gates.map((gate: any) => gate.name)).toEqual(["placeholder_scan", "scaffold_residue_scan", "contractor_site_contract_scan"]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

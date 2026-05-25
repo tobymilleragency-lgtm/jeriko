@@ -237,6 +237,19 @@ export const command: CommandHandler = {
       });
     }
 
+    const uncontractedContractorSite = scanUncontractedContractorMarketingSite(dir, projectState);
+    if (uncontractedContractorSite.length > 0) {
+      gates.push({ name: "contractor_site_contract_scan", ok: false });
+      failWithDetails("Generated contractor/local-service site is missing Jeriko's appSpec contract or contains obvious launch-blocking business identity/contact defects.", {
+        errorCode: "E_CONTRACTOR_SITE_CONTRACT",
+        directory: dir,
+        profile,
+        projectState,
+        contractorSiteIssues: uncontractedContractorSite,
+        gates,
+      });
+    }
+
     const builderMetaCopy = scanPublicBuilderMetaCopy(dir, projectState);
     gates.push({ name: "public_builder_meta_scan", ok: builderMetaCopy.length === 0 });
     if (builderMetaCopy.length > 0) {
@@ -964,6 +977,61 @@ function hasPrimaryHomeNav(sourceText: string): boolean {
     || /<AppLink[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
     || /<Link[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
     || /<a[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText);
+}
+
+export function scanUncontractedContractorMarketingSite(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
+  if (projectState?.appSpec) return [];
+  const sourceText = collectPublicSourceText(dir);
+  if (!sourceText.trim()) return [];
+  const packagePath = join(dir, "package.json");
+  const packageName = existsSync(packagePath) ? safePackageName(readFileSync(packagePath, "utf8")) : "";
+  const combined = `${packageName}\n${sourceText}`;
+  const looksLikeContractorSite = /\b(contractor|construction|roof(?:er|ing)?|remodel(?:er|ing)?|general contracting|home additions?|bathroom|kitchen|deck|outdoor living|quote|estimate|service areas?)\b/i.test(combined);
+  if (!looksLikeContractorSite) return [];
+
+  const issues: AppSpecIssue[] = [];
+  issues.push({
+    file: ".jeriko/project-state.json",
+    line: 0,
+    token: "missing-app-spec-contract",
+    reason: "Generated contractor/local-service sites must carry Jeriko's appSpec contract. Without it, verify_app skips route breadth, premium marketing, brand identity, and no-fake-claims gates.",
+  });
+
+  const packageWords = packageName
+    .split(/[^a-z0-9]+/i)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4 && !/^(site|app|web|static|construction|contractor|remodeling|remodel|build|built)$/.test(word.toLowerCase()));
+  const lowerSource = sourceText.toLowerCase();
+  const missingBrandWords = packageWords.filter((word) => !lowerSource.includes(word.toLowerCase()));
+  if (packageWords.length > 0 && missingBrandWords.length === packageWords.length) {
+    issues.push({
+      file: "package.json",
+      line: 0,
+      token: packageName,
+      reason: `Generated site package/name suggests brand words ${packageWords.join(", ")}, but public source copy does not contain them. This usually means stale business copy from another site/template was shipped.`,
+    });
+  }
+
+  const badPhoneMatch = sourceText.match(/(?:tel:|phone|call)[^\n]{0,80}(?:\*{2,}|x{3,}|555[-.\s]?01\d{2})/i);
+  if (badPhoneMatch) {
+    issues.push({
+      file: "client/src",
+      line: 0,
+      token: badPhoneMatch[0].slice(0, 120),
+      reason: "Launch-ready contractor sites must not ship masked, dummy, or placeholder phone numbers in public CTAs.",
+    });
+  }
+
+  return issues;
+}
+
+function safePackageName(packageJson: string): string {
+  try {
+    const parsed = JSON.parse(packageJson);
+    return typeof parsed?.name === "string" ? parsed.name : "";
+  } catch {
+    return "";
+  }
 }
 
 export function scanPremiumMarketingSiteQuality(dir: string, projectState: ProjectState | null): AppSpecIssue[] {
