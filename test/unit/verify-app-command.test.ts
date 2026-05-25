@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanPublicBuilderMetaCopy, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -123,6 +123,62 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_SCAFFOLD_RESIDUE");
       expect(result.scaffoldResidue.some((hit: any) => hit.token === "Badass")).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects builder SEO/page-architecture language in generated public contractor copy", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-builder-meta-copy-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "valhalla-construction",
+        scripts: { check: "echo should-not-run" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        version: 1,
+        name: "valhalla-construction",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        commands: { check: "echo should-not-run" },
+        routes: { home: "/" },
+        verification: { requiredGates: ["placeholder_scan", "scaffold_residue_scan", "public_builder_meta_scan"] },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          appType: "contractor-local-service-site",
+          prompt: "Build a contractor website for Valhalla Construction in Parsons Kansas",
+          pages: ["/", "/services", "/contact"],
+          features: [],
+          integrations: { allowed: [], forbidden: [] },
+          successCriteria: [],
+        },
+      }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        export default function App(){return <main>
+          <section>
+            <p>Services</p>
+            <h2>Every core construction service has its own SEO page.</h2>
+            <p>Each service page explains common problems, what can be included, and how Zack approaches the estimate conversation.</p>
+          </section>
+          <section>
+            <p>Lead flow system</p>
+            <h2>Built to move real project requests instead of acting like a flat brochure.</h2>
+          </section>
+        </main>}
+      `);
+
+      const hits = scanPublicBuilderMetaCopy(dir);
+      const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start", "--skip-browser"]);
+
+      expect(hits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["builder SEO/crawler copy", "public page-architecture copy", "builder/conversion-system copy"]));
+      expect(result.ok).toBe(false);
+      expect(result.errorCode).toBe("E_PUBLIC_BUILDER_META_COPY");
+      expect(result.builderMetaCopy.length).toBeGreaterThanOrEqual(3);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -617,6 +673,31 @@ describe("verify-app command", () => {
       expect(result.ok).toBe(false);
       expect(result.output).toContain("Sitemap route lacks crawler-visible body content");
       expect(result.output).toContain("/serving/pittsburg-ks");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML scan for large multi-route sites with thin generic duplicate crawler pages", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-thin-duplicate-crawler-routes-"));
+    try {
+      const routes = ["/", "/services", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/contact"];
+      for (const route of routes) {
+        writeCrawlerRoute(dir, route, {
+          title: route.includes("service-areas/") ? "Local Remodeling Contractor" : undefined,
+          body: "Valhalla Construction provides remodeling and repair services. Homeowners can review services, service areas, recent work, client reviews, frequently asked questions, and contact options on this page. Request a free estimate from this crawler-visible page.",
+        });
+      }
+      writeCrawlerSitemap(dir, routes);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("thin crawler-visible body content");
+      expect(result.output).toContain("builder/meta or generic crawler fallback copy");
+      expect(result.output).toContain("duplicates the same visible body");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

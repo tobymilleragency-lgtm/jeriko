@@ -144,6 +144,21 @@ const PUBLIC_BUILDER_META_COPY_PATTERNS: Array<{ pattern: RegExp; token: string;
     reason: "Do not publish builder progress/word-count claims inside generated customer sites.",
   },
   {
+    pattern: /\b(?:SEO|search-engine|crawler|crawlable|sitemap|route|routable|indexed)\s+(?:page|content|coverage|structure|system|route|HTML|signal)s?\b|\b(?:page|route|content)\s+(?:for|to)\s+(?:SEO|search engines|crawlers)\b/i,
+    token: "builder SEO/crawler copy",
+    reason: "Customer-facing contractor copy must sell the contractor's work, not describe SEO/crawler/page architecture.",
+  },
+  {
+    pattern: /\b(?:service|city|service-area|location)\s+pages?\b|\bevery\s+(?:core\s+)?(?:construction\s+)?service\s+has\s+its\s+own\s+page\b|\beach\s+(?:service|city|service-area|location)\s+page\b/i,
+    token: "public page-architecture copy",
+    reason: "Public service copy must describe customer problems and outcomes, not explain that Jeriko built separate service/city pages.",
+  },
+  {
+    pattern: /\b(?:lead\s+flow|lead\s+leak|visitor\s+lands|flat\s+brochure|brochure\s+site|generic\s+contractor\s+page|local\s+SEO\s+system|quote\s+path|estimate\s+request\s+workflow)\b/i,
+    token: "builder/conversion-system copy",
+    reason: "Customer-facing contractor pages must not expose internal marketing-system language such as lead flow, brochure-site comparisons, or quote-path architecture.",
+  },
+  {
     pattern: /\b\d{2,}\s+words?\b/i,
     token: "visible word count",
     reason: "Visible word counts are builder/SEO metadata unless the app is explicitly a writing/editor product.",
@@ -385,8 +400,21 @@ export const command: CommandHandler = {
       });
     }
 
-    const appSpecGatesNeeded = Boolean(projectState?.appSpec) || Boolean(projectState?.verification?.requiredGates?.some((gate) => gate === "app_spec_contract" || gate === "forbidden_integration_scan" || gate === "app_spec_verifier"));
+    const appSpecGatesNeeded = Boolean(projectState?.appSpec) || Boolean(projectState?.verification?.requiredGates?.some((gate) => gate === "app_spec_contract" || gate === "app_builder_control_plan" || gate === "forbidden_integration_scan" || gate === "app_spec_verifier"));
     if (appSpecGatesNeeded) {
+      const appBuilderControlPlanIssues = validateAppBuilderControlPlan(projectState);
+      gates.push({ name: "app_builder_control_plan", ok: appBuilderControlPlanIssues.length === 0 });
+      if (appBuilderControlPlanIssues.length > 0) {
+        failWithDetails("Generated app is missing Jeriko's executable app-builder control plan.", {
+          errorCode: "E_APP_BUILDER_CONTROL_PLAN",
+          directory: dir,
+          profile,
+          projectState,
+          appBuilderControlPlanIssues,
+          gates,
+        });
+      }
+
       const appSpecContractIssues = validateAppSpecContract(projectState);
       gates.push({ name: "app_spec_contract", ok: appSpecContractIssues.length === 0 });
       if (appSpecContractIssues.length > 0) {
@@ -707,6 +735,42 @@ export function getDependencyStatus(dir: string): DependencyStatus {
         : "node_modules missing; run frozen install before check/build so local package binaries (for example tsc/vite) exist."
       : "No package.json detected; dependency install is not required for this directory.",
   };
+}
+
+export function validateAppBuilderControlPlan(projectState: ProjectState | null): AppSpecIssue[] {
+  if (!projectState) return [];
+  const requiresPlan = projectState.verification?.requiredGates?.includes("app_builder_control_plan") ?? false;
+  const plan = projectState.appBuilderPlan;
+  if (!plan) {
+    return requiresPlan
+      ? [{ file: "project-state.json", line: 0, token: "appBuilderPlan", reason: "Missing app-builder control plan. Generated apps need executable build phases, mandatory skills, and failed-gate repair routers." }]
+      : [];
+  }
+  const issues: AppSpecIssue[] = [];
+  const phaseIds = Array.isArray(plan.phases) ? plan.phases.map((phase: any) => String(phase?.id ?? "")) : [];
+  const requiredPhases = ["target-lock", "skill-bind", "appspec-plan", "scaffold", "implement-routes", "implement-workflows", "verify", "repair", "checkpoint-preview", "evidence-report"];
+  if (plan.mode !== "controlled-app-build") issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mode", reason: "App-builder control plan mode must be controlled-app-build." });
+  if (!Array.isArray(plan.mandatorySkills) || !plan.mandatorySkills.includes("operator-build-discipline")) {
+    issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "App-builder control plan must bind operator-build-discipline before implementation." });
+  }
+  if (isContractorLikeProjectState(projectState) && !plan.mandatorySkills?.includes("contractor-site-autonomous-build")) {
+    issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "Contractor/local-service sites must bind contractor-site-autonomous-build before implementation." });
+  }
+  for (const phase of requiredPhases) {
+    if (!phaseIds.includes(phase)) issues.push({ file: "project-state.json", line: 0, token: `appBuilderPlan.phase:${phase}`, reason: `Missing app-builder phase: ${phase}.` });
+  }
+  const routers = Array.isArray(plan.repairRouters) ? plan.repairRouters : [];
+  for (const gate of ["app_spec_verifier", "premium_marketing_site_scan", "public_builder_meta_scan", "workflow_contract", "primary_action_wiring", "crawler_html", "build"]) {
+    if (!routers.some((router: any) => router?.failedGate === gate && nonEmpty(router?.action))) {
+      issues.push({ file: "project-state.json", line: 0, token: `appBuilderPlan.repairRouters:${gate}`, reason: `Missing failed-gate repair router for ${gate}.` });
+    }
+  }
+  return issues;
+}
+
+function isContractorLikeProjectState(projectState: ProjectState): boolean {
+  const haystack = [projectState.appSpec?.appType, projectState.appSpec?.prompt, ...(projectState.appSpec?.features ?? [])].join(" ");
+  return /contractor|construction|roof|remodel|plumb|electric|hvac|local-service|service area|quote|estimate/i.test(haystack);
 }
 
 export function validateAppSpecContract(projectState: ProjectState | null): AppSpecIssue[] {
@@ -1063,11 +1127,11 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const contractorSite = /contractor|roof|remodel|plumb|electric|hvac|lead|estimate/i.test([spec.prompt, ...(spec.features ?? [])].join(" "));
   const localServiceSite = /local-service|premium-local-service/i.test(String(spec.appType ?? "")) || spec.features?.some((feature) => /local service seo content|service area/i.test(feature));
   const requiredRoutes = contractorSite ? (localServiceSite ? ["/services", "/contact"] : ["/services", "/pricing", "/contact"]) : ["/contact"];
-  const requiredLocalServiceRoutes = contractorSite && localServiceSite ? ["/services", "/process", "/about", "/service-area", "/gallery", "/contact"] : [];
+  const requiredLocalServiceRoutes = contractorSite && localServiceSite ? ["/services", "/process", "/about", "/service-areas", "/gallery", "/contact"] : [];
   const requiredAutonomousContractorRoutes = contractorSite && localServiceSite
     ? ["/services", "/process", "/about", "/service-areas", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"]
     : [];
-  const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(page.path)) : [];
+  const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(typeof page === "string" ? page : page.path)) : [];
   const serviceRoutes = specRoutes.filter((route) => route.startsWith("/services/") && route !== "/services/");
   const cityRoutes = specRoutes.filter((route) => route.startsWith("/service-areas/") && route !== "/service-areas/");
   if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
@@ -1895,6 +1959,7 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
     const sitemap = readFileSync(sitemapPath, "utf8");
     const routes = sitemapRoutes(sitemap);
     checkedRoutes = routes.length;
+    const routeBodyFingerprints = new Map<string, string[]>();
     for (const route of routes) {
       const routeFile = routeHtmlPath(publicDir, route.path);
       if (!existsSync(routeFile)) {
@@ -1902,10 +1967,23 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
         continue;
       }
       const routeHtml = readFileSync(routeFile, "utf8");
-      const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml);
+      const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml, { largeSitemap: routes.length >= 8 });
+      const bodyFingerprint = crawlerBodyFingerprint(routeHtml);
+      if (bodyFingerprint) {
+        const existing = routeBodyFingerprints.get(bodyFingerprint) ?? [];
+        existing.push(route.path);
+        routeBodyFingerprints.set(bodyFingerprint, existing);
+      }
       const trackingAudit = auditLaunchTracking(route.path, routeHtml);
       launchTrackingChecked += trackingAudit.checked;
       issues.push(...routeIssues, ...trackingAudit.issues);
+    }
+    if (routes.length >= 8) {
+      for (const duplicateRoutes of routeBodyFingerprints.values()) {
+        if (duplicateRoutes.length >= 3) {
+          issues.push(`Crawler HTML duplicates the same visible body across ${duplicateRoutes.length} sitemap routes: ${duplicateRoutes.slice(0, 6).join(", ")}. Generated service/city pages need route-specific crawler content, not one generic fallback.`);
+        }
+      }
     }
   }
 
@@ -1974,7 +2052,7 @@ function routeHtmlPath(publicDir: string, routePath: string): string {
   return normalized === "/" ? join(publicDir, "index.html") : join(publicDir, normalized.replace(/^\//, ""), "index.html");
 }
 
-function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string): string[] {
+function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string, options: { largeSitemap?: boolean } = {}): string[] {
   const issues: string[] = [];
   const robots = metaContent(html, "robots");
   if (robots && /\b(noindex|none)\b/i.test(robots)) {
@@ -1996,8 +2074,34 @@ function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string):
   if (!hasCrawlerBody(html)) {
     issues.push(`Sitemap route lacks crawler-visible body content: ${routePath}`);
   }
+  if (options.largeSitemap) {
+    const bodyText = crawlerBodyText(html);
+    const wordCount = (bodyText.match(/\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b/gu) ?? []).length;
+    if (wordCount < 120) {
+      issues.push(`Sitemap route has thin crawler-visible body content: ${routePath} (${wordCount} words). Multi-page contractor/local-service sites need substantial route-specific crawler copy.`);
+    }
+    if (/\b(this page|recent work|client reviews|free estimate|crawler|prerender|route|sitemap|SEO page|service page|city page|lead flow|flat brochure)\b/i.test(bodyText)) {
+      issues.push(`Sitemap route exposes builder/meta or generic crawler fallback copy: ${routePath}`);
+    }
+  }
   issues.push(...auditCrawlerCodeLeaks(routePath, html));
   return issues;
+}
+
+function crawlerBodyText(html: string): string {
+  const rootMatch = html.match(/<div\s+id=["']root["'][^>]*>([\s\S]*?)<\/div>/i);
+  return stripHtml(rootMatch?.[1] ?? html);
+}
+
+function crawlerBodyFingerprint(html: string): string {
+  const bodyText = crawlerBodyText(html)
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/\b(parsons|altamont|oswego|erie|chanute|cherryvale|independence|coffeyville|pittsburg|neodesha|chetopa|girard|columbus|st\.\s*paul)\b/g, "{city}")
+    .replace(/\b(general contracting|remodeling|kitchen remodeling|bathroom remodeling|whole-home remodeling|home additions|exterior remodeling|decks and outdoor living|concrete and flatwork|repairs and punch-list work|light commercial construction)\b/g, "{service}")
+    .replace(/\s+/g, " ")
+    .trim();
+  return bodyText.length >= 80 ? bodyText : "";
 }
 
 function auditCrawlerCodeLeaks(routePath: string, html: string): string[] {

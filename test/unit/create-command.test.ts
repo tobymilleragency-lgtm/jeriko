@@ -57,6 +57,48 @@ describe("create command templates", () => {
     expect(templateApp).toContain('path="/service-area"');
   });
 
+  it("writes an executable app-builder control plan into generated project-state", () => {
+    const state = buildProjectState({
+      name: "Brothers Remodeling OKC",
+      template: "web-static",
+      profile: "web-static",
+      prompt: "Build a complete contractor website for Brothers Remodeling OKC with services, service areas, process, projects, reviews, FAQ, contact, privacy, and terms.",
+      seoProfile: "local-service",
+    });
+
+    expect(state.appBuilderPlan?.mode).toBe("controlled-app-build");
+    expect(state.appBuilderPlan?.mandatorySkills).toEqual(expect.arrayContaining(["operator-build-discipline", "contractor-site-autonomous-build"]));
+    expect(state.appBuilderPlan?.phases.map((phase: any) => phase.id)).toEqual([
+      "target-lock",
+      "skill-bind",
+      "appspec-plan",
+      "scaffold",
+      "implement-routes",
+      "implement-workflows",
+      "verify",
+      "repair",
+      "checkpoint-preview",
+      "evidence-report",
+    ]);
+    expect(state.appBuilderPlan?.repairRouters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ failedGate: "premium_marketing_site_scan", action: expect.stringContaining("premium") }),
+      expect.objectContaining({ failedGate: "app_spec_verifier", action: expect.stringContaining("missing appSpec routes") }),
+      expect.objectContaining({ failedGate: "workflow_contract", action: expect.stringContaining("UI/API/persistence") }),
+    ]));
+    expect(state.verification.requiredGates).toContain("app_builder_control_plan");
+  });
+
+  it("keeps the web-static production starter free of public builder/operator residue", () => {
+    const templateText = [
+      fs.readFileSync(path.join(repoRoot, "templates", "webdev", "web-static", "client", "src", "App.tsx"), "utf8"),
+      fs.readFileSync(path.join(repoRoot, "templates", "webdev", "web-static", "client", "src", "pages", "Home.tsx"), "utf8"),
+    ].join("\n");
+
+    expect(templateText).not.toMatch(/DEMO SYSTEM|Lead-flow path|Visitors see a serious operator|Operator process|Operator standard|crawlable fallback|search engines and assistive technology|SEO page|route page|flat brochure|Premium contractor marketing site starter/i);
+    expect(templateText).toContain("Project Readiness Visual");
+    expect(templateText).toContain("Request a Project Review");
+  });
+
   it("fails premium marketing site quality when a full-site contract is implemented as plain brochureware", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-premium-site-scan-"));
     try {
@@ -560,7 +602,7 @@ export default defineConfig({
       const issues = scanPremiumMarketingSiteQuality(dir, state);
       const tokens = issues.map((issue) => issue.token);
 
-      expect(tokens).toEqual(expect.arrayContaining(["local-service-route:/process", "local-service-route:/about", "local-service-route:/service-area", "local-service-route:/gallery", "fake-lead-form", "placeholder-contact-copy"]));
+      expect(tokens).toEqual(expect.arrayContaining(["local-service-route:/process", "local-service-route:/about", "local-service-route:/service-areas", "local-service-route:/gallery", "fake-lead-form", "placeholder-contact-copy"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

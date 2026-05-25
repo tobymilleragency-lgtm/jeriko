@@ -34,6 +34,24 @@ export interface AppSpecContract {
   successCriteria: string[];
 }
 
+export interface AppBuilderPhase {
+  id: string;
+  description: string;
+  requiredEvidence: string[];
+}
+
+export interface AppBuilderRepairRouter {
+  failedGate: string;
+  action: string;
+}
+
+export interface AppBuilderControlPlan {
+  mode: "controlled-app-build";
+  mandatorySkills: string[];
+  phases: AppBuilderPhase[];
+  repairRouters: AppBuilderRepairRouter[];
+}
+
 export interface ProjectState {
   version: 1;
   name: string;
@@ -42,6 +60,7 @@ export interface ProjectState {
   packageManager: string;
   generatedAt: string;
   appSpec?: AppSpecContract;
+  appBuilderPlan?: AppBuilderControlPlan;
   commands: {
     install?: string;
     check?: string;
@@ -85,6 +104,7 @@ const FINGERPRINT_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", 
 
 export const REQUIRED_APP_FACTORY_GATES = [
   "app_spec_contract",
+  "app_builder_control_plan",
   "placeholder_scan",
   "scaffold_residue_scan",
   "public_builder_meta_scan",
@@ -152,6 +172,7 @@ export function buildProjectState(args: {
     packageManager,
     generatedAt: new Date().toISOString(),
     appSpec: buildAppSpecContract(args),
+    appBuilderPlan: buildAppBuilderControlPlan(args),
     commands: {
       install: "pnpm install --frozen-lockfile --ignore-scripts",
       check: "pnpm run check",
@@ -168,6 +189,46 @@ export function buildProjectState(args: {
         ? [...REQUIRED_APP_FACTORY_GATES, "vercel_api_packaging_scan"]
         : [...REQUIRED_APP_FACTORY_GATES],
     },
+  };
+}
+
+function buildAppBuilderControlPlan(args: {
+  name: string;
+  template: string;
+  profile: AppProfile;
+  prompt?: string;
+  seoProfile?: string;
+}): AppBuilderControlPlan {
+  const prompt = args.prompt ?? args.name;
+  const contractorSite = isContractorSitePrompt(prompt) || args.seoProfile === "local-service";
+  const fullStack = args.profile === "web-db-user";
+  return {
+    mode: "controlled-app-build",
+    mandatorySkills: uniqueStrings([
+      "operator-build-discipline",
+      ...(contractorSite ? ["contractor-site-autonomous-build"] : []),
+    ]),
+    phases: [
+      { id: "target-lock", description: "Confirm target directory, package name, template, and appSpec identity before writing.", requiredEvidence: ["pwd/package name", "project-state path"] },
+      { id: "skill-bind", description: "Load lane-specific skills before implementation work starts.", requiredEvidence: ["use_skill operator-build-discipline", ...(contractorSite ? ["use_skill contractor-site-autonomous-build"] : [])] },
+      { id: "appspec-plan", description: "Convert appSpec pages, workflows, integrations, and success criteria into implementation tasks.", requiredEvidence: ["route/workflow task list"] },
+      { id: "scaffold", description: "Create the starter from the selected template and remove template/demo metadata.", requiredEvidence: ["jeriko create result", "template residue scan"] },
+      { id: "implement-routes", description: "Implement every required appSpec route as a distinct routable page with nav, sitemap, and crawler-visible content.", requiredEvidence: ["ROUTE_BREADTH_OK", "sitemap routes"] },
+      { id: "implement-workflows", description: "Wire primary actions to UI, API, durable state, or explicit setup-required fallback.", requiredEvidence: [fullStack ? "PRODUCT_WORKFLOW_OK or READ_AFTER_WRITE_OK" : "contact/CTA smoke"] },
+      { id: "verify", description: "Run verify_app with install/check/build/start/browser gates.", requiredEvidence: ["verify_app gates"] },
+      { id: "repair", description: "Map any failed gate to a targeted repair action, change files, and rerun verify once.", requiredEvidence: ["failed gate", "repair diff", "rerun verify_app"] },
+      { id: "checkpoint-preview", description: "Save a checkpoint and start a persistent local preview after green verification.", requiredEvidence: ["git checkpoint", "localhost URL"] },
+      { id: "evidence-report", description: "Final report must cite verified gates, changed files, checkpoint, preview URL, and exact blockers if any.", requiredEvidence: ["evidence summary"] },
+    ],
+    repairRouters: [
+      { failedGate: "app_spec_verifier", action: "Implement missing appSpec routes/workflows and update sitemap/navigation before rerunning verify_app." },
+      { failedGate: "premium_marketing_site_scan", action: "Restore premium conversion modules, complete contractor route breadth, remove fake claims/forms, and preserve premium visual direction." },
+      { failedGate: "public_builder_meta_scan", action: "Rewrite public copy to customer-facing business language; remove builder, crawler, route, SEO-page, and operator commentary." },
+      { failedGate: "workflow_contract", action: "Wire required UI/API/persistence workflow pieces or mark exact setup-required blockers visibly." },
+      { failedGate: "primary_action_wiring", action: "Connect visible buttons/forms to handlers, API calls, state changes, or honest disabled/setup-required behavior." },
+      { failedGate: "crawler_html", action: "Generate route-specific prerendered HTML, sitemap, robots, canonical, and substantial visible body copy per route." },
+      { failedGate: "build", action: "Fix the first compiler/bundler error, then rerun the build and verify_app." },
+    ],
   };
 }
 

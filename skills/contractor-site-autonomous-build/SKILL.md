@@ -28,6 +28,20 @@ Forbidden public-copy words and tones:
 - this site
 - site speaks to
 - SEO content
+- SEO page
+- service page
+- city page
+- route
+- crawler
+- crawlable
+- sitemap
+- lead flow
+- lead leak
+- flat brochure
+- generic contractor page
+- local SEO system
+- quote path
+- estimate request workflow
 - word count
 - guide depth
 
@@ -78,6 +92,7 @@ A complete contractor/local-service site must include:
 - If a phone/email is missing, do not create fake masked contact info. Prefer an honest estimate form, but the form must work or clearly be disabled with exact setup needed.
 - Service pages need useful homeowner-facing sections: problems solved, what can be included, process, local considerations, and CTA.
 - City pages must not be thin doorway pages. Each city page needs useful local/service-fit copy.
+- Crawler/prerender HTML must be route-specific. Do not reuse one generic fallback paragraph across services/cities, do not expose words like crawler/page/SEO/sitemap to visitors, and do not publish thin sub-120-word service or city route bodies.
 - Avoid slogans that sound like an internal operator mantra. Public copy should sound like the contractor, not the AI agent.
 
 ## Visual/build rules
