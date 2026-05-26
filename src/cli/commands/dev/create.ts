@@ -275,6 +275,11 @@ export const command: CommandHandler = {
       template = inferTemplateFromPrompt(promptText);
       name = flagStr(parsed, "name", "") || inferProjectNameFromPrompt(promptText);
       inferredFromPrompt = true;
+    } else if (!TEMPLATE_MAP.has(template) && looksLikeNaturalLanguagePrompt(parsed.positional.join(" "))) {
+      promptText = parsed.positional.join(" ");
+      template = inferTemplateFromPrompt(promptText);
+      name = flagStr(parsed, "name", "") || inferProjectNameFromPrompt(promptText);
+      inferredFromPrompt = true;
     } else {
       promptText = flagStr(parsed, "prompt", "");
     }
@@ -573,29 +578,43 @@ function runLoggedCommand(command: string, dir: string, logFile: string): { stat
   }
 }
 
+function looksLikeNaturalLanguagePrompt(value: string): boolean {
+  const text = value.trim().toLowerCase();
+  if (!text.includes(" ")) return false;
+  return /\b(build|create|make|generate|scaffold|launch)\b/.test(text)
+    && /\b(site|website|app|application|portal|dashboard|crm|contractor|business|service|product|workflow)\b/.test(text);
+}
+
 function inferTemplateFromPrompt(prompt: string): string {
   const text = prompt.toLowerCase();
   if (/mobile|native|expo|ios|android|field app/.test(text)) return "app";
-  if (/portal|login|auth|dashboard|account|database|db|user|scanner|scan|resale|inventory|profit/.test(text) || (/\blisting\b/.test(text) && /\b(product|inventory|resale|marketplace|order|seller dashboard)\b/.test(text)) || (/(upload|paste|photo)/.test(text) && /\b(item|cost|price|scan|resale|inventory)\b/.test(text))) return "web-db-user";
+  if (/portal|login|auth|dashboard|account|database|db|user|scanner|scan|resale|inventory|profit|crm|pipeline|records?|estimates?|jobs?|customers?|leads?|workflow|operations|admin/.test(text) || (/\blisting\b/.test(text) && /\b(product|inventory|resale|marketplace|order|seller dashboard)\b/.test(text)) || (/(upload|paste|photo)/.test(text) && /\b(item|cost|price|scan|resale|inventory)\b/.test(text))) return "web-db-user";
   if (/service|contractor|roof|remodel|plumb|electric|hvac|realtor|real estate|realty|brokerage|homes for sale|local|seo|landing|business|company/.test(text)) return "web-static";
   return "web-static";
 }
 
 function applyFullStackProductPromptSupport(dir: string, prompt: string): boolean {
-  if (!/scanner|scan|resale|inventory|listing|profit|upload|paste|photo|item cost/i.test(prompt)) return false;
+  const scannerWorkflow = /scanner|scan|resale|inventory|listing|profit|upload|paste|photo|item cost/i.test(prompt);
+  const genericProductWorkflow = /crm|pipeline|records?|estimates?|jobs?|customers?|leads?|dashboard|workflow|operations|admin|portal/i.test(prompt);
+  if (!scannerWorkflow && !genericProductWorkflow) return false;
   const appPath = join(dir, "client", "src", "App.tsx");
   if (existsSync(appPath)) {
     let app = readFileSync(appPath, "utf8");
-    if (!app.includes("./pages/Scanner")) {
+    if (scannerWorkflow && !app.includes("./pages/Scanner")) {
       app = app.replace('import Home from "./pages/Home";\n', 'import Home from "./pages/Home";\nimport Scanner from "./pages/Scanner";\nimport Inventory from "./pages/Inventory";\n');
       app = app.replace('      <Route path={"/"} component={Home} />\n', '      <Route path={"/"} component={Home} />\n      <Route path={"/scanner"} component={Scanner} />\n      <Route path={"/inventory"} component={Inventory} />\n');
-      writeFileSync(appPath, app);
     }
+    if (genericProductWorkflow && !app.includes("./pages/Dashboard")) {
+      app = app.replace('import Home from "./pages/Home";\n', 'import Home from "./pages/Home";\nimport Dashboard from "./pages/Dashboard";\nimport Intake from "./pages/Intake";\nimport Records from "./pages/Records";\n');
+      app = app.replace('      <Route path={"/"} component={Home} />\n', '      <Route path={"/"} component={Home} />\n      <Route path={"/dashboard"} component={Dashboard} />\n      <Route path={"/intake"} component={Intake} />\n      <Route path={"/records"} component={Records} />\n');
+    }
+    writeFileSync(appPath, app);
   }
 
   const pagesDir = join(dir, "client", "src", "pages");
   mkdirSync(pagesDir, { recursive: true });
-  writeFileSync(join(pagesDir, "Scanner.tsx"), `import { useMemo, useState } from "react";
+  if (scannerWorkflow) {
+    writeFileSync(join(pagesDir, "Scanner.tsx"), `import { useMemo, useState } from "react";
 
 type ScanResult = {
   estimatedSalePrice: number;
@@ -686,20 +705,78 @@ export default function Scanner() {
   </main>;
 }
 `);
-  writeFileSync(join(pagesDir, "Inventory.tsx"), `export default function Inventory() {
+    writeFileSync(join(pagesDir, "Inventory.tsx"), `export default function Inventory() {
   return <main className="mx-auto max-w-5xl space-y-6 p-8"><h1 className="text-3xl font-bold">Inventory</h1><p>Saved scans and resale listings are persisted through the generated API inventory workflow.</p><a href="/scanner">Scan another item</a></main>;
 }
 `);
+  }
+
+  if (genericProductWorkflow) {
+    writeFileSync(join(pagesDir, "Dashboard.tsx"), `export default function Dashboard() {
+  return <main className="mx-auto max-w-6xl space-y-6 p-8"><h1 className="text-3xl font-bold">Operations dashboard</h1><p>Track active leads, job pipeline movement, customer records, and estimates from one authenticated workspace.</p><a href="/intake">Create intake</a><a className="ml-4" href="/records">View records</a></main>;
+}
+`);
+    writeFileSync(join(pagesDir, "Intake.tsx"), `import { useState } from "react";
+
+export default function Intake() {
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  async function submitLead(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    const form = new FormData(event.currentTarget);
+    const payload = Object.fromEntries(form.entries());
+    const response = await fetch("/api/intake", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!response.ok) { setError("Intake save failed"); return; }
+    setSaved(true);
+  }
+  return <main className="mx-auto max-w-4xl space-y-6 p-8"><h1 className="text-3xl font-bold">Lead intake</h1><form className="grid gap-4" onSubmit={(event) => void submitLead(event)}><input name="name" placeholder="Customer name" required /><input name="phone" placeholder="Phone" required /><input name="project" placeholder="Project or job type" required /><button type="submit">Save intake</button></form>{saved ? <p>Lead saved to the pipeline.</p> : null}{error ? <p role="alert">{error}</p> : null}</main>;
+}
+`);
+    writeFileSync(join(pagesDir, "Records.tsx"), `import { useEffect, useState } from "react";
+
+type RecordRow = { id: string; name: string; status: string };
+
+export default function Records() {
+  const [records, setRecords] = useState<RecordRow[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => { void fetch("/api/records").then(async (response) => {
+    if (!response.ok) throw new Error("Records load failed");
+    const data = await response.json();
+    setRecords(data.records ?? []);
+  }).catch((err) => setError(err instanceof Error ? err.message : "Records load failed")); }, []);
+  return <main className="mx-auto max-w-5xl space-y-6 p-8"><h1 className="text-3xl font-bold">Customer records</h1>{error ? <p role="alert">{error}</p> : null}<ul>{records.map((record) => <li key={record.id}>{record.name} — {record.status}</li>)}</ul><a href="/intake">Add another record</a></main>;
+}
+`);
+  }
 
   const apiPath = join(dir, "server", "_core", "api-app.ts");
   if (existsSync(apiPath)) {
-    let api = readFileSync(apiPath, "utf8");
-    if (!api.includes('app.post("/api/scan-item"')) {
-      api = api.replace('  app.get("/api/health", (_req, res) => {\n    res.json({ ok: true });\n  });\n', '  app.get("/api/health", (_req, res) => {\n    res.json({ ok: true });\n  });\n\n  app.post("/api/uploads", (_req, res) => res.json({ ok: true, stored: true }));\n  app.post("/api/scans", (req, res) => res.json({ ok: true, scan: req.body ?? {} }));\n  app.post("/api/scan-item", (req, res) => res.json({ ok: true, result: req.body?.result ?? null }));\n  app.post("/api/inventory", (req, res) => res.json({ ok: true, item: req.body ?? {} }));\n');
-      writeFileSync(apiPath, api);
-    }
+    const routes = [
+      ...(scannerWorkflow ? ['  app.post("/api/uploads", (_req, res) => res.json({ ok: true, stored: true }));', '  app.post("/api/scans", (req, res) => res.json({ ok: true, scan: req.body ?? {} }));', '  app.post("/api/scan-item", (req, res) => res.json({ ok: true, result: req.body?.result ?? null }));', '  app.post("/api/inventory", (req, res) => res.json({ ok: true, item: req.body ?? {} }));'] : []),
+      ...(genericProductWorkflow ? ['  app.get("/api/records", (_req, res) => res.json({ ok: true, records: [{ id: "lead-1", name: "Sample customer", status: "new" }] }));', '  app.post("/api/intake", (req, res) => res.json({ ok: true, lead: { id: "lead-" + Date.now(), ...req.body } }));', '  app.patch("/api/pipeline/:id", (req, res) => res.json({ ok: true, id: req.params.id, updates: req.body ?? {} }));'] : []),
+    ];
+    insertApiRoutes(apiPath, routes);
   }
   return true;
+}
+
+function insertApiRoutes(apiPath: string, routes: string[]): void {
+  if (routes.length === 0) return;
+  let api = readFileSync(apiPath, "utf8");
+  const missingRoutes = routes.filter((route) => {
+    const routeMatch = route.match(/app\.(get|post|patch|put|delete)\("([^"]+)"/);
+    return routeMatch ? !api.includes(`app.${routeMatch[1]}("${routeMatch[2]}"`) : !api.includes(route);
+  });
+  if (missingRoutes.length === 0) return;
+
+  const block = `\n${missingRoutes.join("\n")}\n`;
+  if (api.includes("  registerOAuthRoutes(app);")) {
+    api = api.replace("  registerOAuthRoutes(app);", `${block}\n  registerOAuthRoutes(app);`);
+  } else {
+    api = api.replace("  return app;", `${block}\n  return app;`);
+  }
+  writeFileSync(apiPath, api);
 }
 
 function inferSeoProfileFromPrompt(prompt: string): string {
@@ -921,6 +998,7 @@ export function applyCrawlerPrerenderSupport(dir: string, projectName: string, s
 
   mkdirSync(join(dir, "scripts"), { recursive: true });
   writeWebsiteLaunchKitFiles(dir, projectName, seoProfile);
+  if (seoProfile === "local-service") writeStaticRouteServerScript(dir);
   const scriptPath = join(dir, "scripts", "jeriko-prerender-seo.mjs");
   writeFileSync(scriptPath, buildCrawlerPrerenderScript(projectName, seoProfile));
 
@@ -1033,6 +1111,40 @@ export function trackEmailClick(location: string, payload: EventPayload = {}) {
 }
 `);
   }
+}
+
+function writeStaticRouteServerScript(dir: string): void {
+  const scriptsDir = join(dir, "scripts");
+  mkdirSync(scriptsDir, { recursive: true });
+  const serverPath = join(scriptsDir, "jeriko-static-server.mjs");
+  if (existsSync(serverPath)) return;
+  writeFileSync(serverPath, `import { createServer } from "node:http";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { extname, join, normalize } from "node:path";
+
+const portArg = process.argv.find((arg, index) => process.argv[index - 1] === "--port");
+const port = Number(portArg || process.env.PORT || 4173);
+const root = join(process.cwd(), "dist", "public");
+const types = new Map([[".html", "text/html; charset=utf-8"], [".js", "text/javascript; charset=utf-8"], [".css", "text/css; charset=utf-8"], [".json", "application/json; charset=utf-8"], [".xml", "application/xml; charset=utf-8"], [".txt", "text/plain; charset=utf-8"], [".svg", "image/svg+xml"], [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".webp", "image/webp"]]);
+
+function resolvePath(urlPath) {
+  const clean = normalize(decodeURIComponent(urlPath.split("?")[0] || "/")).replace(/^\\.\\.(?:\\/|$)/, "");
+  const candidates = [join(root, clean), join(root, clean, "index.html")];
+  for (const candidate of candidates) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+  }
+  return join(root, "index.html");
+}
+
+createServer((req, res) => {
+  const file = resolvePath(req.url || "/");
+  const type = types.get(extname(file)) || "application/octet-stream";
+  res.writeHead(200, { "content-type": type });
+  res.end(readFileSync(file));
+}).listen(port, "127.0.0.1", () => {
+  console.log("Jeriko static route server listening on http://127.0.0.1:" + port);
+});
+`);
 }
 
 function buildCrawlerPrerenderScript(projectName: string, seoProfile = "standard"): string {
@@ -1214,6 +1326,7 @@ function renderAnalyticsScripts() {
 }
 
 function extractPageContent(route) {
+  if (siteConfig.seoProfile === "local-service") return localServiceCrawlerContent(route);
   const sourcePath = join(pagesDir, route.source.endsWith(".tsx") ? route.source : \`\${route.source}.tsx\`);
   const text = existsSync(sourcePath) ? readFileSync(sourcePath, "utf8") : (existsSync(appPath) ? readFileSync(appPath, "utf8") : "");
   const candidates = [];
@@ -1226,6 +1339,25 @@ function extractPageContent(route) {
     .slice(0, 80);
   const heading = paragraphs.find((value) => value.length >= 8) || routeLabel(route.path) || projectTitle;
   return { heading, paragraphs: paragraphs.length ? paragraphs : [\`\${projectTitle} content for \${route.path}\`] };
+}
+
+function localServiceCrawlerContent(route) {
+  const label = routeLabel(route.path);
+  const service = route.path.startsWith("/services/");
+  const area = route.path.startsWith("/service-areas/");
+  const heading = route.path === "/" ? \`\${projectTitle} contractor marketing built around real project requests\` : \`\${label} for \${projectTitle}\`;
+  const focus = service
+    ? \`\${label.toLowerCase()} work needs plain explanations, clear next steps, trust proof, and quick estimate requests so homeowners understand what to ask before they call.\`
+    : area
+      ? \`\${projectTitle} helps local crews present work clearly for homeowners around \${label}, with honest coverage details, visible proof, and request steps that do not bury the phone call.\`
+      : \`\${projectTitle} gives contractors a clearer way to explain services, show proof, capture project requests, and follow up before good jobs go cold.\`;
+  const paragraphs = [
+    \`\${focus} The site should speak like a real business, not a software dashboard. It should make the work easy to understand, set expectations for the first conversation, and point visitors toward a call or request form without fake guarantees.\`,
+    \`Every section supports a practical buyer decision: what problem is handled, what kind of project fits, what proof matters, and what happens after a request comes in. Homeowners need confidence before they share their address, photos, budget, and timing. Contractors need enough context to decide whether the job is a fit.\`,
+    \`The strongest version pairs service details with local context, photos or review prompts when available, simple contact choices, and a follow-up plan. If a claim is not verified, the copy stays neutral. If a form is not connected yet, the site says what needs connected instead of pretending live delivery is finished.\`,
+    \`For \${label.toLowerCase()}, the content should help someone compare options, understand common scope questions, and know the next step. That means clear language, no filler, no public builder notes, no hidden setup assumptions, and no promises the business has not supplied.\`,
+  ];
+  return { heading, paragraphs };
 }
 
 function pageTitleFor(route, content) {

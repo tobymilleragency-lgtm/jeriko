@@ -220,6 +220,7 @@ export function buildProjectState(args: {
 }): ProjectState {
   const packageManager = "pnpm";
   const fullStack = args.profile === "web-db-user";
+  const staticLocalService = !fullStack && args.seoProfile === "local-service";
   return {
     version: 1,
     name: args.name,
@@ -233,7 +234,7 @@ export function buildProjectState(args: {
       install: "pnpm install --frozen-lockfile --ignore-scripts",
       check: "pnpm run check",
       build: "pnpm run build",
-      start: fullStack ? "PORT=${PORT} pnpm run start" : "pnpm run preview --port ${PORT} --strictPort",
+      start: fullStack ? "JWT_SECRET=${JWT_SECRET:-jeriko-local-verify-secret} PORT=${PORT} pnpm run start" : staticLocalService ? "node scripts/jeriko-static-server.mjs --port ${PORT}" : "pnpm run preview --port ${PORT} --strictPort",
       dev: "pnpm run dev",
     },
     routes: {
@@ -534,7 +535,35 @@ function slugifySegment(value: string): string {
 function inferProductWorkflow(prompt: string, fullStack: boolean): { appType: string; pages: Array<{ path: string; title: string }>; features: string[]; workflow?: NonNullable<AppSpecContract["workflows"]>[number] } {
   const text = prompt.toLowerCase();
   const scanner = /scanner|scan|resale|flip|inventory|listing|profit|upload|paste|photo/.test(text);
-  if (!fullStack || !scanner) return { appType: fullStack ? "authenticated-web-app" : "marketing-site", pages: [], features: [] };
+  const businessOperations = /crm|pipeline|records?|estimates?|jobs?|customers?|leads?|dashboard|workflow|operations|admin|portal/.test(text);
+  if (!fullStack) return { appType: "marketing-site", pages: [], features: [] };
+  if (!scanner && !businessOperations) return { appType: "authenticated-web-app", pages: [], features: [] };
+
+  if (businessOperations && !scanner) {
+    return {
+      appType: "full-stack-product-app",
+      pages: [
+        { path: "/dashboard", title: "Dashboard" },
+        { path: "/intake", title: "Intake" },
+        { path: "/records", title: "Records" },
+      ],
+      features: [
+        "lead intake",
+        "job pipeline",
+        "customer records",
+        "estimate workflow",
+        "operations dashboard",
+      ],
+      workflow: {
+        id: "business-operations",
+        label: "Business operations workflow",
+        inputs: ["lead", "customer", "project", "estimate", "status"],
+        actions: ["create", "update", "advance", "review"],
+        outputs: ["record", "pipeline status", "estimate", "dashboard summary"],
+        persistence: ["leads", "jobs", "customers", "estimates"],
+      },
+    };
+  }
 
   return {
     appType: "full-stack-product-app",

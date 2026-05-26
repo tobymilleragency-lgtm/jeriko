@@ -731,7 +731,7 @@ export default defineConfig({
       expect(app).toContain("BeforeAfterComparison");
       expect(app).toContain("StickyAuditRail");
       expect(app).toContain("Website Cleanup");
-      expect(app).toContain("Lead System Buildout");
+      expect(app).toContain("Request System Buildout");
       expect(app).toContain("Monthly Growth Help");
       expect(app).toContain("path=\"/services\"");
       expect(app).toContain("path=\"/pricing\"");
@@ -781,6 +781,54 @@ export default defineConfig({
       expect(state.profile).toBe("web-db-user");
       expect(state.appSpec.appType).toBe("full-stack-product-app");
       expect(state.appSpec.workflows[0].id).toBe("resale-scanner");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts direct natural-language create prompts without forcing a template choice", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-direct-prompt-"));
+    const projectDir = path.join(dir, "direct-roofing-site");
+    try {
+      const result = await runCreateCommand(["Build a roofing contractor website in Tulsa with service pages, city pages, reviews, FAQ, and quote calls", "--name", "Direct Roofing", "--dir", projectDir]);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      const paths = state.appSpec.pages.map((page: any) => page.path);
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(result.data.inferredFromPrompt).toBe(true);
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(state.appSpec.prompt).toContain("roofing contractor website");
+      expect(paths).toEqual(expect.arrayContaining(["/services/roof-replacement", "/service-areas/tulsa", "/reviews", "/faq", "/contact"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scaffolds generic full-stack product prompts with usable dashboard, intake, records, and API routes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-generic-product-"));
+    const projectDir = path.join(dir, "jobflow-crm");
+    try {
+      const result = await runCreateCommand(["from-prompt", "Build JobFlow CRM with login, lead intake, job pipeline, customer records, estimates, and dashboard", "--name", "JobFlow CRM", "--dir", projectDir]);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+      const app = fs.readFileSync(path.join(projectDir, "client", "src", "App.tsx"), "utf8");
+      const api = fs.readFileSync(path.join(projectDir, "server", "_core", "api-app.ts"), "utf8");
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-db-user");
+      expect(state.appSpec.appType).toBe("full-stack-product-app");
+      expect(state.appSpec.pages.map((page: any) => page.path)).toEqual(expect.arrayContaining(["/dashboard", "/intake", "/records"]));
+      expect(state.appSpec.workflows[0]).toMatchObject({
+        id: "business-operations",
+        actions: expect.arrayContaining(["create", "update", "advance", "review"]),
+        persistence: expect.arrayContaining(["leads", "jobs", "customers", "estimates"]),
+      });
+      expect(app).toContain('path={"/dashboard"}');
+      expect(app).toContain('path={"/intake"}');
+      expect(app).toContain('path={"/records"}');
+      expect(api).toContain('app.get("/api/records"');
+      expect(api).toContain('app.post("/api/intake"');
+      expect(api).toContain('app.patch("/api/pipeline/:id"');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

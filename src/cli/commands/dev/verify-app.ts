@@ -775,6 +775,7 @@ export function validateAppBuilderControlPlan(projectState: ProjectState | null)
 }
 
 function isContractorLikeProjectState(projectState: ProjectState): boolean {
+  if (projectState.profile !== "web-static") return false;
   const haystack = [projectState.appSpec?.appType, projectState.appSpec?.prompt, ...(projectState.appSpec?.features ?? [])].join(" ");
   return /contractor|construction|roof|remodel|plumb|electric|hvac|local-service|service area|quote|estimate/i.test(haystack);
 }
@@ -1427,6 +1428,8 @@ function routeImplemented(route: string, index: { files: Set<string>; text: stri
     return index.text.includes('path="/"') || index.text.includes("path='/'") || index.text.includes('path: "/"') || index.text.includes("path: '/'");
   }
   const slug = route.replace(/^\//, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase();
+  if (route.startsWith("/services/") && (index.text.includes('path="/services/:slug"') || index.text.includes("path='/services/:slug'") || index.text.includes('path: "/services/:slug"') || index.text.includes("path: '/services/:slug'"))) return true;
+  if (route.startsWith("/service-areas/") && (index.text.includes('path="/service-areas/:slug"') || index.text.includes("path='/service-areas/:slug'") || index.text.includes('path: "/service-areas/:slug"') || index.text.includes("path: '/service-areas/:slug'"))) return true;
   for (const file of index.files) {
     if (file.includes(`/${slug}.`) || file.includes(`/${slug}/`) || file.includes(`/${slug.replace(/-/g, "")}.`)) return true;
   }
