@@ -776,6 +776,90 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails premium contractor sites with duplicate sections, empty route links, slug drift, and internal setup copy", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-polish-gates-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { useLocation } from "wouter";
+        function AppLink(props:any){ return <a href={props.href} aria-label={props["aria-label"]}>{props.children}</a>; }
+        function LeadOpsVisual(){ return null; }
+        function LeadFlowLineSection(){ return null; }
+        function LeadLeakAudit(){ return null; }
+        function BeforeAfterComparison(){ return null; }
+        function StickyAuditRail(){ return null; }
+        function Home(){ return <main>
+          <nav><AppLink href="/">Home</AppLink><AppLink href="/services">Services</AppLink><AppLink href="/service-areas">Service Areas</AppLink></nav>
+          <section><h2>Home Inspiration</h2><p>Kitchen deck exterior examples for homeowners.</p></section>
+          <section><h2>Home Inspiration</h2><p>Kitchen deck exterior examples for homeowners.</p></section>
+          <AppLink href="/services/general-contracting"></AppLink>
+          <AppLink href="/services/repairs-final-detail-work">Repairs and Home Repair Work</AppLink>
+          <p>Estimate request saved for your property. Zack can follow up when contact handling is configured.</p>
+          <p>Availability depends on project project, schedule, and travel distance.</p>
+        </main>; }
+        function Services(){ return <main><h1>Services</h1></main>; }
+        function ServicePage(){ return <main><h1>Service detail</h1></main>; }
+        function ServiceAreas(){ return <main><h1>Service Areas</h1></main>; }
+        function CityPage(){ return <main><h1>City detail</h1></main>; }
+        function Contact(){ return <form><input name="name" /><button>Send Estimate Request</button></form>; }
+        export default function App(){ useLocation(); return <><Home /><Services /><ServicePage /><ServiceAreas /><CityPage /><Contact /></>; }
+      `);
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html data-jeriko-prerender="true"><head><title>Valhalla</title><meta name="description" content="Valhalla contractor site"><link rel="canonical" href="https://example.com/"></head><body style="background:#09090b"><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }, null, 2));
+      fs.mkdirSync(path.join(dir, "client", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "public", "sitemap.xml"), "<urlset></urlset>");
+      fs.writeFileSync(path.join(dir, "client", "public", "robots.txt"), "User-agent: *\nAllow: /\n");
+      const projectState = {
+        version: 1,
+        name: "valhalla-construction",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: { start: "node scripts/jeriko-static-server.mjs --port ${PORT}" },
+        routes: { home: "/", services: "/services", service_areas: "/service-areas", contact: "/contact" },
+        verification: { requiredGates: ["premium_marketing_site_scan"] },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a contractor website for Valhalla Construction with services, service areas, projects, reviews, FAQ, and contact pages",
+          appType: "contractor-local-service-site",
+          pages: ["/", "/services", "/services/general-contracting", "/services/repairs-punch-list-work", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks", "/process", "/about", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"] as any,
+          features: ["service area pages", "estimate request workflow"],
+          integrations: { allowed: [], forbidden: [] },
+          successCriteria: [],
+          services: ["/services/general-contracting", "/services/repairs-punch-list-work"],
+          cities: ["/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks"],
+        },
+      } as any;
+
+      const issues = scanPremiumMarketingSiteQuality(dir, projectState);
+      const tokens = issues.map((issue) => issue.token);
+
+      expect(tokens).toContain("duplicate-public-section");
+      expect(tokens).toContain("empty-accessible-link");
+      expect(tokens).toContain("service-route-slug-drift");
+      expect(tokens).toContain("public-internal-setup-copy");
+      expect(tokens).toContain("copy-typo-repeat");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("flags internal setup language in customer-facing copy", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-internal-copy-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        export default function App(){ return <main><p>Estimate request saved. Zack can follow up when contact handling is configured.</p></main>; }
+      `);
+      const hits = scanPublicBuilderMetaCopy(dir, null);
+      expect(hits.map((hit) => hit.token)).toContain("internal setup/config copy");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails crawler HTML scan when sitemap route canonical points elsewhere", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-canonical-mismatch-"));
     try {

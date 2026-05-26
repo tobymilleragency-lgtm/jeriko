@@ -164,6 +164,11 @@ const PUBLIC_BUILDER_META_COPY_PATTERNS: Array<{ pattern: RegExp; token: string;
     token: "visible word count",
     reason: "Visible word counts are builder/SEO metadata unless the app is explicitly a writing/editor product.",
   },
+  {
+    pattern: /\b(?:when\s+)?(?:contact|lead|email|form|notification|delivery)\s+(?:handling|delivery|routing|handler)\s+is\s+configured\b|\bconfigured\s+(?:later|before launch|when ready)\b|\bsetup\s+required\b/i,
+    token: "internal setup/config copy",
+    reason: "Customer-facing copy must not expose internal setup/configuration caveats; say what happens for the visitor instead.",
+  },
 ];
 const FORBIDDEN_INTEGRATIONS = {
   stripe: [
@@ -1310,6 +1315,50 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
         reason: "Service and city pages must contain useful unique sections/copy; repeated thin page components or title-swap pages are not complete contractor sites.",
       });
     }
+    const duplicateSections = findDuplicatePublicSections(sourceText);
+    if (duplicateSections.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "duplicate-public-section",
+        reason: `Premium contractor sites must not repeat the same visible page section/block. Duplicates: ${duplicateSections.slice(0, 4).join(", ")}.`,
+      });
+    }
+    const emptyLinks = findEmptyAccessibleInternalLinks(sourceText);
+    if (emptyLinks.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "empty-accessible-link",
+        reason: `Every internal link must have visible text or a real aria-label for accessibility and polish. Empty links: ${emptyLinks.slice(0, 6).join(", ")}.`,
+      });
+    }
+    const serviceSlugDrift = findServiceSlugDrift(sourceText, spec);
+    if (serviceSlugDrift.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "service-route-slug-drift",
+        reason: `Rendered service links must match appSpec.services/appSpec.pages exactly; dynamic routes must not hide slug drift. Unknown links: ${serviceSlugDrift.slice(0, 6).join(", ")}.`,
+      });
+    }
+    const repeatedCopyTypos = findRepeatedPublicCopyTypos(dir);
+    if (repeatedCopyTypos.length > 0) {
+      issues.push({
+        file: repeatedCopyTypos[0]?.file ?? "client/src/App.tsx",
+        line: repeatedCopyTypos[0]?.line ?? 0,
+        token: "copy-typo-repeat",
+        reason: `Customer-facing copy contains an obvious repeated-word typo (${repeatedCopyTypos[0]?.token ?? "repeated word"}). Generated sites must proofread text such as 'project project' before passing.`,
+      });
+    }
+    if (/\b(?:when\s+)?(?:contact|lead|email|form|notification|delivery)\s+(?:handling|delivery|routing|handler)\s+is\s+configured\b|\bconfigured\s+(?:later|before launch|when ready)\b|\bsetup\s+required\b/i.test(sourceText)) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "public-internal-setup-copy",
+        reason: "Public contractor copy must not mention internal setup/configuration state; form success and contact copy must be visitor-facing.",
+      });
+    }
   }
   const requireAppToken = (token: string, reason: string) => {
     if (!app.includes(token)) issues.push({ file: "client/src/App.tsx", line: 0, token, reason });
@@ -1387,6 +1436,89 @@ function repeatedShortPageComponent(sourceText: string, names: string[]): boolea
     }
   }
   return false;
+}
+
+function findDuplicatePublicSections(sourceText: string): string[] {
+  const labels = Array.from(sourceText.matchAll(/<h[23][^>]*>\s*([^<>{}`]{8,90})\s*<\/h[23]>/gi))
+    .map((match) => normalizeVisibleLabel(match[1] ?? ""))
+    .filter((label) => label.length >= 8 && !/^(services?|service areas?|company|contact|faq|projects?|about|privacy|terms)$/i.test(label));
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const label of labels) {
+    if (seen.has(label)) duplicates.add(label);
+    seen.add(label);
+  }
+  const sectionBodies = Array.from(sourceText.matchAll(/<section\b[^>]*>([\s\S]{0,1400}?)<\/section>/gi))
+    .map((match) => normalizeVisibleLabel((match[1] ?? "").replace(/<[^>]+>/g, " ")).slice(0, 220))
+    .filter((body) => body.length >= 80);
+  const bodySeen = new Set<string>();
+  for (const body of sectionBodies) {
+    if (bodySeen.has(body)) duplicates.add(body.slice(0, 80));
+    bodySeen.add(body);
+  }
+  return Array.from(duplicates);
+}
+
+function findEmptyAccessibleInternalLinks(sourceText: string): string[] {
+  const hits = new Set<string>();
+  const linkPattern = /<(?:AppLink|a)\b([^>]*)>([\s\S]*?)<\/(?:AppLink|a)>/gi;
+  for (const match of sourceText.matchAll(linkPattern)) {
+    const attrs = match[1] ?? "";
+    const body = match[2] ?? "";
+    const href = attrs.match(/href=\{?["'`]([^"'`}${]+)["'`]\}?/)?.[1] ?? "";
+    if (!href.startsWith("/") || href.includes("${")) continue;
+    const visible = body.replace(/<[^>]+>/g, " ").replace(/\{[^}]*\}/g, " ").trim();
+    const aria = (attrs.match(/aria-label=["'`]([^"'`]+)["'`]/)?.[1] ?? attrs.match(/ariaLabel=["'`]([^"'`]+)["'`]/)?.[1] ?? attrs.match(/ariaLabel=\{`([^`]+)`\}/)?.[1] ?? "").trim();
+    const dynamicVisible = /<Button\b|\{[^}]*\b(?:label|title|name|projectTitle|primary|secondary)\b[^}]*\}/.test(body);
+    if (!visible && !aria && !dynamicVisible) hits.add(href);
+  }
+  return Array.from(hits);
+}
+
+function findServiceSlugDrift(sourceText: string, spec: NonNullable<ProjectState["appSpec"]>): string[] {
+  const allowed = new Set<string>();
+  const addRoute = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const route = normalizeSpecRoute(value);
+    if (route.startsWith("/services/") && route !== "/services/") allowed.add(route);
+  };
+  if (Array.isArray(spec.pages)) spec.pages.forEach((page: any) => addRoute(typeof page === "string" ? page : page?.path));
+  if (Array.isArray((spec as any).services)) (spec as any).services.forEach(addRoute);
+  if (allowed.size === 0) return [];
+  const linked = new Set<string>();
+  for (const match of sourceText.matchAll(/href=\{?["'`]([^"'`}${]+)["'`]\}?/g)) {
+    const href = match[1] ?? "";
+    if (href.startsWith("/services/") && href !== "/services/" && !href.includes("${")) linked.add(href.replace(/\/$/, ""));
+  }
+  return Array.from(linked).filter((href) => !allowed.has(href));
+}
+
+function findRepeatedPublicCopyTypos(dir: string): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  walkTextFiles(dir, (file, content) => {
+    if (!isPublicGeneratedUiSource(dir, file)) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      const visibleish = line
+        .replace(/className=\{?['"`][^'"`]*['"`]\}?/g, " ")
+        .replace(/style=\{\{[\s\S]*?\}\}/g, " ")
+        .replace(/\b(function|const|return|export|import|interface|type|href|path|name|label|title|description)\b/g, " ");
+      const match = visibleish.match(/\b([A-Za-z][A-Za-z'-]{2,})\s+\1\b/i);
+      if (!match) continue;
+      hits.push({ file, line: i + 1, token: match[0], reason: "Customer-facing copy contains an obvious repeated-word typo." });
+    }
+  });
+  return hits;
+}
+
+function normalizeVisibleLabel(value: string): string {
+  return value
+    .replace(/&amp;/g, "and")
+    .replace(/\s+/g, " ")
+    .replace(/[“”"'`]/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 function isProjectMetadataFile(root: string, file: string): boolean {

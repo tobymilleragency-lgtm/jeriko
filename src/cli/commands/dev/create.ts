@@ -1014,11 +1014,17 @@ function writeWebsiteLaunchKitFiles(dir: string, projectName: string, seoProfile
   const srcDir = join(dir, "client", "src");
   const libDir = join(srcDir, "lib");
   const assetsDir = join(srcDir, "assets");
+  const publicDir = join(dir, "client", "public");
   if (!existsSync(srcDir)) return;
   mkdirSync(libDir, { recursive: true });
   mkdirSync(assetsDir, { recursive: true });
+  mkdirSync(publicDir, { recursive: true });
   const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
   const siteConfigPath = join(srcDir, "site.config.ts");
+  const robotsPath = join(publicDir, "robots.txt");
+  const sitemapPath = join(publicDir, "sitemap.xml");
+  if (!existsSync(robotsPath)) writeFileSync(robotsPath, "User-agent: *\nAllow: /\n");
+  if (!existsSync(sitemapPath)) writeFileSync(sitemapPath, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>/</loc></url></urlset>\n`);
   if (!existsSync(siteConfigPath)) {
     writeFileSync(siteConfigPath, `export const siteConfig = {
   name: ${JSON.stringify(projectTitle)},
