@@ -909,6 +909,37 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails premium contractor sites with generic trash animations", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-trash-motion-"));
+    try {
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify(contractorProjectState(), null, 2));
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        function AppLink(){ return null }
+        function LeadOpsVisual(){ return null }
+        function App(){ useLocation(); return <main><nav>Home Service Areas</nav><a href="/services">Services</a><a href="/contact">Call Request Quote</a></main> }
+        const routes = ["/services","/process","/about","/service-areas","/projects","/gallery","/reviews","/faq","/contact","/privacy","/terms","/services/general-contracting","/services/remodeling","/services/kitchens","/services/bathrooms","/service-areas/parsons-ks","/service-areas/oswego-ks","/service-areas/miami-ok"];
+      `);
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html data-jeriko-prerender="true"><head><title>Site</title><meta name="description" content="Contractor"><link rel="canonical" href="https://example.com/"><meta property="og:title" content="Site"><meta property="og:description" content="Contractor"><meta property="og:image" content="/og-image.svg"><meta name="twitter:card" content="summary_large_image"><script type="application/ld+json">{}</script></head><body style="background:#111"></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public" }));
+      fs.writeFileSync(path.join(dir, "styles.css"), `
+        /* WOW upgrade: premium motion */
+        .btn-accent::after { transition: left .55s ease; }
+        .btn-accent:hover::after { left: 160%; }
+        .hero::before { animation: blueprint-drift 26s linear infinite; }
+        .hero-saw-blade { animation: spin-slow 18s linear infinite; }
+        .stage-spark { animation: af-spark 1.8s ease-in-out infinite; }
+      `);
+
+      const issues = scanPremiumMarketingSiteQuality(dir, contractorProjectState());
+
+      expect(issues.some((issue: any) => issue.token === "generic-trash-animation")).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails crawler HTML with duplicate route meta descriptions or missing social preview tags", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-meta-polish-"));
     try {
@@ -1183,6 +1214,43 @@ describe("verify-app command", () => {
       const startGate = result.data.gates.find((gate: any) => gate.name === "start_route");
       expect(startGate.ok).toBe(true);
       expect(startGate.output).toContain('"ok":true');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes requested verification port through shell default start commands", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-port-default-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
+        name: "verify-port-default",
+        scripts: { start: "node server.mjs ${PORT:-4290}" },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify({
+        profile: "web-db-user",
+        commands: { start: "node server.mjs ${PORT:-4290}" },
+        routes: { health: "/api/health" },
+        verification: { requiredGates: [] },
+      }, null, 2));
+      fs.mkdirSync(path.join(dir, "node_modules"));
+      fs.writeFileSync(path.join(dir, "server.mjs"), `
+        import http from 'node:http';
+        const port = Number(process.argv[2] || 0);
+        http.createServer((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, port }));
+        }).listen(port);
+      `);
+      fs.mkdirSync(path.join(dir, "server"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "drizzle.config.ts"), "export default {}\n");
+
+      const result = await runVerifyAppCommand([dir, "--profile", "web-db-user", "--skip-install", "--skip-browser", "--port", "4293"]);
+
+      expect(result.ok).toBe(true);
+      const startGate = result.data.gates.find((gate: any) => gate.name === "start_route");
+      expect(startGate.ok).toBe(true);
+      expect(startGate.output).toContain('"port":4293');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

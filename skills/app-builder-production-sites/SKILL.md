@@ -45,10 +45,12 @@ Required polish checks for production/client sites:
 
 Motion rules:
 - Framer Motion is allowed and already available in the React web templates.
-- Use motion to clarify hierarchy and affordance: entrance reveals, hover lift, active states, drawers, tabs, carousels, counters.
-- Do not use motion to hide weak layout or slow down the page.
+- Use motion only when it improves comprehension or feedback.
+- Prefer restrained fades, small y-offsets, state transitions, and clear form feedback.
+- Contractor/local-service sites must not use generic “wow” motion gimmicks: button shimmer sweeps, moving blueprint/grid/stripe overlays, spinning saw blades/tools, spark particles, floating stage cards, breathing glows, or infinite decorative animations.
+- Do not add motion because the page feels plain. Fix layout, type, imagery, spacing, hierarchy, and proof first.
 - Respect `prefers-reduced-motion`.
-- Keep entrance motion subtle: 120–300ms for UI feedback, 300–700ms for hero/section reveals.
+- Never let motion hide content, delay comprehension, or feel like a theme-park demo.
 - Never animate important text so aggressively that it hurts readability.
 
 ## Design inspiration workflow

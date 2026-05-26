@@ -1369,6 +1369,15 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
         reason: `Production contractor sites must optimize images before passing polish gates. Oversized referenced assets: ${oversizedImages.slice(0, 6).map((hit) => `${hit.ref} (${Math.round(hit.bytes / 1000)}KB)`).join(", ")}.`,
       });
     }
+    const trashMotion = findGenericTrashAnimations(dir);
+    if (trashMotion.length > 0) {
+      issues.push({
+        file: trashMotion[0]?.file ?? "styles.css",
+        line: trashMotion[0]?.line ?? 0,
+        token: "generic-trash-animation",
+        reason: `Premium contractor sites must not ship generic "wow" motion gimmicks: shimmer sweeps, moving blueprint/stripe overlays, spinning saw blades, sparks, floating stage cards, or infinite decorative animations. Offenders: ${trashMotion.slice(0, 6).map((hit) => hit.token).join(", ")}. Use restrained transitions only.`,
+      });
+    }
     if (/\b(?:when\s+)?(?:contact|lead|email|form|notification|delivery)\s+(?:handling|delivery|routing|handler)\s+is\s+configured\b|\bconfigured\s+(?:later|before launch|when ready)\b|\bsetup\s+required\b/i.test(sourceText)) {
       issues.push({
         file: "client/src/App.tsx",
@@ -1546,6 +1555,40 @@ function findAiSmellServiceTaxonomy(sourceText: string): string[] {
     }
   }
   return Array.from(hits);
+}
+
+function findGenericTrashAnimations(dir: string): RealnessHit[] {
+  const hits: RealnessHit[] = [];
+  const patterns: Array<{ token: string; pattern: RegExp; reason: string }> = [
+    { token: "wow-upgrade-motion", pattern: /\bWOW upgrade\b|premium motion|wow factor/i, reason: "Public CSS/comments should not contain generic 'WOW upgrade' motion language." },
+    { token: "button-shimmer-sweep", pattern: /button shimmer|\.btn-[\w-]+::after[\s\S]{0,260}(?:skewX|left:\s*160%|shimmer)/i, reason: "Shimmer sweeps are generic SaaS/AI-template motion, not premium contractor polish." },
+    { token: "moving-blueprint-stripes", pattern: /animation\s*:\s*(?:af-)?blueprint-drift|animation\s*:\s*stripe-drift|repeating-linear-gradient[\s\S]{0,180}animation\s*:/i, reason: "Infinite drifting grid/stripe overlays look templated and distract from real work proof." },
+    { token: "spinning-saw-blade", pattern: /saw-blade|spin-slow|conic-gradient[\s\S]{0,160}animation/i, reason: "Spinning tool icons are gimmicks, not trust-building contractor design." },
+    { token: "animated-sparks", pattern: /stage-spark|af-spark|spark[\s\S]{0,120}animation/i, reason: "Sparkle/spark effects are generic decoration and should not ship on contractor sites." },
+    { token: "floating-stage-card", pattern: /stage-float|frame-float|float-card|animation\s*:\s*[^;]*(?:float|breathe)[^;]*infinite/i, reason: "Floating decorative cards create theme-park motion instead of serious craft polish." },
+    { token: "infinite-decorative-animation", pattern: /animation\s*:[^;]*(?:linear|ease|ease-in-out)[^;]*infinite/i, reason: "Infinite decorative animation is disallowed unless it is a tiny loading/status indicator." },
+  ];
+  walkTextFiles(dir, (file, content) => {
+    const normalized = file.replace(/\\/g, "/");
+    if (normalized.includes("/node_modules/") || normalized.includes("/dist/") || normalized.includes("/.git/")) return;
+    if (!/\.(?:css|scss|tsx?|jsx?|html)$/.test(normalized)) return;
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const windowText = lines.slice(i, Math.min(lines.length, i + 8)).join("\n");
+      for (const { token, pattern, reason } of patterns) {
+        if (pattern.test(windowText)) {
+          hits.push({ file, line: i + 1, token, reason });
+        }
+      }
+    }
+  });
+  const seen = new Set<string>();
+  return hits.filter((hit) => {
+    const key = `${hit.file}:${hit.token}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function findOversizedReferencedImages(dir: string, sourceText: string, maxBytes: number): Array<{ ref: string; file: string; bytes: number }> {
@@ -2592,7 +2635,7 @@ function runGate(name: string, command: string, dir: string): VerificationGate {
 }
 
 async function runStartRouteGate(dir: string, profile: AppProfile, port: string, route: string, projectState?: ProjectState | null): Promise<VerificationGate> {
-  const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
+  const command = projectState?.commands?.start ? applyVerificationPort(projectState.commands.start, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "start_route", ok: false, output: "No package start/preview script found." };
   const portPreflight = await verifyPortAvailable(port);
   const url = `http://127.0.0.1:${port}${route.startsWith("/") ? route : `/${route}`}`;
@@ -2605,7 +2648,7 @@ async function runStartRouteGate(dir: string, profile: AppProfile, port: string,
     cwd: dir,
     shell: true,
     detached: true,
-    env: process.env,
+    env: { ...process.env, PORT: port },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -2650,7 +2693,7 @@ async function runStartRouteGate(dir: string, profile: AppProfile, port: string,
 
 
 async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: string, route: string, projectState?: ProjectState | null): Promise<VerificationGate> {
-  const command = projectState?.commands?.start ? projectState.commands.start.replace(/\$\{PORT\}/g, port) : detectStartCommand(dir, profile, port);
+  const command = projectState?.commands?.start ? applyVerificationPort(projectState.commands.start, port) : detectStartCommand(dir, profile, port);
   if (!command) return { name: "browser_smoke", ok: false, output: "No package start/preview script found." };
   const executablePath = findBrowserExecutable();
   if (!executablePath) {
@@ -2667,7 +2710,7 @@ async function runBrowserSmokeGate(dir: string, profile: AppProfile, port: strin
     cwd: dir,
     shell: true,
     detached: true,
-    env: process.env,
+    env: { ...process.env, PORT: port },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -2927,6 +2970,12 @@ function detectSupabaseAuthCallbackFromEnv(dir: string): string | null {
     }
   }
   return null;
+}
+
+function applyVerificationPort(command: string, port: string): string {
+  return command
+    .replace(/\$\{PORT(?::-[^}]*)?\}/g, port)
+    .replace(/\$PORT\b/g, port);
 }
 
 function detectStartCommand(dir: string, profile: AppProfile, port: string): string | null {
