@@ -757,11 +757,19 @@ export function buildModelStreamNoProgressRecoveryPrompt(diagnosis: string, befo
 // Jeriko's app-builder flow where the model called `jeriko create --help &&
 // jeriko dev --help` dozens of times instead of building the app. Keep this
 // local to one run so legitimate future turns are unaffected.
-export function createToolRepeatGuard(maxConsecutive = 3): (toolCall: ToolCall) => string | null {
+export function createToolRepeatGuard(maxConsecutive = 3, maxTotalWithoutMutation = 3): (toolCall: ToolCall) => string | null {
   let lastSignature = "";
   let consecutive = 0;
+  const seenSinceMutation = new Map<string, number>();
 
   return (toolCall: ToolCall) => {
+    if (isLikelyMutationToolCall(toolCall)) {
+      seenSinceMutation.clear();
+      lastSignature = "";
+      consecutive = 0;
+      return null;
+    }
+
     const signature = toolCallSignature(toolCall);
     if (signature === lastSignature) {
       consecutive += 1;
@@ -770,11 +778,32 @@ export function createToolRepeatGuard(maxConsecutive = 3): (toolCall: ToolCall) 
       consecutive = 1;
     }
 
+    const total = (seenSinceMutation.get(signature) ?? 0) + 1;
+    seenSinceMutation.set(signature, total);
+
     if (consecutive >= maxConsecutive) {
-      return `Repeated identical tool call blocked after ${consecutive} attempts: ${summarizeToolCall(toolCall)}`;
+      return `Repeated identical tool call blocked after ${consecutive} consecutive attempts: ${summarizeToolCall(toolCall)}`;
+    }
+    if (total >= maxTotalWithoutMutation) {
+      return `Repeated identical tool call blocked after ${total} attempts without a code change: ${summarizeToolCall(toolCall)}`;
     }
     return null;
   };
+}
+
+function isLikelyMutationToolCall(toolCall: ToolCall): boolean {
+  if (toolCall.name === "write_file" || toolCall.name === "edit_file") return true;
+  if (toolCall.name !== "bash") return false;
+  try {
+    const parsed = JSON.parse(toolCall.arguments);
+    const command = typeof parsed.command === "string" ? parsed.command : "";
+    if (!command) return false;
+    if (/\b(pnpm|npm|yarn|bun)\s+run\s+(check|build|test|lint)\b/.test(command)) return false;
+    if (/\b(tsc\s+--noEmit|vite\s+build|jeriko\s+verify-app|verify_app)\b/.test(command)) return false;
+    return /\b(apply_patch|python3?\s+-\s*<<|node\s+-\s*<<|perl\s+-0pi|tee\s+|cat\s+>)/.test(command);
+  } catch {
+    return false;
+  }
 }
 
 // Repeated rounds of successful read/check calls are also no-progress loops.

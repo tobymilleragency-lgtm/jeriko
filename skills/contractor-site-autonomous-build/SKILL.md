@@ -93,6 +93,8 @@ A complete contractor/local-service site must include:
 - Service pages need useful homeowner-facing sections: problems solved, what can be included, process, local considerations, and CTA.
 - City pages must not be thin doorway pages. Each city page needs useful local/service-fit copy.
 - Crawler/prerender HTML must be route-specific. Do not reuse one generic fallback paragraph across services/cities, do not expose words like crawler/page/SEO/sitemap to visitors, and do not publish thin sub-120-word service or city route bodies.
+- Every prerendered route in a multi-page contractor/local-service sitemap must include crawler-visible JSON-LD (`LocalBusiness`, `HomeAndConstructionBusiness`, `GeneralContractor`, `Service`, `FAQPage`, or `BreadcrumbList`). React-only metadata is not enough.
+- The local/start verification command for prerendered multi-route sites must serve `dist/public/<route>/index.html` for nested routes. Do not use `vite preview` as the appBuilder verification/start command for these sites; it can return the root SPA shell for `/services/*` and hide broken service/city pages.
 - Avoid slogans that sound like an internal operator mantra. Public copy should sound like the contractor, not the AI agent.
 
 ## Visual/build rules

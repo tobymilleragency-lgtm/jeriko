@@ -9,6 +9,7 @@ import {
   buildStuckDiagnosis,
   checkAgentResourceLimit,
   createModelRequestAbortController,
+  createToolRepeatGuard,
   hasAppFactoryDoneEvidence,
   hasProductWorkflowEvidence,
   hasProductionDeployEvidence,
@@ -144,6 +145,22 @@ describe("agent no-progress guard", () => {
 
     runAbort.abort("operator-stop");
     expect(recoveryRequest.signal.aborted).toBe(true);
+  });
+
+  it("blocks repeated nonconsecutive identical tool calls until a mutation happens", () => {
+    const guard = createToolRepeatGuard(3, 3);
+    const readCall = { id: "read-1", name: "read_file", arguments: JSON.stringify({ file_path: "/tmp/App.tsx", offset: 0, limit: 80 }) };
+    const statusCall = { id: "status-1", name: "workspace_status", arguments: JSON.stringify({ cwd: "/tmp/app" }) };
+
+    expect(guard(readCall)).toBeNull();
+    expect(guard(statusCall)).toBeNull();
+    expect(guard({ ...readCall, id: "read-2" })).toBeNull();
+    expect(guard({ ...statusCall, id: "status-2" })).toBeNull();
+    expect(guard({ ...readCall, id: "read-3" })).toContain("without a code change");
+
+    expect(guard({ id: "edit-1", name: "edit_file", arguments: JSON.stringify({ file_path: "/tmp/App.tsx", old: "a", new: "b" }) })).toBeNull();
+    expect(guard({ ...readCall, id: "read-after-edit-1" })).toBeNull();
+    expect(guard({ ...readCall, id: "read-after-edit-2" })).toBeNull();
   });
 
   it("recovers from a silent model stream with a fresh non-aborted request", async () => {

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanPublicBuilderMetaCopy, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanPublicBuilderMetaCopy, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanPremiumMarketingSiteQuality, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
@@ -698,6 +698,79 @@ describe("verify-app command", () => {
       expect(result.output).toContain("thin crawler-visible body content");
       expect(result.output).toContain("builder/meta or generic crawler fallback copy");
       expect(result.output).toContain("duplicates the same visible body");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML scan for large contractor sites whose sitemap routes lack JSON-LD schema", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-crawler-schema-"));
+    try {
+      const routes = ["/", "/services", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/contact"];
+      for (const route of routes) {
+        const label = route === "/" ? "home" : route.replace(/[^a-z0-9]+/gi, " ").trim();
+        const usefulBody = `<h1>${label} construction planning</h1>` + Array.from({ length: 140 }, (_, i) => `<span>${label.replace(/\s+/g, "")}${i}</span>`).join(" ");
+        writeCrawlerRoute(dir, route, { title: `${label} construction planning`, body: usefulBody });
+      }
+      writeCrawlerSitemap(dir, routes);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.checked).toBe(true);
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("lacks LocalBusiness/Service JSON-LD structured data");
+      expect(result.output).toContain("/services/kitchen-remodeling");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails premium contractor sites that verify with vite preview instead of a static route server", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-static-route-server-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { useLocation } from "wouter";
+        function AppLink(){ return null; }
+        function LeadOpsVisual(){ return null; }
+        function LeadFlowLineSection(){ return null; }
+        function LeadLeakAudit(){ return null; }
+        function BeforeAfterComparison(){ return null; }
+        function StickyAuditRail(){ return null; }
+        export default function App(){ useLocation(); return <main><nav><a>Home</a><a>Service Areas</a></nav></main>; }
+      `);
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html><head><title>Valhalla</title><meta name="description" content="Valhalla contractor site"><link rel="canonical" href="https://example.com/"></head><body style="background: #09090b" data-jeriko-prerender="true"><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }, null, 2));
+      fs.mkdirSync(path.join(dir, "client", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "public", "sitemap.xml"), "<urlset></urlset>");
+      fs.writeFileSync(path.join(dir, "client", "public", "robots.txt"), "User-agent: *\nAllow: /\n");
+      const projectState = {
+        version: 1,
+        name: "valhalla-construction",
+        template: "web-static",
+        profile: "web-static",
+        packageManager: "pnpm",
+        generatedAt: new Date().toISOString(),
+        commands: { start: "pnpm run preview --port ${PORT} --strictPort" },
+        routes: { home: "/" },
+        verification: { requiredGates: ["premium_marketing_site_scan"] },
+        appSpec: {
+          version: 1,
+          source: "prompt",
+          prompt: "Build a contractor website for Valhalla Construction with services, service areas, projects, reviews, FAQ, and contact pages",
+          appType: "contractor-local-service-site",
+          pages: ["/", "/services", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/services/decks", "/services/repairs", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks", "/process", "/about", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"] as any,
+          features: ["service area pages", "estimate request workflow"],
+          integrations: { allowed: [], forbidden: [] },
+          successCriteria: [],
+        },
+      } as any;
+
+      const issues = scanPremiumMarketingSiteQuality(dir, projectState);
+
+      expect(issues.map((issue) => issue.token)).toContain("static-route-server");
+      expect(issues.find((issue) => issue.token === "static-route-server")?.reason).toContain("vite preview");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

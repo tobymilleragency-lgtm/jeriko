@@ -1140,6 +1140,14 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const specRoutes = Array.isArray(spec.pages) ? spec.pages.map((page) => normalizeSpecRoute(typeof page === "string" ? page : page.path)) : [];
   const serviceRoutes = specRoutes.filter((route) => route.startsWith("/services/") && route !== "/services/");
   const cityRoutes = specRoutes.filter((route) => route.startsWith("/service-areas/") && route !== "/service-areas/");
+  if (contractorSite && localServiceSite && /\bvite\s+preview\b|\bpnpm\s+run\s+preview\b|\bnpm\s+run\s+preview\b|\byarn\s+preview\b/i.test(projectState.commands?.start ?? "")) {
+    issues.push({
+      file: "project-state.json",
+      line: 0,
+      token: "static-route-server",
+      reason: "Multi-route prerendered contractor/local-service sites must verify with a static route server that serves dist/public/<route>/index.html. vite preview has proven to return the root SPA shell for nested routes, hiding broken route-specific crawler pages.",
+    });
+  }
   if (specRoutes.length < 5 || requiredRoutes.some((route) => !specRoutes.includes(route))) {
     issues.push({ file: "project-state.json", line: 0, token: "appSpec.pages", reason: contractorSite
       ? (localServiceSite
@@ -2089,6 +2097,9 @@ function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string, 
     if (/\b(this page|recent work|client reviews|free estimate|crawler|prerender|route|sitemap|SEO page|service page|city page|lead flow|flat brochure)\b/i.test(bodyText)) {
       issues.push(`Sitemap route exposes builder/meta or generic crawler fallback copy: ${routePath}`);
     }
+    if (!hasUsableLocalServiceJsonLd(html)) {
+      issues.push(`Sitemap route lacks LocalBusiness/Service JSON-LD structured data: ${routePath}. Multi-page contractor/local-service pages need crawler-visible schema, not just React-only metadata.`);
+    }
   }
   issues.push(...auditCrawlerCodeLeaks(routePath, html));
   return issues;
@@ -2108,6 +2119,12 @@ function crawlerBodyFingerprint(html: string): string {
     .replace(/\s+/g, " ")
     .trim();
   return bodyText.length >= 80 ? bodyText : "";
+}
+
+function hasUsableLocalServiceJsonLd(html: string): boolean {
+  const blocks = html.match(/<script\s+[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
+  if (blocks.length === 0) return false;
+  return blocks.some((block) => /"@type"\s*:\s*"(?:LocalBusiness|HomeAndConstructionBusiness|GeneralContractor|Service|FAQPage|BreadcrumbList)"/i.test(block));
 }
 
 function auditCrawlerCodeLeaks(routePath: string, html: string): string[] {
