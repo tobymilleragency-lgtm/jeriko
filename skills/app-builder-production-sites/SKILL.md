@@ -41,6 +41,7 @@ Required polish checks for production/client sites:
 - Accessibility basics: every link has text or aria-label, forms have labels, focus states are visible, images have useful alt text.
 - SEO/social basics: unique title/meta per route, canonical, sitemap, robots, Open Graph/Twitter tags, route-specific schema.
 - Image discipline: no broken images; optimize size; use responsive dimensions; no giant 1MB+ card images unless justified.
+- Photo uniqueness: do not reuse the same photo across hero/cards/services/projects/galleries inside one site. Query-string crops, renamed duplicate files, and the same remote stock/photo URL still count as reuse. Each visible section/card needs its own section-specific asset or no image at all.
 
 Motion rules:
 - Framer Motion is allowed and already available in the React web templates.

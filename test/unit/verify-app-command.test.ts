@@ -28,6 +28,22 @@ describe("verify-app command", () => {
     }
   });
 
+  it("detects repeated photos even when reused inside one card array line or with query strings", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-repeated-photo-line-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "src", "pages", "Home.tsx"), `
+        const projects = [{src:"/images/kitchen.jpg?crop=hero", title:"Kitchen"}, {src:"/images/kitchen.jpg?crop=card", title:"Bath"}, {src:"https://images.unsplash.com/photo-123?w=900", title:"Deck"}, {src:"https://images.unsplash.com/photo-123?w=1200", title:"Concrete"}];
+        export function Home(){return <main>{projects.map((project) => <section><img src={project.src} alt={project.title} /></section>)}</main>}
+      `);
+      const hits = scanDuplicateSectionImages(dir);
+      expect(hits.some((hit) => hit.token.includes("/images/kitchen.jpg"))).toBe(true);
+      expect(hits.some((hit) => hit.token.includes("images.unsplash.com/photo-123"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("detects duplicate section image files even when filenames differ", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-duplicate-image-files-"));
     try {

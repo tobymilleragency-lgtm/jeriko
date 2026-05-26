@@ -1039,9 +1039,10 @@ function writeWebsiteLaunchKitFiles(dir: string, projectName: string, seoProfile
   googleSiteVerification: import.meta.env.VITE_GOOGLE_SITE_VERIFICATION || "",
   bingSiteVerification: import.meta.env.VITE_BING_SITE_VERIFICATION || "",
   imagePrompts: {
-    hero: ${JSON.stringify(`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition.`)},
-    service: ${JSON.stringify(`Generate a realistic service photo for ${projectTitle}: close-up of professional work, clean background, no logos, no text.`)},
-    og: ${JSON.stringify(`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text.`)},
+    hero: ${JSON.stringify(`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition. This must be unique to the hero and not reused in cards, services, projects, or galleries.`)},
+    service: ${JSON.stringify(`Generate separate realistic service photos for ${projectTitle}: one distinct image per service type, different scene/composition/trade detail for each card, clean background, no logos, no text. Do not crop or rename the same photo for multiple cards.`)},
+    project: ${JSON.stringify(`Generate distinct project/gallery photos for ${projectTitle}: each project card needs a unique job-site scene and different visual subject. Do not reuse a hero/service/photo with query-string crops.`)},
+    og: ${JSON.stringify(`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text. This is only for social metadata and should not be reused as visible site photography.`)},
   },
 };
 
@@ -1053,16 +1054,19 @@ export type SiteConfig = typeof siteConfig;
   if (!existsSync(imagePromptPath)) {
     writeFileSync(imagePromptPath, `# Website image/photo generation prompts
 
-Use Jeriko's \`generate_image\` tool to create production assets for this site. Call it with an app-local \`output_path\` such as \`client/public/images/hero.png\`, then reference that file from the page and metadata. Do not publish these prompts as customer-facing copy.
+Use Jeriko's \`generate_image\` tool to create production assets for this site. Call it with an app-local \`output_path\` such as \`client/public/images/hero.png\`, then reference that file from the page and metadata. Do not publish these prompts as customer-facing copy. Never reuse the same photo inside one site; hero, service cards, project cards, and gallery items need distinct files and distinct visual subjects.
 
 ## Hero photo
-${`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition.`}
+${`Generate a realistic hero photo for ${projectTitle}: a trustworthy business team at work, natural light, no text overlay, website-safe composition. Unique hero asset only; do not reuse in cards or gallery.`}
 
-## Service photo
-${`Generate a realistic service photo for ${projectTitle}: close-up of professional work, clean background, no logos, no text.`}
+## Service photos
+${`Generate one distinct realistic service photo per service type for ${projectTitle}: different scene/composition/trade detail for each visible card, clean background, no logos, no text. Do not crop or rename the same source image for multiple services.`}
+
+## Project/gallery photos
+${`Generate distinct project/gallery photos for ${projectTitle}: each card needs a different job-site scene and visual subject. Do not reuse hero or service photos.`}
 
 ## Open Graph image
-${`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text.`}
+${`Generate a branded open graph image for ${projectTitle}: professional website preview, bold negative space, no readable text. Metadata use only; not visible site photography.`}
 `);
   }
 

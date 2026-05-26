@@ -2023,7 +2023,8 @@ export function scanVercelApiPackaging(dir: string, profile: AppProfile = inferA
 }
 
 export function scanDuplicateSectionImages(dir: string): RealnessHit[] {
-  const refs = new Map<string, Array<{ file: string; line: number }>>();
+  const refs = new Map<string, Array<{ ref: string; file: string; line: number; occurrence: number }>>();
+  let occurrence = 0;
   walkTextFiles(dir, (file, content) => {
     const normalized = file.replace(/\\/g, "/");
     if (!normalized.includes("/client/src/")) return;
@@ -2033,56 +2034,74 @@ export function scanDuplicateSectionImages(dir: string): RealnessHit[] {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";
       const matches = [
-        ...line.matchAll(/["'`](\/images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))["'`]/gi),
-        ...line.matchAll(/url\(["']?(\/images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))["']?\)/gi),
+        ...line.matchAll(/["'`]((?:https?:\/\/[^"'`\s)]+|\/?images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))(?:\?[^"'`\s)]*)?(?:#[^"'`\s)]*)?)["'`]/gi),
+        ...line.matchAll(/url\(["']?((?:https?:\/\/[^"'`\s)]+|\/?images\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif|avif|svg))(?:\?[^"'`\s)]*)?(?:#[^"'`\s)]*)?)["']?\)/gi),
       ];
       for (const match of matches) {
         const ref = match[1];
-        if (!ref || /(?:logo|icon|favicon|sprite|badge)/i.test(ref)) continue;
-        const entries = refs.get(ref) ?? [];
-        entries.push({ file, line: i + 1 });
-        refs.set(ref, entries);
+        const key = normalizeSectionImageRefKey(ref);
+        if (!ref || !key || /(?:logo|icon|favicon|sprite|badge|og-image)/i.test(ref)) continue;
+        const entries = refs.get(key) ?? [];
+        entries.push({ ref, file, line: i + 1, occurrence: occurrence++ });
+        refs.set(key, entries);
       }
     }
   });
 
   const hits: RealnessHit[] = [];
-  for (const [ref, entries] of refs) {
-    const uniqueLocations = new Set(entries.map((entry) => `${entry.file}:${entry.line}`));
-    if (uniqueLocations.size <= 1) continue;
+  for (const [key, entries] of refs) {
+    if (entries.length <= 1) continue;
     for (const entry of entries.slice(1)) {
       hits.push({
         file: entry.file,
         line: entry.line,
-        token: ref,
-        reason: "The same generated/site image URL is reused across multiple visible sections. Generate or wire a distinct section-specific image.",
+        token: entry.ref === key ? key : `${entry.ref} duplicates ${key}`,
+        reason: "The same generated/site photo is reused across multiple visible sections/cards. Generate or wire a distinct section-specific image; query-string crops of the same photo still count as reuse.",
       });
     }
   }
 
-  const hashOwners = new Map<string, { ref: string; file: string; line: number }>();
-  for (const [ref, entries] of refs) {
-    const assetPath = join(dir, "client", "public", ref.replace(/^\//, ""));
+  const hashOwners = new Map<string, { ref: string; key: string; file: string; line: number }>();
+  for (const [key, entries] of refs) {
+    const localRef = key.startsWith("/") ? key : key.startsWith("images/") ? `/${key}` : "";
+    if (!localRef) continue;
+    const assetPath = join(dir, "client", "public", localRef.replace(/^\//, ""));
     if (!existsSync(assetPath)) continue;
     const hash = createHash("sha256").update(readFileSync(assetPath)).digest("hex");
     const firstEntry = entries[0];
     if (!firstEntry) continue;
     const owner = hashOwners.get(hash);
     if (!owner) {
-      hashOwners.set(hash, { ref, file: firstEntry.file, line: firstEntry.line });
+      hashOwners.set(hash, { ref: firstEntry.ref, key, file: firstEntry.file, line: firstEntry.line });
       continue;
     }
-    if (owner.ref === ref) continue;
+    if (owner.key === key) continue;
     for (const entry of entries) {
       hits.push({
         file: entry.file,
         line: entry.line,
-        token: `${ref} duplicates ${owner.ref}`,
+        token: `${entry.ref} duplicates ${owner.ref}`,
         reason: "Different section image paths resolve to the same file bytes. Generate or wire genuinely distinct assets, not renamed duplicates.",
       });
     }
   }
   return hits;
+}
+
+function normalizeSectionImageRefKey(ref: string | undefined): string {
+  if (!ref) return "";
+  const trimmed = ref.trim();
+  if (!trimmed) return "";
+  try {
+    if (/^https?:\/\//i.test(trimmed)) {
+      const url = new URL(trimmed);
+      return `${url.origin}${url.pathname}`.replace(/\/$/, "");
+    }
+  } catch {
+    return trimmed.split(/[?#]/, 1)[0] ?? trimmed;
+  }
+  const pathOnly = trimmed.split(/[?#]/, 1)[0] ?? trimmed;
+  return pathOnly.startsWith("/") ? pathOnly : `/${pathOnly}`;
 }
 
 export function scanProductionArtifactResidue(dir: string): ProductionArtifactStatus {
