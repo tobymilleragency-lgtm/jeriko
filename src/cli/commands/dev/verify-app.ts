@@ -764,6 +764,12 @@ export function validateAppBuilderControlPlan(projectState: ProjectState | null)
   if (!Array.isArray(plan.mandatorySkills) || !plan.mandatorySkills.includes("operator-build-discipline")) {
     issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "App-builder control plan must bind operator-build-discipline before implementation." });
   }
+  if (!Array.isArray(plan.mandatorySkills) || !plan.mandatorySkills.includes("app-builder-production-sites")) {
+    issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "App-builder control plan must bind app-builder-production-sites before implementation." });
+  }
+  if (!Array.isArray(plan.mandatorySkills) || !plan.mandatorySkills.includes("premium-ui-motion")) {
+    issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "App-builder control plan must bind premium-ui-motion so generated app motion stays restrained and production-grade." });
+  }
   if (isContractorLikeProjectState(projectState) && !plan.mandatorySkills?.includes("contractor-site-autonomous-build")) {
     issues.push({ file: "project-state.json", line: 0, token: "appBuilderPlan.mandatorySkills", reason: "Contractor/local-service sites must bind contractor-site-autonomous-build before implementation." });
   }

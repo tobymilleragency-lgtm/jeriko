@@ -67,7 +67,7 @@ describe("create command templates", () => {
     });
 
     expect(state.appBuilderPlan?.mode).toBe("controlled-app-build");
-    expect(state.appBuilderPlan?.mandatorySkills).toEqual(expect.arrayContaining(["operator-build-discipline", "contractor-site-autonomous-build"]));
+    expect(state.appBuilderPlan?.mandatorySkills).toEqual(expect.arrayContaining(["operator-build-discipline", "app-builder-production-sites", "premium-ui-motion", "contractor-site-autonomous-build"]));
     expect(state.appBuilderPlan?.phases.map((phase: any) => phase.id)).toEqual([
       "target-lock",
       "skill-bind",

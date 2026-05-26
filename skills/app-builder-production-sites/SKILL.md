@@ -44,6 +44,7 @@ Required polish checks for production/client sites:
 - Photo uniqueness: do not reuse the same photo across hero/cards/services/projects/galleries inside one site. Query-string crops, renamed duplicate files, and the same remote stock/photo URL still count as reuse. Each visible section/card needs its own section-specific asset or no image at all.
 
 Motion rules:
+- Load `premium-ui-motion` before writing UI motion. Its rules are the source of truth for production animation.
 - Framer Motion is allowed and already available in the React web templates.
 - Use motion only when it improves comprehension or feedback.
 - Prefer restrained fades, small y-offsets, state transitions, and clear form feedback.

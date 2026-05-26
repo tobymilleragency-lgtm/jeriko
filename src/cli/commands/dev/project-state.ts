@@ -263,11 +263,13 @@ function buildAppBuilderControlPlan(args: {
     mode: "controlled-app-build",
     mandatorySkills: uniqueStrings([
       "operator-build-discipline",
+      "app-builder-production-sites",
+      "premium-ui-motion",
       ...(contractorSite ? ["contractor-site-autonomous-build"] : []),
     ]),
     phases: [
       { id: "target-lock", description: "Confirm target directory, package name, template, and appSpec identity before writing.", requiredEvidence: ["pwd/package name", "project-state path"] },
-      { id: "skill-bind", description: "Load lane-specific skills before implementation work starts.", requiredEvidence: ["use_skill operator-build-discipline", ...(contractorSite ? ["use_skill contractor-site-autonomous-build"] : [])] },
+      { id: "skill-bind", description: "Load lane-specific skills before implementation work starts.", requiredEvidence: ["use_skill operator-build-discipline", "use_skill app-builder-production-sites", "use_skill premium-ui-motion", ...(contractorSite ? ["use_skill contractor-site-autonomous-build"] : [])] },
       { id: "appspec-plan", description: "Convert appSpec pages, workflows, integrations, and success criteria into implementation tasks.", requiredEvidence: ["route/workflow task list"] },
       { id: "scaffold", description: "Create the starter from the selected template and remove template/demo metadata.", requiredEvidence: ["jeriko create result", "template residue scan"] },
       { id: "implement-routes", description: "Implement every required appSpec route as a distinct routable page with nav, sitemap, and crawler-visible content.", requiredEvidence: ["ROUTE_BREADTH_OK", "sitemap routes"] },

@@ -100,8 +100,8 @@ describe("Agent prompt quality rules", () => {
 
   test("requires operator build discipline skills before generated app work", () => {
     const prompt = readFileSync("AGENT.md", "utf-8");
-    expect(prompt).toContain("load `operator-build-discipline` with `use_skill` before editing");
-    expect(prompt).toContain("load `operator-build-discipline` and `contractor-site-autonomous-build`");
+    expect(prompt).toContain("load `operator-build-discipline`, `app-builder-production-sites`, and `premium-ui-motion` with `use_skill` before editing");
+    expect(prompt).toContain("load `operator-build-discipline`, `app-builder-production-sites`, `premium-ui-motion`, and `contractor-site-autonomous-build`");
     expect(prompt).toContain("checkpoint → persistent local preview → report");
   });
 });

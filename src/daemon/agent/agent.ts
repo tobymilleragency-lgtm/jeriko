@@ -763,7 +763,7 @@ export function createToolRepeatGuard(maxConsecutive = 3, maxTotalWithoutMutatio
   const seenSinceMutation = new Map<string, number>();
 
   return (toolCall: ToolCall) => {
-    if (isLikelyMutationToolCall(toolCall)) {
+    if (isLikelyMutationToolCall(toolCall) || isLikelyProgressToolCall(toolCall)) {
       seenSinceMutation.clear();
       lastSignature = "";
       consecutive = 0;
@@ -789,6 +789,20 @@ export function createToolRepeatGuard(maxConsecutive = 3, maxTotalWithoutMutatio
     }
     return null;
   };
+}
+
+function isLikelyProgressToolCall(toolCall: ToolCall): boolean {
+  if (toolCall.name !== "bash") return false;
+  try {
+    const parsed = JSON.parse(toolCall.arguments);
+    const command = typeof parsed.command === "string" ? parsed.command : "";
+    if (!command) return false;
+    return /\b(pnpm|npm|yarn|bun)\s+run\s+(check|build|test|lint)\b/.test(command)
+      || /\b(tsc\s+--noEmit|vite\s+build|jeriko\s+verify-app|verify_app)\b/.test(command)
+      || isTargetIdentityVerificationCommand(command);
+  } catch {
+    return false;
+  }
 }
 
 function isLikelyMutationToolCall(toolCall: ToolCall): boolean {
