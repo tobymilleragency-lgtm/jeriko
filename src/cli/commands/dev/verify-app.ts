@@ -1,7 +1,7 @@
 import type { CommandHandler } from "../../dispatcher.js";
 import { parseArgs, flagBool, flagStr } from "../../../shared/args.js";
 import { fail, failWithDetails, ok } from "../../../shared/output.js";
-import { existsSync, readFileSync, readdirSync, accessSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, accessSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1351,6 +1351,24 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
         reason: `Customer-facing copy contains an obvious repeated-word typo (${repeatedCopyTypos[0]?.token ?? "repeated word"}). Generated sites must proofread text such as 'project project' before passing.`,
       });
     }
+    const aiTaxonomyLabels = findAiSmellServiceTaxonomy(sourceText);
+    if (aiTaxonomyLabels.length > 0) {
+      issues.push({
+        file: "client/src/App.tsx",
+        line: 0,
+        token: "service-taxonomy-ai-smell",
+        reason: `Service labels must sound like real customer categories, not keyword stuffing or generated filler. Off labels: ${aiTaxonomyLabels.slice(0, 6).join(", ")}.`,
+      });
+    }
+    const oversizedImages = findOversizedReferencedImages(dir, sourceText, 850_000);
+    if (oversizedImages.length > 0) {
+      issues.push({
+        file: oversizedImages[0]?.file ?? "client/public/images",
+        line: 0,
+        token: "oversized-image-asset",
+        reason: `Production contractor sites must optimize images before passing polish gates. Oversized referenced assets: ${oversizedImages.slice(0, 6).map((hit) => `${hit.ref} (${Math.round(hit.bytes / 1000)}KB)`).join(", ")}.`,
+      });
+    }
     if (/\b(?:when\s+)?(?:contact|lead|email|form|notification|delivery)\s+(?:handling|delivery|routing|handler)\s+is\s+configured\b|\bconfigured\s+(?:later|before launch|when ready)\b|\bsetup\s+required\b/i.test(sourceText)) {
       issues.push({
         file: "client/src/App.tsx",
@@ -1509,6 +1527,43 @@ function findRepeatedPublicCopyTypos(dir: string): RealnessHit[] {
       hits.push({ file, line: i + 1, token: match[0], reason: "Customer-facing copy contains an obvious repeated-word typo." });
     }
   });
+  return hits;
+}
+
+function findAiSmellServiceTaxonomy(sourceText: string): string[] {
+  const hits = new Set<string>();
+  const publicText = sourceText.replace(/className=\{?['"`][^'"`]*['"`]\}?/g, " ");
+  const patterns = [
+    /\bHome Improvement Planning\b/gi,
+    /\b[A-Z][A-Z\s&-]{3,}\s+HOME IMPROVEMENT PRO\b/g,
+    /\bhome improvement pro\b/gi,
+    /\b(?:service|work)\s+(?:solution|category|offering)\b/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of publicText.matchAll(pattern)) {
+      const value = normalizeVisibleLabel(match[0] ?? "");
+      if (value) hits.add(value);
+    }
+  }
+  return Array.from(hits);
+}
+
+function findOversizedReferencedImages(dir: string, sourceText: string, maxBytes: number): Array<{ ref: string; file: string; bytes: number }> {
+  const refs = new Set<string>();
+  for (const match of sourceText.matchAll(/["'`]([^"'`]*(?:\/images\/|\/assets\/)[^"'`]*\.(?:png|jpe?g|webp|gif))["'`]/gi)) {
+    const ref = match[1] ?? "";
+    if (ref.startsWith("http://") || ref.startsWith("https://") || ref.includes("${")) continue;
+    refs.add(ref);
+  }
+  const hits: Array<{ ref: string; file: string; bytes: number }> = [];
+  for (const ref of refs) {
+    const normalized = ref.replace(/^\.\.\//, "").replace(/^\.\//, "").replace(/^\//, "");
+    const candidates = [join(dir, "client", "public", normalized), join(dir, "public", normalized), join(dir, "client", "src", normalized)];
+    const file = candidates.find((candidate) => existsSync(candidate));
+    if (!file) continue;
+    const bytes = statSync(file).size;
+    if (bytes > maxBytes) hits.push({ ref, file, bytes });
+  }
   return hits;
 }
 
@@ -2109,6 +2164,8 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
     const routes = sitemapRoutes(sitemap);
     checkedRoutes = routes.length;
     const routeBodyFingerprints = new Map<string, string[]>();
+    const routeMetaDescriptions = new Map<string, string[]>();
+    const routeTitles = new Map<string, string[]>();
     for (const route of routes) {
       const routeFile = routeHtmlPath(publicDir, route.path);
       if (!existsSync(routeFile)) {
@@ -2116,7 +2173,19 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
         continue;
       }
       const routeHtml = readFileSync(routeFile, "utf8");
-      const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml, { largeSitemap: routes.length >= 8 });
+      const routeIssues = auditCrawlerRoute(route.path, route.loc, routeHtml, { largeSitemap: routes.length >= 8, requireSocialPreview: routes.length >= 2 });
+      const description = normalizeVisibleLabel(metaContent(routeHtml, "description") ?? "");
+      if (description) {
+        const existing = routeMetaDescriptions.get(description) ?? [];
+        existing.push(route.path);
+        routeMetaDescriptions.set(description, existing);
+      }
+      const title = normalizeVisibleLabel(titleText(routeHtml));
+      if (title) {
+        const existing = routeTitles.get(title) ?? [];
+        existing.push(route.path);
+        routeTitles.set(title, existing);
+      }
       const bodyFingerprint = crawlerBodyFingerprint(routeHtml);
       if (bodyFingerprint) {
         const existing = routeBodyFingerprints.get(bodyFingerprint) ?? [];
@@ -2126,6 +2195,18 @@ export function scanCrawlerHtml(dir: string): CrawlerHtmlStatus {
       const trackingAudit = auditLaunchTracking(route.path, routeHtml);
       launchTrackingChecked += trackingAudit.checked;
       issues.push(...routeIssues, ...trackingAudit.issues);
+    }
+    if (routes.length >= 2) {
+      for (const duplicateRoutes of routeMetaDescriptions.values()) {
+        if (duplicateRoutes.length >= 2) {
+          issues.push(`Duplicate meta description across sitemap routes: ${duplicateRoutes.slice(0, 8).join(", ")}. Production pages need route-specific descriptions.`);
+        }
+      }
+      for (const duplicateRoutes of routeTitles.values()) {
+        if (duplicateRoutes.length >= 2) {
+          issues.push(`Duplicate title across sitemap routes: ${duplicateRoutes.slice(0, 8).join(", ")}. Production pages need route-specific titles.`);
+        }
+      }
     }
     if (routes.length >= 8) {
       for (const duplicateRoutes of routeBodyFingerprints.values()) {
@@ -2176,6 +2257,14 @@ function hasUsableMetaDescription(html: string): boolean {
   return /<meta\s+name=["']description["'][^>]+content=["'][^"']{20,}["']/i.test(html);
 }
 
+function hasSocialPreviewTags(html: string): boolean {
+  const ogTitle = propertyContent(html, "og:title");
+  const ogDescription = propertyContent(html, "og:description");
+  const ogImage = propertyContent(html, "og:image");
+  const twitterCard = metaContent(html, "twitter:card");
+  return Boolean(ogTitle && ogDescription && ogImage && twitterCard);
+}
+
 function sitemapRoutes(sitemap: string): Array<{ loc: string; path: string }> {
   const routes: Array<{ loc: string; path: string }> = [];
   const locPattern = /<loc>\s*([^<]+?)\s*<\/loc>/gi;
@@ -2201,7 +2290,7 @@ function routeHtmlPath(publicDir: string, routePath: string): string {
   return normalized === "/" ? join(publicDir, "index.html") : join(publicDir, normalized.replace(/^\//, ""), "index.html");
 }
 
-function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string, options: { largeSitemap?: boolean } = {}): string[] {
+function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string, options: { largeSitemap?: boolean; requireSocialPreview?: boolean } = {}): string[] {
   const issues: string[] = [];
   const robots = metaContent(html, "robots");
   if (robots && /\b(noindex|none)\b/i.test(robots)) {
@@ -2209,6 +2298,9 @@ function auditCrawlerRoute(routePath: string, sitemapLoc: string, html: string, 
   }
   if (!hasUsableMetaDescription(html)) {
     issues.push(`Sitemap route lacks a usable meta description: ${routePath}`);
+  }
+  if (options.requireSocialPreview && !hasSocialPreviewTags(html)) {
+    issues.push(`Sitemap route missing Open Graph/Twitter social preview tags: ${routePath}`);
   }
   const title = titleText(html);
   if (title.length < 8) {
@@ -2328,6 +2420,13 @@ function uniqueIssueMessages(values: string[]): string[] {
 
 function metaContent(html: string, name: string): string | null {
   const pattern = new RegExp(`<meta\\s+[^>]*name=["']${escapeRegExp(name)}["'][^>]*>`, "i");
+  const tag = html.match(pattern)?.[0];
+  if (!tag) return null;
+  return attrValue(tag, "content");
+}
+
+function propertyContent(html: string, property: string): string | null {
+  const pattern = new RegExp(`<meta\\s+[^>]*property=["']${escapeRegExp(property)}["'][^>]*>`, "i");
   const tag = html.match(pattern)?.[0];
   if (!tag) return null;
   return attrValue(tag, "content");

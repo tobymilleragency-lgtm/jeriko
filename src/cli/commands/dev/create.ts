@@ -1019,12 +1019,14 @@ function writeWebsiteLaunchKitFiles(dir: string, projectName: string, seoProfile
   mkdirSync(libDir, { recursive: true });
   mkdirSync(assetsDir, { recursive: true });
   mkdirSync(publicDir, { recursive: true });
-  const projectTitle = buildTemplatePlaceholderValues(projectName).project_title;
+  const projectTitle = buildTemplatePlaceholderValues(projectName).project_title ?? projectName;
   const siteConfigPath = join(srcDir, "site.config.ts");
   const robotsPath = join(publicDir, "robots.txt");
   const sitemapPath = join(publicDir, "sitemap.xml");
+  const ogImagePath = join(publicDir, "og-image.svg");
   if (!existsSync(robotsPath)) writeFileSync(robotsPath, "User-agent: *\nAllow: /\n");
   if (!existsSync(sitemapPath)) writeFileSync(sitemapPath, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>/</loc></url></urlset>\n`);
+  if (!existsSync(ogImagePath)) writeFileSync(ogImagePath, `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="${escapeXmlText(projectTitle)} social preview"><rect width="1200" height="630" fill="#09090b"/><rect x="70" y="70" width="1060" height="490" rx="36" fill="#171717" stroke="#f59e0b" stroke-width="4"/><text x="100" y="250" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="64" font-weight="800">${escapeXmlText(projectTitle)}</text><text x="102" y="330" fill="#fbbf24" font-family="Inter, Arial, sans-serif" font-size="34">Services • Proof • Process • Request</text></svg>\n`);
   if (!existsSync(siteConfigPath)) {
     writeFileSync(siteConfigPath, `export const siteConfig = {
   name: ${JSON.stringify(projectTitle)},
@@ -1228,7 +1230,7 @@ function uniqueRoutes(routes) {
 function renderRoute(route) {
   const content = extractPageContent(route);
   const title = pageTitleFor(route, content);
-  const description = content.paragraphs.slice(0, 2).join(" ").slice(0, 300) || \`\${projectTitle} page for \${route.path}\`;
+  const description = descriptionFor(route, content);
   const canonical = baseUrl ? \`\${baseUrl}\${route.path === "/" ? "" : route.path}\` : route.path;
   const nav = routes.map((item) => \`<a href="\${escapeAttr(item.path)}">\${escapeHtml(item.path === "/" ? "Home" : routeLabel(item.path))}</a>\`).join(" | ");
   const jsonLd = JSON.stringify({
@@ -1279,6 +1281,11 @@ function injectHead(html, page) {
     <meta property="og:url" content="\${escapeAttr(page.canonical)}" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="\${escapeAttr(projectTitle)}" />
+    <meta property="og:image" content="\${escapeAttr(baseUrl ? baseUrl + "/og-image.svg" : "/og-image.svg")}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="\${escapeAttr(page.title)}" />
+    <meta name="twitter:description" content="\${escapeAttr(page.description)}" />
+    <meta name="twitter:image" content="\${escapeAttr(baseUrl ? baseUrl + "/og-image.svg" : "/og-image.svg")}" />
     <meta name="robots" content="index,follow" />
     \${renderVerificationMeta()}
     \${renderAnalyticsScripts()}
@@ -1370,6 +1377,15 @@ function pageTitleFor(route, content) {
   const base = route.path === "/" ? projectTitle : \`\${content.heading} | \${projectTitle}\`;
   const trimmed = String(base || "").trim();
   return trimmed.length >= 8 ? trimmed : \`\${trimmed || "Home"} Website\`;
+}
+
+function descriptionFor(route, content) {
+  const label = routeLabel(route.path);
+  const body = content.paragraphs.join(" ").replace(/\\s+/g, " ").trim();
+  const prefix = route.path === "/"
+    ? \`\${projectTitle} helps visitors understand services, service area, proof, process, and request steps.\`
+    : \`\${label}: \${projectTitle} explains this route with specific service details, local context, proof, process, and estimate request steps.\`;
+  return \`\${prefix} \${body}\`.slice(0, 300);
 }
 
 function pushClean(list, value) {
@@ -1537,6 +1553,10 @@ function walkFiles(dir: string, visit: (file: string) => void): void {
       visit(fullPath);
     }
   }
+}
+
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function buildTemplatePlaceholderValues(projectName: string): Record<string, string> {

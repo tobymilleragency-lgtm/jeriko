@@ -846,6 +846,72 @@ describe("verify-app command", () => {
     }
   });
 
+  it("fails premium contractor sites with oversized images and keyword-stuffed service taxonomy", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-ux-polish-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "client", "public", "images"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "public", "images", "huge-service.jpg"), Buffer.alloc(900_001, 1));
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { useLocation } from "wouter";
+        function AppLink(props:any){ return <a href={props.href} aria-label={props["aria-label"]}>{props.children}</a>; }
+        function LeadOpsVisual(){ return null; }
+        function LeadFlowLineSection(){ return null; }
+        function LeadLeakAudit(){ return null; }
+        function BeforeAfterComparison(){ return null; }
+        function StickyAuditRail(){ return null; }
+        function Home(){ return <main>
+          <nav><AppLink href="/">Home</AppLink><AppLink href="/services">Services</AppLink><AppLink href="/service-areas">Service Areas</AppLink></nav>
+          <img src="/images/huge-service.jpg" alt="Huge image" />
+          <article><p>HOME REMODELING HOME IMPROVEMENT PRO</p><h3>Home Improvement Planning</h3></article>
+          <AppLink href="/services/general-contracting">General Contracting</AppLink>
+        </main>; }
+        function Services(){ return <main><h1>Services</h1></main>; }
+        function ServicePage(){ return <main><h1>General Contracting</h1><section><h2>Problems solved</h2><p>Useful service copy for homeowners with detail.</p></section><section><h2>What to expect</h2><p>Useful process copy.</p></section><section><h2>Next step</h2><p>Send details.</p></section></main>; }
+        function ServiceAreas(){ return <main><h1>Service Areas</h1></main>; }
+        function CityPage(){ return <main><h1>Parsons</h1><section><h2>Local work</h2><p>Useful city copy for homeowners with detail.</p></section><section><h2>Project fit</h2><p>Useful city process copy.</p></section><section><h2>Next step</h2><p>Send details.</p></section></main>; }
+        function Contact(){ return <form><input name="name" /><button>Send Estimate Request</button></form>; }
+        export default function App(){ useLocation(); return <><Home /><Services /><ServicePage /><ServiceAreas /><CityPage /><Contact /></>; }
+      `);
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html data-jeriko-prerender="true"><head><title>Valhalla</title><meta name="description" content="Valhalla contractor site"><meta property="og:title" content="Valhalla"><meta property="og:description" content="Valhalla contractor site"><meta property="og:image" content="/images/huge-service.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="https://example.com/"></head><body style="background:#09090b"><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "vercel.json"), JSON.stringify({ outputDirectory: "dist/public", rewrites: [{ source: "/(.*)", destination: "/index.html" }] }, null, 2));
+      fs.mkdirSync(path.join(dir, "client", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "client", "public", "sitemap.xml"), "<urlset></urlset>");
+      fs.writeFileSync(path.join(dir, "client", "public", "robots.txt"), "User-agent: *\nAllow: /\n");
+      const projectState = contractorProjectState({
+        pages: ["/", "/services", "/services/general-contracting", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/services/decks", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks", "/process", "/about", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"],
+        services: ["/services/general-contracting", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/services/decks"],
+      });
+
+      const issues = scanPremiumMarketingSiteQuality(dir, projectState as any);
+      const tokens = issues.map((issue) => issue.token);
+
+      expect(tokens).toContain("oversized-image-asset");
+      expect(tokens).toContain("service-taxonomy-ai-smell");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails crawler HTML with duplicate route meta descriptions or missing social preview tags", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-meta-polish-"));
+    try {
+      const body = "Valhalla Construction helps homeowners plan remodeling work with clear details, practical expectations, local service awareness, and a direct request path for the next conversation.";
+      writeCrawlerRoute(dir, "/", { title: "Home | Valhalla", description: "Same duplicated meta description for every generated page.", body });
+      writeCrawlerRoute(dir, "/services", { title: "Services | Valhalla", description: "Same duplicated meta description for every generated page.", body });
+      writeCrawlerSitemap(dir, ["/", "/services"]);
+      writeCrawlerRobots(dir);
+
+      const result = scanCrawlerHtml(dir);
+
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("Duplicate meta description across sitemap routes");
+      expect(result.output).toContain("missing Open Graph/Twitter social preview tags");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("flags internal setup language in customer-facing copy", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-internal-copy-"));
     try {
@@ -1834,6 +1900,33 @@ describe("verify-app command", () => {
     }
   });
 });
+
+function contractorProjectState(overrides: { pages?: string[]; services?: string[]; cities?: string[] } = {}): any {
+  const pages = overrides.pages ?? ["/", "/services", "/services/general-contracting", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/services/decks", "/service-areas", "/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks", "/process", "/about", "/projects", "/gallery", "/reviews", "/faq", "/contact", "/privacy", "/terms"];
+  return {
+    version: 1,
+    name: "valhalla-construction",
+    template: "web-static",
+    profile: "web-static",
+    packageManager: "pnpm",
+    generatedAt: new Date().toISOString(),
+    commands: { start: "node scripts/jeriko-static-server.mjs --port ${PORT}" },
+    routes: { home: "/", services: "/services", service_areas: "/service-areas", contact: "/contact" },
+    verification: { requiredGates: ["premium_marketing_site_scan"] },
+    appSpec: {
+      version: 1,
+      source: "prompt",
+      prompt: "Build a contractor website for Valhalla Construction with services, service areas, projects, reviews, FAQ, and contact pages",
+      appType: "contractor-local-service-site",
+      pages: pages as any,
+      features: ["service area pages", "estimate request workflow"],
+      integrations: { allowed: [], forbidden: [] },
+      successCriteria: [],
+      services: overrides.services ?? ["/services/general-contracting", "/services/kitchen-remodeling", "/services/bathroom-remodeling", "/services/decks"],
+      cities: overrides.cities ?? ["/service-areas/parsons-ks", "/service-areas/oswego-ks", "/service-areas/erie-ks"],
+    },
+  };
+}
 
 function writeCrawlerRoute(dir: string, route: string, options: { body: string; robots?: string; canonical?: string; title?: string; description?: string }): void {
   const publicDir = path.join(dir, "dist", "public");
