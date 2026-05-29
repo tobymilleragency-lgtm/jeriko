@@ -223,7 +223,8 @@ export async function runAppBuilderControlledRepair(dir: string, options: RunApp
     const repairCompletedAt = now();
     state = requireProjectState(dir);
     run = state.appBuilderRun ?? run;
-    if (!repair.ok) {
+    const repairBlocked = !repair.ok || repairOutputReportsBlocker(repair.output);
+    if (repairBlocked) {
       const blocker = `Repair attempt ${repairAttempts}/${maxRepairAttempts} failed for ${failedGate.name}: ${repair.output ?? "no repair output"}`;
       run = {
         ...run,
@@ -397,6 +398,11 @@ function buildRepairTask(dir: string, failedGate: VerificationFailureInput, repa
 function exactRepairBlocker(failedGate: VerificationFailureInput, repairAction: string, maxRepairAttempts: number): string {
   const output = failedGate.output ? ` Output: ${failedGate.output}` : "";
   return `App-builder repair exhausted after ${maxRepairAttempts} attempt(s). Failed gate: ${failedGate.name}.${output} Required repair action: ${repairAction}`;
+}
+
+function repairOutputReportsBlocker(output?: string): boolean {
+  if (!output) return false;
+  return /No-progress guard stopped|Repeated no-progress tool round blocked|What Jeriko did not finish|latest verify_app result was not fully green/i.test(output);
 }
 
 function persistRun(dir: string, state: ProjectState, run: AppBuilderRun): void {

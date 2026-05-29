@@ -119,6 +119,31 @@ describe("app-builder controller", () => {
     }
   });
 
+  it("treats no-progress child repair output as a failed repair even when the process exits zero", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-builder-controller-no-progress-"));
+    try {
+      writeProjectState(dir, buildProjectState({ name: "blocked-repair-app", template: "web-db-user", profile: "web-db-user", prompt: "Build an inventory scanner app." }));
+      initializeAppBuilderRun(dir, { trigger: "create" });
+
+      const result = await runAppBuilderControlledRepair(dir, {
+        maxRepairAttempts: 1,
+        verify: async () => ({ ok: false, failedGate: { name: "db_auth_workflow_wiring", output: "Missing durable auth workflow" } }),
+        repair: async () => ({ ok: true, output: "No-progress guard stopped the run.\nRepeated no-progress tool round blocked after 3 matching rounds.\nWhat Jeriko did not finish / did not prove:\n- latest verify_app result was not fully green\n- db_auth_workflow_wiring: FAILED" }),
+      });
+
+      const state = readProjectState(dir);
+      expect(result.ok).toBe(false);
+      const failedResult = result as Extract<typeof result, { ok: false }>;
+      expect(failedResult.errorCode).toBe("E_APP_BUILDER_REPAIR_FAILED");
+      expect(failedResult.blocker).toContain("No-progress guard stopped");
+      expect(state?.appBuilderRun?.status).toBe("blocked");
+      expect(state?.appBuilderRun?.activeRepair).toEqual(expect.objectContaining({ status: "blocked", failedGate: "db_auth_workflow_wiring", attempt: 1 }));
+      expect(state?.appBuilderRun?.phases.find((phase) => phase.id === "repair")?.status).toBe("blocked");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("stops after max repair attempts with an exact blocker and persisted failed gate", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-builder-controller-blocked-"));
     try {
@@ -133,9 +158,10 @@ describe("app-builder controller", () => {
 
       const state = readProjectState(dir);
       expect(result.ok).toBe(false);
-      expect(result.errorCode).toBe("E_APP_BUILDER_REPAIR_EXHAUSTED");
-      expect(result.blocker).toContain("build");
-      expect(result.blocker).toContain("TypeScript compile error");
+      const failedResult = result as Extract<typeof result, { ok: false }>;
+      expect(failedResult.errorCode).toBe("E_APP_BUILDER_REPAIR_EXHAUSTED");
+      expect(failedResult.blocker).toContain("build");
+      expect(failedResult.blocker).toContain("TypeScript compile error");
       expect(state?.appBuilderRun?.status).toBe("blocked");
       expect(state?.appBuilderRun?.repairAttemptCount).toBe(1);
       expect(state?.appBuilderRun?.lastVerification).toEqual(expect.objectContaining({ ok: false, failedGate: "build" }));
