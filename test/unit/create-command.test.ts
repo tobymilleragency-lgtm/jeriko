@@ -621,6 +621,26 @@ export default defineConfig({
     }
   });
 
+  it("keeps contractor website prompts static even when they reject CRM-style claims", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-contractor-no-crm-"));
+    const projectDir = path.join(dir, "plumbing-site");
+    try {
+      const prompt = "Build a production-ready contractor website for a plumbing company in Tulsa with emergency plumbing, drain cleaning, water heaters, service areas, reviews, FAQ, contact, privacy, and terms. It must be a customer-facing local service site with visible call CTAs, no fake CRM claims, and no builder/meta copy.";
+      const result = await runCreateCommand(["from-prompt", prompt, "--name", "Tulsa Plumbing", "--dir", projectDir]);
+      const state = JSON.parse(fs.readFileSync(path.join(projectDir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(result.ok).toBe(true);
+      expect(result.data.template).toBe("web-static");
+      expect(result.data.seoProfile).toBe("local-service");
+      expect(state.template).toBe("web-static");
+      expect(state.profile).toBe("web-static");
+      expect(state.appSpec.appType).toBe("local-service-site");
+      expect(state.appSpec.pages.map((page: any) => page.path)).toEqual(expect.arrayContaining(["/services", "/service-areas", "/reviews", "/faq", "/contact", "/privacy", "/terms"]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("scaffolds local-service contractor prompts with launch-ready route breadth by default", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-create-local-service-route-breadth-"));
     const projectDir = path.join(dir, "brothers-remodeling-okc");

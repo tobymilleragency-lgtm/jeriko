@@ -596,9 +596,17 @@ function looksLikeNaturalLanguagePrompt(value: string): boolean {
 function inferTemplateFromPrompt(prompt: string): string {
   const text = prompt.toLowerCase();
   if (/mobile|native|expo|ios|android|field app/.test(text)) return "app";
+  if (isLocalServiceWebsitePrompt(text)) return "web-static";
   if (/portal|login|auth|dashboard|account|database|db|user|scanner|scan|resale|inventory|profit|crm|pipeline|records?|estimates?|jobs?|customers?|leads?|workflow|operations|admin/.test(text) || (/\blisting\b/.test(text) && /\b(product|inventory|resale|marketplace|order|seller dashboard)\b/.test(text)) || (/(upload|paste|photo)/.test(text) && /\b(item|cost|price|scan|resale|inventory)\b/.test(text))) return "web-db-user";
   if (/service|contractor|roof|remodel|plumb|electric|hvac|realtor|real estate|realty|brokerage|homes for sale|local|seo|landing|business|company/.test(text)) return "web-static";
   return "web-static";
+}
+
+function isLocalServiceWebsitePrompt(text: string): boolean {
+  const asksForWebsite = /\b(site|website|landing page|marketing website|business website)\b/.test(text);
+  const localServiceBusiness = /\b(contractor|roof|roofing|remodel|remodeling|plumb|plumbing|electric|electrical|hvac|realtor|real estate|realty|brokerage|homes for sale|local service|service area|service areas)\b/.test(text);
+  if (!asksForWebsite || !localServiceBusiness) return false;
+  return !/\b(app|application|portal|dashboard|login|auth|authenticated|database|db|admin workspace|internal tool)\b/.test(text);
 }
 
 function applyFullStackProductPromptSupport(dir: string, prompt: string): boolean {
