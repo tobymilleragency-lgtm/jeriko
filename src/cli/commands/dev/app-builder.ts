@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { readProjectState } from "./project-state.js";
 import { buildWorkspaceStatus } from "../../../daemon/diagnostics/session.js";
-import { runAppBuilderControlledRepair, type AppBuilderRepairTask, type AppBuilderVerificationResult } from "./app-builder-controller.js";
+import { initializeAppBuilderRun, runAppBuilderControlledRepair, type AppBuilderRepairTask, type AppBuilderVerificationResult } from "./app-builder-controller.js";
 
 export const command: CommandHandler = {
   name: "app-builder",
@@ -22,7 +22,12 @@ export const command: CommandHandler = {
     if (subcommand === "status") {
       const dir = resolve(parsed.positional[1] || flagStr(parsed, "dir", ""));
       requireDir(dir);
-      const state = readProjectState(dir);
+      let state = readProjectState(dir);
+      if (!state) failWithDetails("Project state not found.", { errorCode: "E_PROJECT_STATE_MISSING", directory: dir });
+      if (!state.appBuilderRun) {
+        initializeAppBuilderRun(dir, { trigger: "app-builder-status" });
+        state = readProjectState(dir);
+      }
       if (!state?.appBuilderRun) failWithDetails("Project has no appBuilderRun state.", { errorCode: "E_APP_BUILDER_RUN_MISSING", directory: dir });
       const workspaceStatus = buildWorkspaceStatus({ cwd: dir, sessionId: "missing-session" });
       ok({ directory: dir, appBuilderStatus: workspaceStatus.appBuilderStatus, appBuilderRun: state.appBuilderRun, appBuilderPlan: state.appBuilderPlan });

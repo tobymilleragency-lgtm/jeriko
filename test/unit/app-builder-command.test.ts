@@ -42,6 +42,33 @@ describe("app-builder command", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("status initializes run state from legacy control plans that only store phase ids", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-app-builder-command-status-legacy-"));
+    try {
+      const state = buildProjectState({ name: "legacy-plan-app", template: "web-static", profile: "web-static", prompt: "Build a contractor website", seoProfile: "local-service" });
+      writeProjectState(dir, {
+        ...state,
+        appBuilderPlan: {
+          mode: "controlled-app-build",
+          mandatorySkills: state.appBuilderPlan!.mandatorySkills,
+          phases: state.appBuilderPlan!.phases.map((phase) => ({ id: phase.id, status: "complete" })) as any,
+          repairRouters: state.appBuilderPlan!.repairRouters,
+        },
+      });
+
+      const result = await runAppBuilderCommand(["status", dir]);
+      const stored = JSON.parse(fs.readFileSync(path.join(dir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(result.ok).toBe(true);
+      expect(result.data.appBuilderRun.status).toBe("completed");
+      expect(result.data.appBuilderRun.currentPhaseId).toBe("evidence-report");
+      expect(result.data.appBuilderRun.phases[0]).toEqual(expect.objectContaining({ id: "target-lock", status: "completed", requiredEvidence: [] }));
+      expect(stored.appBuilderRun.phases[0].requiredEvidence).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function runAppBuilderCommand(args: string[]): Promise<any> {

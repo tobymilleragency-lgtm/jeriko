@@ -1,4 +1,4 @@
-import { readProjectState, writeProjectState, type AppBuilderActiveRepair, type AppBuilderLastVerification, type AppBuilderPhaseRun, type AppBuilderPhaseStatus, type AppBuilderRun, type ProjectState } from "./project-state.js";
+import { readProjectState, writeProjectState, type AppBuilderActiveRepair, type AppBuilderLastVerification, type AppBuilderPhaseRun, type AppBuilderPhaseStatus, type AppBuilderRun, type AppBuilderRunStatus, type ProjectState } from "./project-state.js";
 
 export interface InitializeAppBuilderRunOptions {
   trigger?: string;
@@ -49,20 +49,13 @@ export function initializeAppBuilderRun(dir: string, options: InitializeAppBuild
     throw new Error("Project is missing a valid appBuilderPlan; cannot initialize app-builder run.");
   }
   const now = options.now ?? new Date().toISOString();
-  const phases = plan.phases.map((phase, index): AppBuilderPhaseRun => ({
-    id: phase.id,
-    status: index === 0 ? "in_progress" : "pending",
-    description: phase.description,
-    requiredEvidence: [...phase.requiredEvidence],
-    evidence: [],
-    ...(index === 0 ? { startedAt: now } : {}),
-  }));
+  const phases = buildInitialPhases(plan.phases, now);
   const run: AppBuilderRun = {
-    status: "running",
+    status: runStatusFromInitialPhases(phases),
     trigger: options.trigger ?? "manual",
     startedAt: now,
     updatedAt: now,
-    currentPhaseId: phases[0]?.id ?? "",
+    currentPhaseId: currentPhaseIdFromInitialPhases(phases),
     mandatorySkillsLoaded: [...plan.mandatorySkills],
     phases,
     failures: [],
@@ -89,13 +82,22 @@ export function recordAppBuilderPhase(dir: string, phaseId: string, status: AppB
   const blocked = status === "blocked";
   const nextPhaseId = blocked ? phaseId : nextRunnablePhaseId(phases);
   const advancedPhases = blocked ? phases : markCurrentPhaseInProgress(phases, nextPhaseId, now);
-  const run: AppBuilderRun = {
-    ...existing,
-    status: blocked ? "blocked" : nextPhaseId ? "running" : "completed",
-    updatedAt: now,
-    currentPhaseId: nextPhaseId ?? phaseId,
-    phases: advancedPhases,
-  };
+  let run: AppBuilderRun;
+  if (phaseId === "verify" && status === "completed" && !blocked) {
+    run = completeRepairCycleRun({
+      ...existing,
+      phases: advancedPhases,
+      updatedAt: now,
+    }, now, evidence.join("\n") || "verify-app passed");
+  } else {
+    run = {
+      ...existing,
+      status: blocked ? "blocked" : nextPhaseId ? "running" : "completed",
+      updatedAt: now,
+      currentPhaseId: nextPhaseId ?? phaseId,
+      phases: advancedPhases,
+    };
+  }
   writeProjectState(dir, { ...state, appBuilderRun: run });
   return run;
 }
@@ -255,24 +257,63 @@ function initializeRunFromState(state: ProjectState, options: { now?: string; tr
   const plan = state.appBuilderPlan;
   if (!plan || plan.phases.length === 0) throw new Error("Project is missing appBuilderPlan phases.");
   const now = options.now ?? new Date().toISOString();
-  const phases = plan.phases.map((phase, index): AppBuilderPhaseRun => ({
-    id: phase.id,
-    status: index === 0 ? "in_progress" : "pending",
-    description: phase.description,
-    requiredEvidence: [...phase.requiredEvidence],
-    evidence: [],
-    ...(index === 0 ? { startedAt: now } : {}),
-  }));
+  const phases = buildInitialPhases(plan.phases, now);
   return {
-    status: "running",
+    status: runStatusFromInitialPhases(phases),
     trigger: options.trigger ?? "manual",
     startedAt: now,
     updatedAt: now,
-    currentPhaseId: phases[0]?.id ?? "",
+    currentPhaseId: currentPhaseIdFromInitialPhases(phases),
     mandatorySkillsLoaded: [...plan.mandatorySkills],
     phases,
     failures: [],
   };
+}
+
+function buildInitialPhases(planPhases: Array<any>, now: string): AppBuilderPhaseRun[] {
+  const phaseRuns = planPhases.map((phase, index): AppBuilderPhaseRun => {
+    const legacyStatus = String(phase?.status ?? "");
+    const status: AppBuilderPhaseStatus = legacyStatus === "complete" || legacyStatus === "completed"
+      ? "completed"
+      : legacyStatus === "blocked"
+        ? "blocked"
+        : legacyStatus === "skipped"
+          ? "skipped"
+          : legacyStatus === "in_progress"
+            ? "in_progress"
+            : "pending";
+    return {
+      id: String(phase.id),
+      status,
+      description: phase.description,
+      requiredEvidence: Array.isArray(phase.requiredEvidence) ? [...phase.requiredEvidence] : [],
+      evidence: [],
+      ...(status === "completed" ? { startedAt: now, completedAt: now } : {}),
+      ...(status === "blocked" ? { startedAt: now, blockedAt: now } : {}),
+      ...(status === "in_progress" || (index === 0 && status === "pending") ? { startedAt: now } : {}),
+    };
+  });
+  if (!phaseRuns.some((phase) => phase.status === "in_progress") && !completedEnoughForLegacyRun(phaseRuns)) {
+    const firstPending = phaseRuns.find((phase) => phase.status === "pending");
+    if (firstPending) firstPending.status = "in_progress", firstPending.startedAt = firstPending.startedAt ?? now;
+  }
+  return phaseRuns;
+}
+
+function runStatusFromInitialPhases(phases: AppBuilderPhaseRun[]): AppBuilderRunStatus {
+  if (phases.some((phase) => phase.status === "blocked")) return "blocked";
+  return completedEnoughForLegacyRun(phases) ? "completed" : "running";
+}
+
+function currentPhaseIdFromInitialPhases(phases: AppBuilderPhaseRun[]): string {
+  const active = phases.find((phase) => phase.status === "in_progress" || phase.status === "blocked");
+  if (active) return active.id;
+  if (completedEnoughForLegacyRun(phases)) return phases.find((phase) => phase.id === "evidence-report")?.id ?? phases.at(-1)?.id ?? "";
+  return phases.find((phase) => phase.status === "pending")?.id ?? phases.at(-1)?.id ?? "";
+}
+
+function completedEnoughForLegacyRun(phases: AppBuilderPhaseRun[]): boolean {
+  return phases.length > 0 && phases.filter((phase) => phase.id !== "repair").every((phase) => phase.status === "completed" || phase.status === "skipped");
 }
 
 function nextRunnablePhaseId(phases: AppBuilderPhaseRun[]): string | null {

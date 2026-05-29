@@ -98,6 +98,22 @@ describe("generated-copy mutation guard", () => {
     }
   });
 
+  it("blocks malformed package-manager Vite commands that ignore requested preview ports", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-bash-vite-guard-"));
+    try {
+      const result = parseToolResult(await bashTool.execute({
+        cwd: dir,
+        command: "pnpm run dev -- --host 127.0.0.1 --port 6001 --strictPort",
+      }));
+
+      expect(result.ok).toBe(false);
+      expect(result.guard).toBe("malformed_vite_dev_command");
+      expect(result.suggestedCommand).toBe("pnpm exec vite --host 127.0.0.1 --port 6001 --strictPort");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("allows writes in the matching real repo", async () => {
     const ws = makeWorkspacePair();
     try {
