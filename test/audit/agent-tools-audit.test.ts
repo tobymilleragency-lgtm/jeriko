@@ -220,6 +220,16 @@ describe("bash tool", () => {
     expect(result).toContain("[stderr]");
   });
 
+  it("blocks malformed package-manager Vite dev commands that make Vite ignore the requested port", async () => {
+    const result = await execute({ command: "pnpm run dev -- --host 127.0.0.1 --port 6001 --strictPort" });
+    const parsed = JSON.parse(result);
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.guard).toBe("malformed_vite_dev_command");
+    expect(parsed.error).toContain("passes a literal `--` through to Vite");
+    expect(parsed.suggestedCommand).toBe("pnpm exec vite --host 127.0.0.1 --port 6001 --strictPort");
+  });
+
   it("respects cwd parameter", async () => {
     const result = await execute({ command: "pwd", cwd: testDir });
     expect(result).toContain(path.basename(testDir));

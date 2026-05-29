@@ -99,6 +99,20 @@ describe("create command templates", () => {
     expect(templateText).toContain("Request a Project Review");
   });
 
+  it("keeps web-static Vite scripts arg-safe for explicit preview ports", () => {
+    const packageJsonPath = path.join(repoRoot, "templates", "webdev", "web-static", "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    const templateJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "templates", "webdev", "web-static", "template.json"), "utf8"));
+    const embeddedPackageJson = JSON.parse(templateJson.files["package.json"]);
+
+    for (const pkg of [packageJson, embeddedPackageJson]) {
+      expect(pkg.scripts.dev).toBe("vite");
+      expect(pkg.scripts.preview).toBe("vite preview");
+      expect(pkg.scripts.dev).not.toContain("--host");
+      expect(pkg.scripts.preview).not.toContain("--host");
+    }
+  });
+
   it("fails premium marketing site quality when a full-site contract is implemented as plain brochureware", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-premium-site-scan-"));
     try {
@@ -314,11 +328,54 @@ export default defineConfig({
 
       expect(list.status).toBe(0);
       expect(list.stdout).toContain("Mobile Apps");
+      expect(list.stdout.toLowerCase()).toContain("expo");
       expect(list.stdout).toContain("app");
       expect(result.ok).toBe(true);
       expect(result.data.template).toBe("app");
       expect(pkg.name).toBe("field-app");
       expect(fs.existsSync(path.join(appDir, "app", "(tabs)", "index.tsx"))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs web-static projects that accidentally contain the mobile/Expo scaffold", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-repair-webstatic-mobile-"));
+    try {
+      fs.mkdirSync(path.join(dir, "app", "(tabs)"), { recursive: true });
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "app", "(tabs)", "index.tsx"), "export default function Mobile(){return null;}\n");
+      fs.writeFileSync(path.join(dir, "app.config.ts"), "export default {};\n");
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "bad-site", main: "expo-router/entry", dependencies: { expo: "1.0.0", "react-native": "1.0.0" } }, null, 2));
+      const projectState = buildProjectState({
+        name: "bad-site",
+        template: "web-static",
+        profile: "web-static",
+        prompt: "Build a plumbing contractor website with services and service areas",
+        seoProfile: "local-service",
+      });
+      projectState.appSpec?.pages.push({ path: "/areas/edmond", title: "Edmond" });
+      projectState.appSpec?.integrations.forbidden.push("supabase");
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify(projectState, null, 2));
+
+      const result = repairGeneratedProject(dir, { runPackageManager: false });
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+      const state = JSON.parse(fs.readFileSync(path.join(dir, ".jeriko", "project-state.json"), "utf8"));
+
+      expect(result.actions).toEqual(expect.arrayContaining(["replaced_mismatched_web_static_scaffold"]));
+      expect(fs.existsSync(path.join(dir, "client", "src", "App.tsx"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "scripts", "jeriko-static-server.mjs"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, "app", "(tabs)", "index.tsx"))).toBe(false);
+      expect(result.actions.some((action) => action.startsWith("mismatched_scaffold_backup:"))).toBe(true);
+      expect(pkg.main).not.toBe("expo-router/entry");
+      expect(JSON.stringify(pkg)).not.toContain("react-native");
+      expect(state.appSpec.integrations.allowed).toContain("supabase");
+      expect(state.appSpec.integrations.forbidden).not.toContain("supabase");
+      expect(state.appSpec.pages.some((page: any) => page.path === "/service-areas/edmond")).toBe(true);
+      expect(state.appSpec.pages.some((page: any) => page.path === "/areas/edmond")).toBe(false);
+      expect(state.commands.start).toContain("jeriko-static-server.mjs");
+      expect(state.appBuilderPlan.mode).toBe("controlled-app-build");
+      expect(state.verification.requiredGates).toEqual(expect.arrayContaining(["premium_marketing_site_scan", "app_builder_control_plan"]));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -555,6 +612,10 @@ export default defineConfig({
       expect(state.appSpec.prompt).toBe("Build a roofing contractor website in Tulsa with SEO pages and quote photos");
       expect(state.appSpec.appType).toBe("local-service-site");
       expect(state.appSpec.integrations.forbidden).toContain("stripe");
+      const app = fs.readFileSync(path.join(projectDir, "client", "src", "App.tsx"), "utf8");
+      expect(app).toContain('path="/services/:slug"');
+      expect(app).toContain('path="/service-areas/:slug"');
+      expect(app).not.toMatch(/contractor-marketing|Contractor Marketing|good jobs go cold|software dashboard/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -854,6 +915,48 @@ export default defineConfig({
       expect(html).toContain('<a href="tel:+16201230263" data-jeriko-track="call_click"');
       expect(html).toContain('<a href="mailto:hello@example.com" data-jeriko-track="email_click"');
       expect(html).toContain('<a href="/schedule" data-jeriko-track="booking_click"');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prerender script uses a trade-specific content model for plumbing contractor sites", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-prerender-plumbing-model-"));
+    try {
+      fs.mkdirSync(path.join(dir, "client", "src", "pages"), { recursive: true });
+      fs.mkdirSync(path.join(dir, "dist", "public"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ scripts: { build: "vite build" } }, null, 2));
+      fs.writeFileSync(path.join(dir, "client", "index.html"), '<html lang="en"><head><title>Plumbing</title></head><body><div id="root"></div></body></html>');
+      fs.writeFileSync(path.join(dir, "client", "src", "App.tsx"), `
+        import { Route } from 'wouter';
+        function Home(){ return <main>Home</main>; }
+        function LeakRepair(){ return <main>Leak Repair</main>; }
+        function Contact(){ return <main>Contact</main>; }
+        export default function App(){return <><Route path={"/"} component={Home} /><Route path={"/services/leak-repair"} component={LeakRepair} /><Route path={"/contact"} component={Contact} /></>}
+      `);
+      fs.mkdirSync(path.join(dir, ".jeriko"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".jeriko", "project-state.json"), JSON.stringify(buildProjectState({
+        name: "Plumbing Contractor",
+        template: "web-static",
+        profile: "web-static",
+        prompt: "Build a plumbing contractor website with leak repair, drain cleaning, water heaters, sewer repair, emergency calls, and service areas",
+        seoProfile: "local-service",
+      }), null, 2));
+      expect(applyCrawlerPrerenderSupport(dir, "Plumbing Contractor", "local-service")).toBe(true);
+      fs.writeFileSync(path.join(dir, "dist", "public", "index.html"), '<html lang="en"><head><title>Plumbing</title></head><body><div id="root"></div></body></html>');
+
+      const result = spawnSync(process.execPath, [path.join(dir, "scripts", "jeriko-prerender-seo.mjs")], { cwd: dir, encoding: "utf8" });
+      const homeHtml = fs.readFileSync(path.join(dir, "dist", "public", "index.html"), "utf8");
+      const leakHtml = fs.readFileSync(path.join(dir, "dist", "public", "services", "leak-repair", "index.html"), "utf8");
+
+      expect(result.status).toBe(0);
+      expect(homeHtml).toContain("leak repair");
+      expect(homeHtml).toContain("drain cleaning");
+      expect(homeHtml).toContain("water heater");
+      expect(leakHtml).toContain("shutoff");
+      expect(leakHtml).toContain("photos");
+      expect(homeHtml).not.toMatch(/contractor marketing|software dashboard|good jobs go cold|local SEO system|route page|crawler/i);
+      expect(leakHtml).not.toMatch(/contractor marketing|software dashboard|good jobs go cold|local SEO system|route page|crawler/i);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

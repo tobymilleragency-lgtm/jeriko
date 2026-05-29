@@ -6,7 +6,7 @@ import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readd
 import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { detectDevCommand, getProjectDevLogFile, startDetachedDevServer, type DetachedDevServer } from "./dev.js";
-import { buildProjectState, writeProjectState, type AppProfile } from "./project-state.js";
+import { buildProjectState, readProjectState, writeProjectState, type AppProfile, type ProjectState } from "./project-state.js";
 import { initializeAppBuilderRun, recordAppBuilderPhase } from "./app-builder-controller.js";
 
 // ---------------------------------------------------------------------------
@@ -348,6 +348,14 @@ export const command: CommandHandler = {
       const projectState = info.category === "webdev"
         ? writeProjectState(dir, buildProjectState({ name, template, profile: template as AppProfile, prompt: promptText || undefined, seoProfile }))
         : undefined;
+      if (info.category === "webdev" && template === "web-static" && seoProfile === "local-service") {
+        const createdState = readProjectState(dir);
+        const contractorLocalService = createdState?.appSpec?.successCriteria?.some((criterion) => /Contractor\/local-service sites/i.test(criterion));
+        if (contractorLocalService) {
+          applyLocalServiceStarterContent(dir);
+          applyCrawlerPrerenderSupport(dir, name, seoProfile);
+        }
+      }
       if (info.category === "webdev") {
         initializeAppBuilderRun(dir, { trigger: "create" });
         recordAppBuilderPhase(dir, "target-lock", "completed", [`directory: ${dir}`, `template: ${template}`, `project: ${name}`]);
@@ -868,18 +876,105 @@ export interface RepairGeneratedProjectResult {
   actions: string[];
 }
 
+function applyLocalServiceStarterContent(dir: string): void {
+  const state = readProjectState(dir);
+  const spec = state?.appSpec;
+  if (!state || !spec) return;
+  const appPath = join(dir, "client", "src", "App.tsx");
+  rmSync(join(dir, "client", "src", "pages"), { recursive: true, force: true });
+  const pages = Array.isArray(spec.pages) ? spec.pages.map((page) => ({ path: typeof page.path === "string" ? page.path : String(page), title: typeof page.title === "string" ? page.title : routeTitle(typeof page.path === "string" ? page.path : String(page)) })) : [];
+  const services = pages.filter((page) => page.path.startsWith("/services/")).map((page) => ({ slug: page.path.split("/").filter(Boolean).at(-1) ?? "service", title: page.title }));
+  const cities = pages.filter((page) => page.path.startsWith("/service-areas/")).map((page) => ({ slug: page.path.split("/").filter(Boolean).at(-1) ?? "area", title: page.title }));
+  const projectTitle = buildTemplatePlaceholderValues(state.name).project_title;
+  writeFileSync(appPath, `import { type ReactNode, useState } from "react";
+import { Route, Switch, useLocation } from "wouter";
+import { ArrowRight, CheckCircle2, Menu, PhoneCall, ShieldCheck, Star, Wrench, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+
+const projectTitle = ${JSON.stringify(projectTitle)};
+const services = ${JSON.stringify(services.length ? services : [{ slug: "project-review", title: "Project Review" }], null, 2)};
+const cities = ${JSON.stringify(cities.length ? cities : [{ slug: "primary-service-area", title: "Primary Service Area" }], null, 2)};
+const navItems = [
+  { href: "/", label: "Home" },
+  { href: "/services", label: "Services" },
+  { href: "/process", label: "Process" },
+  { href: "/about", label: "About" },
+  { href: "/service-areas", label: "Service Areas" },
+  { href: "/projects", label: "Projects" },
+  { href: "/reviews", label: "Reviews" },
+  { href: "/faq", label: "FAQ" },
+  { href: "/contact", label: "Contact" },
+];
+
+function AppLink({ href, className, children, onClick }: { href: string; className?: string; children: ReactNode; onClick?: () => void }) {
+  const [, setLocation] = useLocation();
+  return <a href={href} className={className} onClick={(event) => { if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return; event.preventDefault(); onClick?.(); setLocation(href); window.scrollTo(0, 0); }}>{children}</a>;
+}
+
+function Shell({ children }: { children: ReactNode }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const close = () => setMenuOpen(false);
+  return <div className="min-h-screen bg-zinc-950 text-white"><header className="fixed top-0 z-50 w-full border-b border-white/10 bg-zinc-950/95 backdrop-blur"><div className="container mx-auto flex h-20 items-center justify-between px-5"><AppLink href="/" className="text-xl font-black" onClick={close}>{projectTitle}</AppLink><nav className="hidden items-center gap-5 text-sm font-bold text-zinc-300 xl:flex">{navItems.map((item) => <AppLink key={item.href} href={item.href} className="hover:text-white">{item.label}</AppLink>)}</nav><AppLink href="/contact" className="hidden md:block"><Button className="bg-blue-600 font-bold hover:bg-blue-700">Request project review</Button></AppLink><button className="xl:hidden" aria-label={menuOpen ? "Close menu" : "Open menu"} onClick={() => setMenuOpen((open) => !open)}>{menuOpen ? <X /> : <Menu />}</button></div>{menuOpen && <nav className="grid gap-3 border-t border-white/10 p-5 xl:hidden">{navItems.map((item) => <AppLink key={item.href} href={item.href} onClick={close} className="rounded-xl border border-white/10 p-3">{item.label}</AppLink>)}</nav>}</header><main className="pt-20">{children}</main><StickyAuditRail /><footer className="border-t border-white/10 bg-black px-6 py-12 text-sm text-zinc-400"><div className="container mx-auto grid gap-8 md:grid-cols-3"><div><strong className="text-white">{projectTitle}</strong><p className="mt-3 leading-7">Customer-ready service details, local coverage, project-review CTAs, and honest next-step copy.</p></div><div><strong className="text-white">Service Areas</strong><div className="mt-3 grid gap-2">{cities.slice(0, 5).map((city) => <AppLink key={city.slug} href={"/service-areas/" + city.slug} className="hover:text-white">{city.title}</AppLink>)}</div></div><div><strong className="text-white">Next step</strong><p className="mt-3">Call, email, or send project details for review. No sales pressure, just honest advice.</p></div></div></footer></div>;
+}
+
+function HeroBand({ eyebrow, title, body }: { eyebrow: string; title: string; body: string }) {
+  return <section className="relative overflow-hidden px-6 py-20 sm:py-28"><div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,0.28),transparent_34%),linear-gradient(135deg,#0c1224,#09090b)]" /><div className="container mx-auto grid max-w-7xl gap-12 xl:grid-cols-[1fr_0.85fr] xl:items-center"><div><Badge className="mb-6 border-blue-500/30 bg-blue-500/10 text-blue-200">{eyebrow}</Badge><h1 className="max-w-5xl text-5xl font-black leading-tight tracking-tight sm:text-6xl">{title}</h1><p className="mt-6 max-w-3xl text-lg leading-8 text-zinc-300">{body}</p><div className="mt-9 flex flex-col gap-4 sm:flex-row"><AppLink href="/contact"><Button size="lg" className="bg-blue-600 font-bold hover:bg-blue-700">Request project review <ArrowRight className="ml-2 h-5 w-5" /></Button></AppLink><AppLink href="/services"><Button size="lg" variant="outline" className="border-white/15 bg-white/5 text-white hover:bg-white/10">Review services</Button></AppLink></div></div><LeadOpsVisual /></div></section>;
+}
+
+function LeadOpsVisual() { return <div className="rounded-[2rem] border border-blue-400/20 bg-white/[0.06] p-6 shadow-2xl shadow-blue-950/40"><p className="font-black text-blue-100">Project Readiness Visual</p><div className="mt-5 grid gap-4">{["Problem", "Photos", "Urgency", "Follow-up"].map((item) => <div key={item} className="rounded-2xl border border-white/10 bg-black/30 p-4"><span className="text-sm text-zinc-400">Captured</span><p className="text-2xl font-black">{item}</p></div>)}</div><p className="mt-5 rounded-2xl border border-blue-300/20 bg-blue-500/10 p-4 text-sm leading-6 text-blue-100">Clear service details, honest proof, and a review path before anyone promises timing or price.</p></div>; }
+function LeadFlowLineSection() { return <section className="px-6 py-24"><SectionIntro badge="Project request path" title="One clean line from project details to next steps." body="Visitors need to know what problem fits, what information to send, what happens after the request, and how to reach the business without guessing." /><div className="container mx-auto grid gap-4 md:grid-cols-5">{["Problem", "Photos", "Review", "Questions", "Schedule"].map((step, index) => <div key={step} className="rounded-2xl border border-white/10 bg-zinc-900 p-5"><span className="text-sm font-black text-blue-300">0{index + 1}</span><h3 className="mt-2 text-xl font-black">{step}</h3></div>)}</div></section>; }
+function LeadLeakAudit() { const [active, setActive] = useState(services[0]?.title || "Project Review"); return <section className="px-6 py-24"><div className="container mx-auto rounded-[2rem] border border-blue-400/20 bg-blue-500/10 p-8"><SectionIntro badge="Fit check" title="Help the homeowner identify the right service before they reach out." body="A useful page sorts urgent work from planned work and asks for the details needed for a real first conversation." /><div className="grid gap-3 md:grid-cols-2">{services.slice(0, 6).map((service) => <button key={service.slug} onClick={() => setActive(service.title)} className={\`rounded-2xl border p-4 text-left font-bold \${active === service.title ? "border-blue-300 bg-blue-500/20" : "border-white/10 bg-black/20"}\`}>{service.title}</button>)}</div><p className="mt-6 text-lg font-bold text-blue-100">Selected review path: {active}</p></div></section>; }
+function BeforeAfterComparison() { return <section className="px-6 py-24"><SectionIntro badge="Before / after" title="Generic inquiry versus a useful project request." body="The better version gathers context, photos, timing, and preferred follow-up so the next conversation is productive." /><div className="container mx-auto grid gap-6 lg:grid-cols-2"><CardBlock title="Weak request" items={["Only a name and phone", "No urgency", "No project type", "No photos", "No clear next step"]} /><CardBlock title="Useful request" items={["Service selected", "Problem described", "Photos encouraged", "Email follow-up available", "Warm thank-you copy"]} /></div></section>; }
+function StickyAuditRail() { return <AppLink href="/contact" className="fixed bottom-6 right-6 z-40 hidden rounded-full bg-blue-600 px-5 py-3 text-sm font-black shadow-2xl shadow-blue-900/40 lg:inline-flex">Request review <ArrowRight className="ml-2 h-4 w-4" /></AppLink>; }
+function SectionIntro({ badge, title, body }: { badge: string; title: string; body: string }) { return <div className="container mx-auto mb-12 max-w-3xl"><Badge className="mb-4 border-white/10 bg-white/5 text-zinc-300">{badge}</Badge><h2 className="text-4xl font-black tracking-tight sm:text-5xl">{title}</h2><p className="mt-5 text-lg leading-8 text-zinc-400">{body}</p></div>; }
+function CardBlock({ title, items }: { title: string; items: string[] }) { return <Card className="border-white/10 bg-zinc-900 text-white"><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent><ul className="grid gap-3">{items.map((item) => <li key={item} className="flex gap-2 text-zinc-300"><CheckCircle2 className="h-5 w-5 text-blue-300" />{item}</li>)}</ul></CardContent></Card>; }
+function ServicesIndex() { return <><HeroBand eyebrow="Services" title={"Services " + projectTitle + " can explain clearly"} body="Each service detail should help a homeowner understand the problem, what information to gather, and how to request a review without fake promises." /><section className="px-6 py-20"><div className="container mx-auto grid gap-5 md:grid-cols-2 xl:grid-cols-3">{services.map((service) => <AppLink key={service.slug} href={"/services/" + service.slug} className="rounded-2xl border border-white/10 bg-zinc-900 p-6 hover:border-blue-400/40"><Wrench className="mb-4 h-7 w-7 text-blue-300" /><h2 className="text-2xl font-black">{service.title}</h2><p className="mt-3 leading-7 text-zinc-400">Problem details, photos, urgency, and preferred follow-up help make the first conversation useful.</p></AppLink>)}</div></section><LeadLeakAudit /><CTA /></>; }
+function ServicePage() { const [location] = useLocation(); const slug = location.split("/").filter(Boolean).at(-1); const service = services.find((item) => item.slug === slug) || services[0]; return <><HeroBand eyebrow="Service" title={service.title + " review and next steps"} body="Tell visitors what problems fit this service, what to collect before reaching out, and what happens after the request is reviewed." /><section className="px-6 py-20"><div className="container mx-auto grid gap-6 lg:grid-cols-3"><CardBlock title="What to send" items={["Photos when safe", "Where the issue is", "When it started", "How urgent it feels"]} /><CardBlock title="What we avoid" items={["Fake 24/7 claims", "Unsupported license claims", "Instant-price promises", "Pressure-heavy sales copy"]} /><CardBlock title="Next step" items={["Review the details", "Ask clarifying questions", "Confirm fit and timing", "Schedule or advise honestly"]} /></div></section><CTA /></>; }
+function ServiceAreasIndex() { return <><HeroBand eyebrow="Service Areas" title="Local coverage with useful homeowner context." body="Good area content connects real services to what the visitor needs to know before calling instead of swapping city names into generic copy." /><section className="px-6 py-20"><div className="container mx-auto grid gap-5 md:grid-cols-2 xl:grid-cols-3">{cities.map((city) => <AppLink key={city.slug} href={"/service-areas/" + city.slug} className="rounded-2xl border border-white/10 bg-zinc-900 p-6 hover:border-blue-400/40"><h2 className="text-2xl font-black">{city.title}</h2><p className="mt-3 leading-7 text-zinc-400">Service requests in this area should include address context, photos, urgency, and preferred follow-up.</p></AppLink>)}</div></section><CTA /></>; }
+function CityPage() { const [location] = useLocation(); const slug = location.split("/").filter(Boolean).at(-1); const city = cities.find((item) => item.slug === slug) || cities[0]; return <><HeroBand eyebrow="Local service" title={projectTitle + " project reviews in " + city.title} body="Use this page to explain service fit, local context, request details, photos, and honest next steps." /><section className="px-6 py-20"><div className="container mx-auto grid gap-6 lg:grid-cols-3"><CardBlock title="Useful details" items={["Address or nearby area", "Project type", "Photos if available", "Urgency and timing"]} /><CardBlock title="Common services" items={services.slice(0, 4).map((service) => service.title)} /><CardBlock title="Follow-up" items={["Email encouraged", "Phone available", "Review before advice", "Booking link can be added when connected"]} /></div></section><CTA /></>; }
+function Process() { return <><HeroBand eyebrow="Process" title="Review first. Advise honestly. Schedule when it fits." body="The flow should set expectations without pretending instant dispatch, AI review, or same-day service exists unless the business supplied it." /><LeadFlowLineSection /><CTA /></>; }
+function About() { return <><HeroBand eyebrow="About" title={projectTitle + " should sound like a real local business."} body="The page explains service fit, proof, and next steps in plain language without unsupported claims." /><BeforeAfterComparison /><CTA /></>; }
+function Projects() { return <><HeroBand eyebrow="Proof" title="Project proof should be real or clearly absent." body="Use real photos, real reviews, and real credentials when supplied. Do not invent proof." /><section className="px-6 py-20"><div className="container mx-auto grid gap-5 md:grid-cols-3">{["Photos", "Reviews", "Scope notes"].map((item) => <CardBlock key={item} title={item} items={["Add only when supplied", "Keep claims neutral", "Explain what matters"]} />)}</div></section><CTA /></>; }
+function Reviews() { return <><HeroBand eyebrow="Reviews" title="Trust proof belongs here when supplied." body="If reviews are not supplied yet, this page should explain the review standard without fake counts or ratings." /><CTA /></>; }
+function FAQ() { return <><HeroBand eyebrow="FAQ" title="Answer the questions that block the first call." body="Helpful FAQs cover fit, photos, timing, quote expectations, follow-up, and what not to promise before review." /><section className="px-6 py-20"><div className="container mx-auto grid gap-5 md:grid-cols-2">{["Should I call or send photos?", "What happens after I submit?", "Can I book online?", "Do you promise emergency service?"].map((q) => <CardBlock key={q} title={q} items={["Send the safest useful details.", "The project is reviewed before advice.", "Booking can be added when connected.", "No unsupported response-time promises."]} />)}</div></section></>; }
+function Contact() { return <><HeroBand eyebrow="Contact" title="Send project details for a real review." body="Thanks — Toby or the business owner will personally review your project and reach out. No sales pressure, just honest advice." /><section className="px-6 py-20"><div className="container mx-auto grid gap-6 lg:grid-cols-3"><CardBlock title="Send these details" items={["Name and phone", "Email for follow-up", "Service needed", "Photos if safe", "Urgency and location"]} /><CardBlock title="Contact options" items={["Call the business", "Email project details", "Use booking link when connected", "No fake instant-response claim"]} /><CardBlock title="Thank-you copy" items={["Warm confirmation", "Personal review", "Next steps", "No pressure"]} /></div></section></>; }
+function PolicyPage({ title }: { title: string }) { return <><HeroBand eyebrow="Policy" title={title} body="Keep legal and privacy copy accurate for the actual business before launch." /></>; }
+function CTA() { return <aside className="px-6 py-24"><div className="container mx-auto rounded-[2rem] border border-blue-500/20 bg-blue-600/10 p-8 sm:p-12"><strong className="block text-4xl font-black">Ready for a cleaner project request path?</strong><p className="mt-4 max-w-3xl leading-8 text-zinc-300">Ask for the details, review them personally, and add self-booking when the calendar is connected.</p><AppLink href="/contact" className="mt-8 inline-flex"><Button size="lg" className="bg-blue-600 font-bold hover:bg-blue-700">Request review <ArrowRight className="ml-2 h-5 w-5" /></Button></AppLink></div></aside>; }
+function Home() { return <><HeroBand eyebrow="Local service website" title={projectTitle + " built around useful project requests"} body="The site should help homeowners choose the right service, send the right details, and understand what happens next without fake urgency or unsupported claims." /><LeadFlowLineSection /><LeadLeakAudit /><BeforeAfterComparison /><ServicesIndex /><CTA /></>; }
+function NotFound() { return <HeroBand eyebrow="404" title="Page not found." body="Use the navigation to get back to the site." />; }
+
+export default function App() { return <Shell><Switch><Route path="/" component={Home} /><Route path="/services" component={ServicesIndex} /><Route path="/services/:slug" component={ServicePage} /><Route path="/process" component={Process} /><Route path="/about" component={About} /><Route path="/service-areas" component={ServiceAreasIndex} /><Route path="/service-area" component={ServiceAreasIndex} /><Route path="/service-areas/:slug" component={CityPage} /><Route path="/projects" component={Projects} /><Route path="/gallery" component={Projects} /><Route path="/reviews" component={Reviews} /><Route path="/faq" component={FAQ} /><Route path="/contact" component={Contact} /><Route path="/privacy" component={() => <PolicyPage title="Privacy Policy" />} /><Route path="/terms" component={() => <PolicyPage title="Terms" />} /><Route component={NotFound} /></Switch></Shell>; }
+`);
+}
+
+function routeTitle(pathValue: string): string {
+  const last = pathValue.split("/").filter(Boolean).at(-1) || "Home";
+  return last.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export function repairGeneratedProject(dir: string, options: RepairGeneratedProjectOptions = {}): RepairGeneratedProjectResult {
   if (!existsSync(dir)) {
     failWithDetails(`Project directory not found: "${dir}"`, { errorCode: "E_NOT_FOUND", directory: dir });
   }
 
-  const projectName = options.projectName || inferProjectName(dir);
+  const stateBeforeRepair = readProjectState(dir);
+  const projectName = options.projectName || stateBeforeRepair?.name || inferProjectName(dir);
+  const scaffoldActions = repairMismatchedWebStaticScaffold(dir, projectName, stateBeforeRepair);
+  if ((stateBeforeRepair?.template === "web-static" || stateBeforeRepair?.profile === "web-static") && scaffoldActions.length === 0) {
+    const seoProfile = stateBeforeRepair?.appSpec?.appType && /local-service|contractor/i.test(String(stateBeforeRepair.appSpec.appType)) ? "local-service" : "standard";
+    applyCrawlerPrerenderSupport(dir, projectName, seoProfile);
+  }
   const changedFiles = replaceTemplatePlaceholdersWithReport(dir, projectName);
+  const titleSanitizerActions = sanitizePublicProjectTitle(dir, projectName);
   const sanitizerActions = sanitizeStaticWebProject(dir);
   const lockfileNeedsRefresh = hasPnpmPatchedDependencyDrift(dir) || sanitizerActions.includes("package_json_removed_static_auth_runtime_deps");
   let lockfileRefreshed = false;
   const actions = [
+    ...scaffoldActions,
     ...(changedFiles.length > 0 ? ["placeholders_replaced"] : []),
+    ...titleSanitizerActions,
     ...sanitizerActions,
   ];
 
@@ -898,6 +993,114 @@ export function repairGeneratedProject(dir: string, options: RepairGeneratedProj
   }
 
   return { directory: dir, projectName, changedFiles, lockfileNeedsRefresh, lockfileRefreshed, actions };
+}
+
+function repairMismatchedWebStaticScaffold(dir: string, projectName: string, projectState = readProjectState(dir)): string[] {
+  if (projectState?.template !== "web-static" && projectState?.profile !== "web-static") return [];
+  const appPath = join(dir, "client", "src", "App.tsx");
+  const packagePath = join(dir, "package.json");
+  const packageJson = existsSync(packagePath) ? readFileSync(packagePath, "utf8") : "";
+  const looksLikeMobileScaffold = /expo-router\/entry|expo\s+start|react-native|nativewind|app\.config\.ts/i.test(packageJson)
+    || existsSync(join(dir, "app.config.ts"))
+    || existsSync(join(dir, "metro.config.js"))
+    || existsSync(join(dir, "app", "(tabs)", "index.tsx"));
+  if (existsSync(appPath) && !looksLikeMobileScaffold) return [];
+
+  const templateDir = findTemplateDir("webdev/web-static");
+  if (!templateDir) {
+    failWithDetails("Cannot repair web-static project: web-static template not found on disk.", {
+      errorCode: "E_TEMPLATE_NOT_FOUND",
+      directory: dir,
+      template: "web-static",
+    });
+  }
+
+  const backupDir = join(dir, ".jeriko", `mismatched-scaffold-backup-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`);
+  mkdirSync(backupDir, { recursive: true });
+  for (const entry of readdirSync(dir)) {
+    if (entry === ".git" || entry === ".jeriko") continue;
+    const from = join(dir, entry);
+    const to = join(backupDir, entry);
+    rmSync(to, { recursive: true, force: true });
+    cpSync(from, to, { recursive: true });
+    rmSync(from, { recursive: true, force: true });
+  }
+
+  cpSync(templateDir, dir, { recursive: true });
+  replaceTemplatePlaceholders(dir, projectName);
+  const seoProfile = projectState?.appSpec?.appType && /local-service|contractor/i.test(String(projectState.appSpec.appType)) ? "local-service" : "standard";
+  applyCrawlerPrerenderSupport(dir, projectName, seoProfile);
+  writeProjectState(dir, normalizeRepairedWebStaticProjectState(projectState, projectName, seoProfile));
+  initializeAppBuilderRun(dir, { trigger: "repair" });
+  recordAppBuilderPhase(dir, "target-lock", "completed", [`directory: ${dir}`, "template: web-static", `project: ${projectName}`]);
+  recordAppBuilderPhase(dir, "scaffold", "completed", ["replaced mismatched non-web-static scaffold with web-static starter", `backup: ${backupDir}`]);
+  return ["replaced_mismatched_web_static_scaffold", `mismatched_scaffold_backup:${backupDir}`];
+}
+
+function normalizeRepairedWebStaticProjectState(projectState: ProjectState | null, projectName: string, seoProfile: string): ProjectState {
+  const fallback = buildProjectState({ name: projectName, template: "web-static", profile: "web-static", prompt: projectState?.appSpec?.prompt, seoProfile });
+  const next: ProjectState = projectState ? JSON.parse(JSON.stringify(projectState)) : fallback;
+  next.name = projectName;
+  next.template = "web-static";
+  next.profile = "web-static";
+  next.packageManager = "pnpm";
+  next.commands = {
+    ...(fallback.commands ?? {}),
+    ...(next.commands ?? {}),
+    install: "pnpm install --frozen-lockfile --ignore-scripts",
+    check: "pnpm run check",
+    build: "pnpm run build",
+    start: seoProfile === "local-service" ? "node scripts/jeriko-static-server.mjs --port ${PORT}" : "pnpm run preview --port ${PORT} --strictPort",
+    dev: "pnpm run dev",
+  };
+  next.appBuilderPlan = next.appBuilderPlan ?? fallback.appBuilderPlan;
+  const requiredGates = new Set([...(fallback.verification?.requiredGates ?? []), ...(next.verification?.requiredGates ?? [])]);
+  next.verification = { ...(fallback.verification ?? { requiredGates: [] }), ...(next.verification ?? {}), requiredGates: Array.from(requiredGates) };
+  if (next.appSpec) {
+    next.appSpec.pages = next.appSpec.pages.map((page) => ({
+      ...page,
+      path: page.path.replace(/^\/areas(?=\/|$)/, "/service-areas"),
+    }));
+    const allowed = new Set([...(next.appSpec.integrations?.allowed ?? []), "supabase"].map((item) => item.toLowerCase()));
+    const forbidden = new Set((next.appSpec.integrations?.forbidden ?? ["stripe"]).filter((item) => item.toLowerCase() !== "supabase").map((item) => item.toLowerCase()));
+    forbidden.add("stripe");
+    next.appSpec.integrations = {
+      allowed: Array.from(allowed),
+      forbidden: Array.from(forbidden),
+    };
+  }
+  return next;
+}
+
+function sanitizePublicProjectTitle(dir: string, projectName: string): string[] {
+  const rawTitle = titleCaseProjectSlug(slugifyProjectName(projectName));
+  const safeTitle = buildTemplatePlaceholderValues(projectName).project_title;
+  if (!rawTitle || rawTitle === safeTitle) return [];
+  const touched: string[] = [];
+  walkGeneratedTextFiles(dir, (file, content) => {
+    if (!content.includes(rawTitle)) return;
+    writeFileSync(file, content.split(rawTitle).join(safeTitle));
+    touched.push(file);
+  });
+  return touched.length > 0 ? ["sanitized_public_project_title"] : [];
+}
+
+function walkGeneratedTextFiles(dir: string, visit: (file: string, content: string) => void): void {
+  const ignored = new Set([".git", "node_modules", "dist", ".next"]);
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (ignored.has(entry.name)) continue;
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!/\.(tsx?|jsx?|html|md|json|svg|txt|css)$/.test(entry.name)) continue;
+      visit(full, readFileSync(full, "utf8"));
+    }
+  }
 }
 
 export function sanitizeStaticWebProject(dir: string): string[] {
@@ -1177,7 +1380,9 @@ const siteUrl = (process.env.SITE_URL || process.env.VERCEL_PROJECT_PRODUCTION_U
 const baseUrl = siteUrl ? \`https://\${siteUrl}\` : "";
 const projectTitle = ${JSON.stringify(projectTitle)};
 const generatedAt = new Date().toISOString();
+const projectState = readProjectState();
 const siteConfig = readSiteConfig();
+const localServiceModel = buildLocalServiceContentModel(projectState);
 
 if (!existsSync(templatePath)) {
   console.warn("Jeriko SEO prerender skipped: dist/public/index.html not found");
@@ -1201,6 +1406,8 @@ writeFileSync(join(dist, "llms.txt"), renderLlmsTxt());
 console.log(\`Jeriko SEO prerendered \${routes.length} route(s) into \${dist}\`);
 
 function discoverRoutes() {
+  const stateRoutes = discoverProjectStateRoutes();
+  if (siteConfig.seoProfile === "local-service" && stateRoutes.length > 0) return uniqueRoutes(stateRoutes);
   const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
   const imports = new Map();
   for (const match of app.matchAll(/import\\s+([A-Za-z0-9_]+)\\s+from\\s+["'](?:@\\/pages|\\.\\/pages)\\/([^"']+)["']/g)) {
@@ -1220,6 +1427,18 @@ function discoverRoutes() {
 
   if (!routes.some((route) => route.path === "/")) routes.unshift({ path: "/", component: "Home", source: "Home" });
   return uniqueRoutes(routes);
+}
+
+function discoverProjectStateRoutes() {
+  const pages = Array.isArray(projectState?.appSpec?.pages) ? projectState.appSpec.pages : [];
+  const routes = [];
+  for (const page of pages) {
+    const path = typeof page?.path === "string" ? page.path.trim() : "";
+    if (!path || !path.startsWith("/") || path.includes(":")) continue;
+    routes.push({ path, component: routeLabel(path), source: routeLabel(path) });
+  }
+  if (routes.length > 0 && !routes.some((route) => route.path === "/")) routes.unshift({ path: "/", component: "Home", source: "Home" });
+  return routes;
 }
 
 function uniqueRoutes(routes) {
@@ -1304,6 +1523,16 @@ function injectHead(html, page) {
     .replace(/<\\/head>/i, \`\${head}\\n  </head>\`);
 }
 
+function readProjectState() {
+  const statePath = join(root, ".jeriko", "project-state.json");
+  if (!existsSync(statePath)) return null;
+  try {
+    return JSON.parse(readFileSync(statePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function readSiteConfig() {
   const source = existsSync(siteConfigPath) ? readFileSync(siteConfigPath, "utf8") : "";
   const fromEnv = (name) => process.env[name] || "";
@@ -1360,21 +1589,113 @@ function extractPageContent(route) {
 
 function localServiceCrawlerContent(route) {
   const label = routeLabel(route.path);
-  const service = route.path.startsWith("/services/");
+  const serviceSlug = route.path.startsWith("/services/") ? route.path.split("/").filter(Boolean).at(-1) : "";
   const area = route.path.startsWith("/service-areas/");
-  const heading = route.path === "/" ? \`\${projectTitle} contractor marketing built around real project requests\` : \`\${label} for \${projectTitle}\`;
-  const focus = service
-    ? \`\${label.toLowerCase()} work needs plain explanations, clear next steps, trust proof, and quick estimate requests so homeowners understand what to ask before they call.\`
-    : area
-      ? \`\${projectTitle} helps local crews present work clearly for homeowners around \${label}, with honest coverage details, visible proof, and request steps that do not bury the phone call.\`
-      : \`\${projectTitle} gives contractors a clearer way to explain services, show proof, capture project requests, and follow up before good jobs go cold.\`;
-  const paragraphs = [
-    \`\${focus} The site should speak like a real business, not a software dashboard. It should make the work easy to understand, set expectations for the first conversation, and point visitors toward a call or request form without fake guarantees.\`,
-    \`Every section supports a practical buyer decision: what problem is handled, what kind of project fits, what proof matters, and what happens after a request comes in. Homeowners need confidence before they share their address, photos, budget, and timing. Contractors need enough context to decide whether the job is a fit.\`,
-    \`The strongest version pairs service details with local context, photos or review prompts when available, simple contact choices, and a follow-up plan. If a claim is not verified, the copy stays neutral. If a form is not connected yet, the site says what needs connected instead of pretending live delivery is finished.\`,
-    \`For \${label.toLowerCase()}, the content should help someone compare options, understand common scope questions, and know the next step. That means clear language, no filler, no public builder notes, no hidden setup assumptions, and no promises the business has not supplied.\`,
-  ];
+  const service = localServiceModel.services.find((item) => item.slug === serviceSlug) || (serviceSlug ? { slug: serviceSlug, title: label, problem: \`\${label.toLowerCase()} project\`, emergencyAdvice: "document the issue and avoid making the damage worse", evidence: "photos, access notes, and timing" } : null);
+  const coreServices = localServiceModel.services.slice(0, 5).map((item) => item.title.toLowerCase()).join(", ");
+  const primaryService = localServiceModel.services[0]?.title.toLowerCase() || "service";
+  const heading = route.path === "/"
+    ? \`\${projectTitle} \${localServiceModel.tradeLabel} help for real home problems\`
+    : service
+      ? \`\${service.title} from \${projectTitle}\`
+      : area
+        ? \`\${projectTitle} service calls in \${label}\`
+        : \`\${label} for \${projectTitle}\`;
+
+  if (service) {
+    const paragraphs = [
+      \`\${service.title} starts with the problem the homeowner can see: \${service.problem}. The request asks what changed, when it started, whether water, heat, power, or access is affected, and how urgent the visit is.\`,
+      \`Before the appointment, the homeowner needs the safest next step: \${service.emergencyAdvice}. Photos, fixture or equipment details, location in the home, and a preferred call or email follow-up make the first conversation less guesswork.\`,
+      \`Strong \${service.title.toLowerCase()} guidance explains common causes, what the technician will check, what can change the scope, and what information helps price the work honestly. No license, warranty, 24/7, same-day, or emergency-response claim appears unless the business supplied it.\`,
+      \`Useful proof for this work is specific: \${service.evidence}. The call to action stays human: ask for project details, promise review and next steps, and avoid fake instant automation claims.\`,
+    ];
+    return { heading, paragraphs };
+  }
+
+  if (area) {
+    const paragraphs = [
+      \`\${projectTitle} explains what service calls in \${label} usually need: address context, access notes, photos when safe, project timing, and whether the issue is urgent or planned.\`,
+      \`Local coverage connects the area to real services like \${coreServices}. The guidance needs enough detail for a homeowner to act before calling, not thin city-name swaps.\`,
+      \`Coverage in \${label} works best when the homeowner shares address context, parking or access notes, photos when safe, and whether the work is urgent or planned.\`,
+      \`Honest local copy avoids invented coverage claims. If the business has not supplied license numbers, exact response windows, financing, or review counts, those claims stay out.\`,
+      \`The next step is simple: call, send project details, or request a review. If a booking calendar is connected later, self-booking can appear after the request without pretending it exists today.\`,
+    ];
+    return { heading, paragraphs };
+  }
+
+  const paragraphs = route.path === "/"
+    ? [
+      \`\${projectTitle} leads with the actual \${localServiceModel.tradeLabel} problems homeowners recognize: \${coreServices}. Urgent and planned work are easy to sort before anyone fills out a form.\`,
+      \`A strong request path asks for name, phone, email, address or area, project type, urgency, photos if available, and a short description. Email is encouraged because it carries automated follow-up when SMS is not active.\`,
+      \`The thank-you message sounds human: Toby or the business owner will review the project details and reach out with next steps. No fake instant dispatch, no fake AI review, and no unsupported response-time promise.\`,
+      \`The next conversation for \${primaryService} starts with review of the details, clarifying questions, fit and timing, then scheduling or honest advice.\`,
+    ]
+    : [
+      \`\${label} supports the homeowner's decision with specific \${localServiceModel.tradeLabel} context instead of generic marketing filler. It ties back to common services like \${coreServices}.\`,
+      \`The content answers practical questions: what problem fits, what information to gather, what photos help, what could affect scope, and when a call is better than a form.\`,
+      \`Trust proof belongs here only when supplied: real reviews, real photos, real credentials, real coverage areas, and real contact options. Placeholder proof is worse than no proof.\`,
+      \`The next step is visible and honest: call, email, or send project details for review. If self-booking is wired later, add the booking link to the thank-you flow.\`,
+    ];
   return { heading, paragraphs };
+}
+
+function buildLocalServiceContentModel(state) {
+  const prompt = String(state?.appSpec?.prompt || projectTitle).toLowerCase();
+  const pageServices = Array.isArray(state?.appSpec?.pages)
+    ? state.appSpec.pages.filter((page) => typeof page?.path === "string" && page.path.startsWith("/services/")).map((page) => ({ slug: page.path.split("/").filter(Boolean).at(-1), title: String(page.title || routeLabel(page.path)) }))
+    : [];
+  const catalog = inferTradeServiceCatalog(prompt);
+  const bySlug = new Map(catalog.services.map((service) => [service.slug, service]));
+  const services = uniqueServiceModels([...catalog.services, ...pageServices.map((service) => ({ ...fallbackServiceModel(service.slug, service.title), ...bySlug.get(service.slug) }))]);
+  return { tradeLabel: catalog.tradeLabel, services: services.length ? services : catalog.services };
+}
+
+function inferTradeServiceCatalog(prompt) {
+  if (/plumb|drain|water heater|sewer|leak/.test(prompt)) {
+    return { tradeLabel: "plumbing", services: [
+      { slug: "leak-repair", title: "Leak Repair", problem: "water stains, dripping pipes, wet cabinets, soft flooring, or a fixture that will not shut off", emergencyAdvice: "use the nearest shutoff valve if water is active, keep people away from electrical hazards, and take photos only when it is safe", evidence: "photos of the leak area, shutoff location, affected room, and any recent repair history" },
+      { slug: "drain-cleaning", title: "Drain Cleaning", problem: "slow drains, backups, sewer odor, gurgling fixtures, or repeated clogs", emergencyAdvice: "stop using backed-up fixtures and avoid chemical drain cleaners that can damage pipes or expose the technician to hazards", evidence: "which fixtures are affected, when the backup happens, and whether multiple drains are involved" },
+      { slug: "water-heaters", title: "Water Heaters", problem: "no hot water, leaking tanks, rusty water, pilot or ignition trouble, or inconsistent temperature", emergencyAdvice: "avoid touching hot water or electrical/gas controls if there is visible damage, and document the model label when safe", evidence: "unit photos, model and age, fuel type, leak location, and hot-water symptoms" },
+      { slug: "sewer-line-repair", title: "Sewer Line Repair", problem: "yard soft spots, sewer smell, multiple fixture backups, or recurring main-line clogs", emergencyAdvice: "limit water use until the issue is reviewed and keep children and pets away from contaminated areas", evidence: "cleanout location, backup pattern, exterior photos, and any camera or previous service notes" },
+      { slug: "fixture-installation", title: "Fixture Installation", problem: "new faucets, toilets, sinks, disposals, shutoffs, or supply lines that need installed or replaced", emergencyAdvice: "confirm product fit, access, and existing shutoff condition before removing the old fixture", evidence: "photos of the existing fixture, product box/model, shutoff valves, and surrounding cabinet or wall access" },
+      { slug: "repiping", title: "Repiping", problem: "aging supply lines, recurring leaks, low pressure, discolored water, or remodel-driven pipe replacement", emergencyAdvice: "note active leaks and avoid opening walls until the scope is reviewed", evidence: "pipe material photos, affected rooms, pressure symptoms, and remodel timing" },
+    ] };
+  }
+  if (/roof|shingle|storm|gutter/.test(prompt)) {
+    return { tradeLabel: "roofing", services: [
+      { slug: "roof-replacement", title: "Roof Replacement", problem: "aged shingles, repeated leaks, storm wear, or a roof near the end of service life", emergencyAdvice: "avoid climbing on the roof and document visible damage from the ground when safe", evidence: "exterior photos, attic leak signs, age estimate, insurance status, and storm date" },
+      { slug: "roof-repair", title: "Roof Repair", problem: "localized leaks, missing shingles, flashing trouble, or storm damage", emergencyAdvice: "protect interior belongings from active water and avoid temporary roof work in unsafe weather", evidence: "leak location, ceiling photos, roof slope area, and weather timing" },
+      { slug: "storm-damage-restoration", title: "Storm Damage Restoration", problem: "hail, wind, fallen limbs, or sudden exterior damage", emergencyAdvice: "take ground-level photos and avoid signing rushed repair agreements before the damage is reviewed", evidence: "storm date, photos, insurance claim status, and affected elevations" },
+      { slug: "roof-inspections", title: "Roof Inspections", problem: "unknown roof condition before buying, selling, repairing, or planning replacement", emergencyAdvice: "do not climb onto the roof; gather age, leak history, and accessible attic photos", evidence: "roof age, known leaks, property photos, and inspection deadline" },
+      { slug: "gutter-installation", title: "Gutter Installation", problem: "overflow, drainage damage, missing gutters, or roofline water control", emergencyAdvice: "note where water pools and avoid ladder work during storms", evidence: "fascia photos, downspout locations, drainage problem areas, and roofline measurements if available" },
+    ] };
+  }
+  if (/hvac|air conditioning|furnace|heat pump/.test(prompt)) {
+    return { tradeLabel: "HVAC", services: [
+      { slug: "ac-repair", title: "AC Repair", problem: "warm air, frozen lines, short cycling, noise, or sudden cooling loss", emergencyAdvice: "turn the system off if it is frozen or making unsafe noises and note thermostat readings", evidence: "equipment photos, thermostat settings, error codes, and when cooling stopped" },
+      { slug: "ac-installation", title: "AC Installation", problem: "old equipment, poor comfort, high bills, or replacement planning", emergencyAdvice: "gather current equipment details and comfort issues before choosing a size", evidence: "model labels, home size, comfort complaints, and replacement goals" },
+      { slug: "heating-repair", title: "Heating Repair", problem: "no heat, burner trouble, odd smells, cycling, or uneven rooms", emergencyAdvice: "leave the system off if there is a gas smell and follow emergency utility guidance", evidence: "equipment photos, fuel type, thermostat status, and error lights" },
+      { slug: "maintenance", title: "Maintenance", problem: "seasonal tune-up, filter issues, weak airflow, or reliability concerns", emergencyAdvice: "replace accessible filters if appropriate and note recurring symptoms", evidence: "system age, filter size, maintenance history, and comfort notes" },
+    ] };
+  }
+  return { tradeLabel: "home service", services: [
+    { slug: "project-review", title: "Project Review", problem: "a homeowner needs scope, timing, photos, and next steps reviewed", emergencyAdvice: "document the issue clearly and avoid unsafe temporary work", evidence: "photos, address or area, project type, urgency, budget range, and preferred follow-up" },
+    { slug: "repair-service", title: "Repair Service", problem: "something needs diagnosed and repaired before it gets worse", emergencyAdvice: "make the area safe and gather photos before requesting help", evidence: "symptom notes, photos, timing, and access details" },
+    { slug: "installation-service", title: "Installation Service", problem: "a product, fixture, or project needs proper installation", emergencyAdvice: "confirm product fit and site access before scheduling", evidence: "product details, current condition, measurements, and desired timing" },
+  ] };
+}
+
+function fallbackServiceModel(slug, title) {
+  return { slug, title, problem: \`a \${String(title).toLowerCase()} request that needs clear scope and timing\`, emergencyAdvice: "document the condition, avoid unsafe temporary work, and collect photos when safe", evidence: "photos, location, urgency, measurements, and preferred contact details" };
+}
+
+function uniqueServiceModels(services) {
+  const seen = new Set();
+  return services.filter((service) => {
+    if (!service?.slug || seen.has(service.slug)) return false;
+    seen.add(service.slug);
+    return true;
+  });
 }
 
 function pageTitleFor(route, content) {
@@ -1565,11 +1886,7 @@ function escapeXmlText(value: string): string {
 
 function buildTemplatePlaceholderValues(projectName: string): Record<string, string> {
   const projectSlug = slugifyProjectName(projectName);
-  const projectTitle = projectSlug
-    .replace(/[-_]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase()) || "App";
+  const projectTitle = publicProjectTitle(projectSlug);
 
   const bundleName = projectSlug.replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "") || "app";
   const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
@@ -1580,6 +1897,27 @@ function buildTemplatePlaceholderValues(projectName: string): Record<string, str
     app_env_prefix: projectSlug.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase() || "APP",
     bundle_id: `space.manus.${bundleName}.t${timestamp}`,
   };
+}
+
+function publicProjectTitle(projectSlug: string): string {
+  const cleanedSlug = projectSlug
+    .replace(/^(?:production[-_ ]*)?ready[-_ ]*/i, "")
+    .replace(/^demo[-_ ]*/i, "")
+    .replace(/^sample[-_ ]*/i, "")
+    .replace(/^test[-_ ]*/i, "")
+    .replace(/^site[-_ ]*/i, "")
+    .replace(/^website[-_ ]*/i, "")
+    .replace(/^app[-_ ]*/i, "")
+    || projectSlug;
+  return titleCaseProjectSlug(cleanedSlug);
+}
+
+function titleCaseProjectSlug(projectSlug: string): string {
+  return projectSlug
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase()) || "App";
 }
 
 function slugifyProjectName(projectName: string): string {

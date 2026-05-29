@@ -5,7 +5,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExecutionGuard } from "../../src/daemon/agent/guard.js";
-import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, hasPremiumMarketingEvidence, hasRouteBreadthEvidence, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, requiresPremiumMarketingVerification, requiresRouteBreadthVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
+import { buildModelStreamNoProgressRecoveryPrompt, buildNoProgressRecoveryPrompt, buildNoProgressStopSummary, createToolRepeatGuard, createToolRoundRepeatGuard, getLoadedSkillNames, getUseSkillLoadName, hasAppFactoryDoneEvidence, hasContentStructureEvidence, hasExplicitDeliverableDoneEvidence, hasLocalhostPreviewEvidence, hasPassingVerifyApp, hasPremiumMarketingEvidence, hasRouteBreadthEvidence, inferToolResultIsError, isCompletionClaim, isFinalAssistantReport, requiresAppFactoryVerification, requiresContentStructureVerification, requiresExplicitDeliverableVerification, requiresPremiumMarketingVerification, requiresRouteBreadthVerification, toolCallSignature, toolRoundSignature } from "../../src/daemon/agent/agent.js";
 
 describe("Repeated tool-call guard", () => {
   test("normalizes JSON argument key order for signatures", () => {
@@ -79,6 +79,23 @@ describe("Repeated tool-call guard", () => {
     expect(guard(round)).toBeNull();
     expect(guard(round.map((call) => ({ ...call, id: "b" })))).toBeNull();
     expect(guard(round.map((call) => ({ ...call, id: "c" })))).toBeNull();
+  });
+  test("detects previously loaded skill tool results", () => {
+    const loaded = getLoadedSkillNames([
+      { role: "tool", content: JSON.stringify({ ok: true, data: { name: "operator-build-discipline", instructions: "body" } }) },
+      { role: "tool", content: JSON.stringify({ ok: true, data: { name: "premium-ui-motion", alreadyLoaded: true } }) },
+      { role: "tool", content: JSON.stringify({ ok: true, data: { name: "listed-only" } }) },
+    ]);
+
+    expect(loaded.has("operator-build-discipline")).toBe(true);
+    expect(loaded.has("premium-ui-motion")).toBe(true);
+    expect(loaded.has("listed-only")).toBe(false);
+  });
+
+  test("extracts use_skill load names across aliases", () => {
+    expect(getUseSkillLoadName({ id: "a", name: "use_skill", arguments: JSON.stringify({ action: "load", name: "operator-build-discipline" }) })).toBe("operator-build-discipline");
+    expect(getUseSkillLoadName({ id: "b", name: "load_skill", arguments: JSON.stringify({ action: "load", name: "premium-ui-motion" }) })).toBe("premium-ui-motion");
+    expect(getUseSkillLoadName({ id: "c", name: "use_skill", arguments: JSON.stringify({ action: "list" }) })).toBeNull();
   });
 });
 
@@ -202,6 +219,18 @@ describe("No-progress forced summary", () => {
     expect(summary).toContain("brothers-remodeling-okc");
     expect(summary).toContain("valhalla-construction");
     expect(summary).toContain("Treat this run as not trustworthy");
+  });
+
+  test("does not flag directory identity when basename slugifies to captured project", () => {
+    const summary = buildNoProgressStopSummary([
+      { role: "tool", content: JSON.stringify({ ok: true, data: { directory: "/home/toby/.jeriko/projects/production-ready demo PLUMBING contractor", project: "production-ready-demo-plumbing-contractor", gates: [
+        { name: "check", ok: true },
+        { name: "build", ok: true },
+      ] } }) },
+    ], "Model stream stopped before Jeriko could complete a normal final response.");
+
+    expect(summary).not.toContain("PROJECT/DIRECTORY MISMATCH");
+    expect(summary).toContain("production-ready-demo-plumbing-contractor");
   });
 
   test("includes generated-copy block guidance in forced recaps", () => {

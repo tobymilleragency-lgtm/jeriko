@@ -292,6 +292,7 @@ export async function* runAgent(
   const generatedCopyEditConfirmed = messages.some((message) => message.role === "user" && messageText(message).includes(GENERATED_COPY_EDIT_CONFIRMATION));
   const repeatGuard = createToolRepeatGuard();
   const roundRepeatGuard = createToolRoundRepeatGuard();
+  const loadedSkillNames = getLoadedSkillNames(messages);
 
   // Set active context so orchestrator tools (delegate, parallel) can access
   // the parent's system prompt, conversation, depth, and model during tool execution.
@@ -581,43 +582,59 @@ export async function* runAgent(
       let result: string;
       let isError = false;
 
-      const repeatCheck = repeatGuard(tc);
-      if (repeatCheck) {
-        result = `${repeatCheck}\nDo not call the same tool with the same arguments again. Use the previous result and choose a different next step toward the user's request.`;
-        isError = true;
-      } else if (!tool) {
-        result = `Tool "${tc.name}" not found`;
-        isError = true;
+      const skillLoadName = getUseSkillLoadName(tc);
+      if (skillLoadName && loadedSkillNames.has(skillLoadName)) {
+        result = JSON.stringify({
+          ok: true,
+          data: {
+            name: skillLoadName,
+            alreadyLoaded: true,
+            message: `Skill "${skillLoadName}" is already loaded in this run. Do not call use_skill for it again; continue with the next concrete action.`,
+          },
+        });
       } else {
-        // Guard: per-tool rate limit check
-        const rateCheck = guard.checkToolCall(tool.name);
-        if (rateCheck) {
-          result = rateCheck;
+        const repeatCheck = repeatGuard(tc);
+        if (repeatCheck) {
+          result = `${repeatCheck}\nDo not call the same tool with the same arguments again. Use the previous result and choose a different next step toward the user's request.`;
+          isError = true;
+        } else if (!tool) {
+          result = `Tool "${tc.name}" not found`;
           isError = true;
         } else {
-          try {
-            const args = parseToolArgs(tc.arguments);
-            // Inject inferred action from dotted name (e.g. "browser.click" → action:"click")
-            if (inferredAction && !args.action) {
-              args.action = inferredAction;
-            }
-            if (config.cwd && tool.parameters?.properties?.cwd) {
-              if (!args.cwd) {
-                args.cwd = config.cwd;
-              } else if (typeof args.cwd === "string" && !isAbsolute(args.cwd)) {
-                args.cwd = resolve(config.cwd, args.cwd);
-              }
-            }
-            if (generatedCopyEditConfirmed) {
-              args.__jeriko_generated_copy_edit_confirmation = GENERATED_COPY_EDIT_CONFIRMATION;
-            }
-            result = await tool.execute(args);
-            if (inferToolResultIsError(result)) isError = true;
-          } catch (err) {
-            result = err instanceof Error ? err.message : String(err);
+          // Guard: per-tool rate limit check
+          const rateCheck = guard.checkToolCall(tool.name);
+          if (rateCheck) {
+            result = rateCheck;
             isError = true;
+          } else {
+            try {
+              const args = parseToolArgs(tc.arguments);
+              // Inject inferred action from dotted name (e.g. "browser.click" → action:"click")
+              if (inferredAction && !args.action) {
+                args.action = inferredAction;
+              }
+              if (config.cwd && tool.parameters?.properties?.cwd) {
+                if (!args.cwd) {
+                  args.cwd = config.cwd;
+                } else if (typeof args.cwd === "string" && !isAbsolute(args.cwd)) {
+                  args.cwd = resolve(config.cwd, args.cwd);
+                }
+              }
+              if (generatedCopyEditConfirmed) {
+                args.__jeriko_generated_copy_edit_confirmation = GENERATED_COPY_EDIT_CONFIRMATION;
+              }
+              result = await tool.execute(args);
+              if (inferToolResultIsError(result)) isError = true;
+            } catch (err) {
+              result = err instanceof Error ? err.message : String(err);
+              isError = true;
+            }
           }
         }
+      }
+
+      if (!isError && skillLoadName) {
+        loadedSkillNames.add(skillLoadName);
       }
 
       toolResults.push({ tool_call_id: tc.id, content: result, is_error: isError });
@@ -664,6 +681,41 @@ export async function* runAgent(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+export function getLoadedSkillNames(messages: DriverMessage[]): Set<string> {
+  const names = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "tool") continue;
+    const text = messageText(message).trim();
+    if (!text.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.ok !== true) continue;
+      const name = normalizeSkillName(parsed?.data?.name);
+      const hasLoadedInstructions = typeof parsed?.data?.instructions === "string" || parsed?.data?.alreadyLoaded === true;
+      if (name && hasLoadedInstructions) names.add(name);
+    } catch { /* ignore non-JSON tool output */ }
+  }
+  return names;
+}
+
+export function getUseSkillLoadName(toolCall: ToolCall): string | null {
+  const toolName = toolCall.name.toLowerCase();
+  if (toolName !== "use_skill" && toolName !== "skill" && toolName !== "skills" && toolName !== "load_skill") return null;
+  try {
+    const parsed = JSON.parse(toolCall.arguments);
+    if (parsed?.action !== "load") return null;
+    return normalizeSkillName(parsed?.name);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSkillName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
 
 export interface NoProgressTimeoutOptions {
   startedAt: number;
@@ -1196,8 +1248,16 @@ function inferDirectoryFromToolTexts(toolTexts: string[]): string {
 function detectProjectDirectoryMismatch(projectName: string, projectDirectory: string): string {
   if (!projectName || !projectDirectory) return "";
   const dirName = projectDirectory.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
-  if (!dirName || dirName === projectName) return "";
+  if (!dirName || normalizeProjectIdentity(dirName) === normalizeProjectIdentity(projectName)) return "";
   return `PROJECT/DIRECTORY MISMATCH: captured project '${projectName}' but directory basename is '${dirName}' (${projectDirectory}). Treat this run as not trustworthy until the target is reconciled.`;
+}
+
+function normalizeProjectIdentity(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-+/g, "-");
 }
 
 function buildAppSummaryLines(state: CapturedVerificationState): string[] {

@@ -8,12 +8,27 @@ import { spawn } from "node:child_process";
 import { detectSnapshotIntegrityProblems, restoreSnapshotFiles, snapshotCodeFiles } from "./code-integrity-guard.js";
 import { generatedCopyMutationBlock, isReadOnlyShellCommand } from "./generated-copy-guard.js";
 
+function malformedPackageManagerViteArgs(command: string): { ok: false; guard: string; error: string; suggestedCommand: string } | null {
+  if (!/\b(?:pnpm|npm|yarn|bun)\s+run\s+dev\s+--\s+--host\b/.test(command)) return null;
+  const host = command.match(/--host\s+([^\s;&|]+)/)?.[1] ?? "127.0.0.1";
+  const port = command.match(/--port\s+(\d+)/)?.[1] ?? "6001";
+  return {
+    ok: false,
+    guard: "malformed_vite_dev_command",
+    error: "Refusing malformed Vite dev command. `pnpm/npm/yarn/bun run dev -- --host ... --port ...` passes a literal `--` through to Vite in generated projects, so Vite ignores the intended port and falls back to 3000/3001/3002/3003. Start Vite directly or use the webdev restart tool.",
+    suggestedCommand: `pnpm exec vite --host ${host} --port ${port} --strictPort`,
+  };
+}
+
 async function execute(args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
   const timeout = (args.timeout as number) ?? 30_000;
   const cwd = (args.cwd as string) ?? process.cwd();
 
   if (!command) return JSON.stringify({ ok: false, error: "command is required" });
+
+  const malformedViteArgs = malformedPackageManagerViteArgs(command);
+  if (malformedViteArgs) return JSON.stringify(malformedViteArgs);
 
   if (!isReadOnlyShellCommand(command)) {
     const generatedCopyBlock = generatedCopyMutationBlock({

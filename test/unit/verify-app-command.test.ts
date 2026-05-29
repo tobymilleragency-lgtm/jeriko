@@ -5,10 +5,17 @@ import * as path from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 
-import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanPublicBuilderMetaCopy, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanPremiumMarketingSiteQuality, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort } from "../../src/cli/commands/dev/verify-app.js";
+import { command as verifyAppCommand, scanPlaceholders, scanScaffoldResidue, scanPublicBuilderMetaCopy, scanUncontractedContractorMarketingSite, scanUnsafeEnvRefs, scanCrawlerHtml, scanPrimaryLocalStoragePersistence, scanProductionArtifactResidue, scanDbAuthWorkflowWiring, scanAuthRuntimeConfig, scanMockDataImports, scanMisleadingProviderConfig, scanMisleadingReadinessClaims, scanVercelApiPackaging, scanDuplicateSectionImages, scanForbiddenIntegrations, scanAppSpecCompliance, scanPremiumMarketingSiteQuality, scanWorkflowContract, scanPrimaryActionWiring, scanBusinessMathRealness, scanSwallowedPrimaryFetchErrors, inferAppProfile, defaultRouteForProfile, readProjectState, getDependencyStatus, resolveVerificationPort, validateRouteResponse } from "../../src/cli/commands/dev/verify-app.js";
 import { setOutputFormat } from "../../src/shared/output.js";
 
 describe("verify-app command", () => {
+  it("rejects stale Vite dev server HTML during production route verification", () => {
+    const problem = validateRouteResponse("/", "text/html", `<!doctype html><html><head><script type="module" src="/@vite/client"></script></head><body><div id="root"></div><script type="module" src="/src/main.tsx?t=123"></script></body></html>`);
+
+    expect(problem).toContain("Vite dev server");
+    expect(problem).toContain("/");
+  });
+
   it("detects duplicate section image references before verification passes", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jeriko-verify-duplicate-images-"));
     try {
@@ -185,13 +192,17 @@ describe("verify-app command", () => {
             <p>Lead flow system</p>
             <h2>Built to move real project requests instead of acting like a flat brochure.</h2>
           </section>
+          <section>
+            <h2>Plumbing Contractor contractor marketing built around real project requests</h2>
+            <p>The site should speak like a real business, not a software dashboard, and help contractors follow up before good jobs go cold.</p>
+          </section>
         </main>}
       `);
 
       const hits = scanPublicBuilderMetaCopy(dir);
       const result = await runVerifyAppCommand([dir, "--skip-install", "--skip-start", "--skip-browser"]);
 
-      expect(hits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["builder SEO/crawler copy", "public page-architecture copy", "builder/conversion-system copy"]));
+      expect(hits.map((hit) => hit.token)).toEqual(expect.arrayContaining(["builder SEO/crawler copy", "public page-architecture copy", "builder/conversion-system copy", "generic contractor-marketing copy"]));
       expect(result.ok).toBe(false);
       expect(result.errorCode).toBe("E_PUBLIC_BUILDER_META_COPY");
       expect(result.builderMetaCopy.length).toBeGreaterThanOrEqual(3);

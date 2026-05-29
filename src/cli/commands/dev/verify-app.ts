@@ -155,6 +155,11 @@ const PUBLIC_BUILDER_META_COPY_PATTERNS: Array<{ pattern: RegExp; token: string;
     reason: "Public service copy must describe customer problems and outcomes, not explain that Jeriko built separate service/city pages.",
   },
   {
+    pattern: /\bcontractor\s+marketing\s+built\s+around\s+real\s+project\s+requests\b|\bsoftware\s+dashboard\b|\bgood\s+jobs\s+go\s+cold\b/i,
+    token: "generic contractor-marketing copy",
+    reason: "Customer-facing local-service pages must use trade-specific homeowner language, not Jeriko's generic contractor-marketing scaffold copy.",
+  },
+  {
     pattern: /\b(?:lead\s+flow|lead\s+leak|visitor\s+lands|flat\s+brochure|brochure\s+site|generic\s+contractor\s+page|local\s+SEO\s+system|quote\s+path|estimate\s+request\s+workflow)\b/i,
     token: "builder/conversion-system copy",
     reason: "Customer-facing contractor pages must not expose internal marketing-system language such as lead flow, brochure-site comparisons, or quote-path architecture.",
@@ -1027,13 +1032,14 @@ function collectPublicSourceText(dir: string): string {
   walkTextFiles(dir, (file, content) => {
     const normalized = file.replace(/\\/g, "/");
     if (!/\/(client\/src|client\/index\.html|src|app|pages|api|server)\//.test(normalized) && !normalized.endsWith("client/index.html")) return;
-    if (normalized.includes("/components/ui/") || normalized.includes(".test.")) return;
+    if (normalized.includes("/.jeriko/") || normalized.includes("/components/ui/") || normalized.includes("/lib/") || normalized.includes(".test.")) return;
     chunks.push(content);
   });
   return chunks.join("\n");
 }
 
 function hasExplicitRouteImplementation(sourceText: string, route: string): boolean {
+  if (sourceText.includes(`path=\"${route}\"`) || sourceText.includes(`path='${route}'`) || sourceText.includes(`path: \"${route}\"`) || sourceText.includes(`path: '${route}'`)) return true;
   const escaped = route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const patterns = [
     new RegExp(`path\\s*=\\s*['\"]${escaped}['\"]`),
@@ -1046,6 +1052,7 @@ function hasExplicitRouteImplementation(sourceText: string, route: string): bool
 }
 
 function hasDynamicRouteImplementation(sourceText: string, baseRoute: string): boolean {
+  if (sourceText.includes(`path=\"${baseRoute}/:slug\"`) || sourceText.includes(`path='${baseRoute}/:slug'`) || sourceText.includes(`path: \"${baseRoute}/:slug\"`) || sourceText.includes(`path: '${baseRoute}/:slug'`)) return true;
   const escaped = baseRoute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const withoutSlash = baseRoute.replace(/^\//, "");
   const patterns = [
@@ -1058,14 +1065,18 @@ function hasDynamicRouteImplementation(sourceText: string, baseRoute: string): b
 }
 
 function hasPrimaryHomeNav(sourceText: string): boolean {
-  return /label:\s*["']Home["']/.test(sourceText)
+  return sourceText.includes('label: "Home"')
+    || sourceText.includes("label: 'Home'")
+    || /label:\s*["']Home["']/.test(sourceText)
     || /<AppLink[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
     || /<Link[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText)
     || /<a[^>]+href=["']\/["'][^>]*>\s*Home\s*<\//i.test(sourceText);
 }
 
 function hasPrimaryServiceAreasNav(sourceText: string): boolean {
-  return /label:\s*["']Service Areas["']/.test(sourceText)
+  return sourceText.includes('label: "Service Areas"')
+    || sourceText.includes("label: 'Service Areas'")
+    || /label:\s*["']Service Areas["']/.test(sourceText)
     || /<AppLink[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText)
     || /<Link[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText)
     || /<a[^>]+href=["']\/service-areas?["'][^>]*>\s*Service Areas\s*<\//i.test(sourceText);
@@ -1139,8 +1150,9 @@ export function scanPremiumMarketingSiteQuality(dir: string, projectState: Proje
   const indexPath = join(dir, "client", "index.html");
   const vercelPath = join(dir, "vercel.json");
   const app = existsSync(appPath) ? readFileSync(appPath, "utf8") : "";
-  const sourceText = collectPublicSourceText(dir);
+  const collectedSourceText = collectPublicSourceText(dir);
   const indexHtml = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
+  const sourceText = `${collectedSourceText}\n${app}\n${indexHtml}`;
   const issues: AppSpecIssue[] = [];
   const contractorSite = /contractor|roof|remodel|plumb|electric|hvac|lead|estimate/i.test([spec.prompt, ...(spec.features ?? [])].join(" "));
   const localServiceSite = /local-service|premium-local-service/i.test(String(spec.appType ?? "")) || spec.features?.some((feature) => /local service seo content|service area/i.test(feature));
@@ -1482,7 +1494,9 @@ function findDuplicatePublicSections(sourceText: string): string[] {
     seen.add(label);
   }
   const sectionBodies = Array.from(sourceText.matchAll(/<section\b[^>]*>([\s\S]{0,1400}?)<\/section>/gi))
-    .map((match) => normalizeVisibleLabel((match[1] ?? "").replace(/<[^>]+>/g, " ")).slice(0, 220))
+    .map((match) => match[1] ?? "")
+    .filter((raw) => !/\.map\s*\(|=>|\{\s*\[/.test(raw))
+    .map((raw) => normalizeVisibleLabel(raw.replace(/<[^>]+>/g, " ")).slice(0, 220))
     .filter((body) => body.length >= 80);
   const bodySeen = new Set<string>();
   for (const body of sectionBodies) {
@@ -3015,12 +3029,22 @@ function failGate(directory: string, profile: AppProfile, gates: VerificationGat
     gates,
   });
 }
-function validateRouteResponse(route: string, contentType: string, body: string): string | null {
+export function validateRouteResponse(route: string, contentType: string, body: string): string | null {
   const normalizedRoute = route.startsWith("/") ? route : `/${route}`;
-  if (!normalizedRoute.startsWith("/api/")) return null;
-
   const normalizedContentType = contentType.toLowerCase();
   const bodyStart = body.trimStart().slice(0, 300).toLowerCase();
+
+  if (!normalizedRoute.startsWith("/api/") && /\/(?:@vite\/client|src\/main\.[tj]sx?)(?:\?|\"|')|react-refresh/i.test(body)) {
+    return [
+      `Frontend route is being served by a Vite dev server during production verification: ${normalizedRoute}`,
+      `content-type: ${contentType || "unknown"}`,
+      "Stop the stale dev server or start the configured production/static server before passing verify-app.",
+      body.slice(0, 1_000),
+    ].join("\n");
+  }
+
+  if (!normalizedRoute.startsWith("/api/")) return null;
+
   const looksLikeHtml = normalizedContentType.includes("text/html") ||
     bodyStart.startsWith("<!doctype html") ||
     bodyStart.startsWith("<html") ||
